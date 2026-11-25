@@ -49,10 +49,12 @@ AI 코딩 작업을 여러 개 돌리면 무엇이 끝났고 무엇이 답을 �
 
 ## 동작 방식
 
-```mermaid
-flowchart LR
-  PC["컴퓨터<br>정보 수집, 명령 실행"] <-->|"USB 또는 블루투스<br>암호화"| PHONE["스마트폰<br>화면, 버튼"]
-```
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/images/flow-dark.png">
+    <img src="docs/images/flow-light.png" width="640" alt="컴퓨터와 스마트폰을 USB 또는 블루투스로 잇고 암호화해서 주고받는 그림">
+  </picture>
+</p>
 
 - 폰에 보이는 정보만 모읍니다. 연결된 폰이 없으면 수집을 멈춥니다.
 - 컴퓨터와 폰을 직접 잇습니다. 회원 가입과 중간 서버가 없습니다.
