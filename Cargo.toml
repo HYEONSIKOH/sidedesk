@@ -1,6 +1,14 @@
 [workspace]
 resolver = "3"
-members = ["core", "desktop"]
+members = [
+    "core",
+    "core/bindgen",
+    "desktop/domain",
+    "desktop/mac",
+    "desktop/windows",
+    "desktop/link",
+    "desktop/app",
+]
 
 [workspace.package]
 version = "0.1.0"

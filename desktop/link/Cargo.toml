@@ -1,0 +1,10 @@
+[package]
+name = "sidedesk-link"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+sidedesk-domain = { path = "../domain" }
+
+[features]
+dev-link = []

@@ -8,10 +8,7 @@ name = "sidedesk_core"
 crate-type = ["lib", "cdylib", "staticlib"]
 
 [dependencies]
-getrandom = "0.4.3"
 prost = "0.14.6"
-sha2 = "0.11.1"
-snow = "0.10.0"
 thiserror = "2.0.21"
 uniffi = { version = "0.32.2", optional = true }
 

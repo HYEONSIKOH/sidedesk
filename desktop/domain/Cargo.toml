@@ -1,0 +1,8 @@
+[package]
+name = "sidedesk-domain"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+sidedesk-core = { path = "../../core" }
+thiserror = "2.0.21"
