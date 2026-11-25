@@ -1,0 +1,17 @@
+[package]
+name = "sidedesk"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+sidedesk-domain = { path = "../domain" }
+sidedesk-link = { path = "../link", optional = true }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+sidedesk-mac = { path = "../mac" }
+
+[target.'cfg(target_os = "windows")'.dependencies]
+sidedesk-windows = { path = "../windows" }
+
+[features]
+dev-link = ["dep:sidedesk-link", "sidedesk-link/dev-link"]

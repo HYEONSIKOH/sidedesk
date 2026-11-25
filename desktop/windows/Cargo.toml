@@ -1,0 +1,8 @@
+[package]
+name = "sidedesk-windows"
+version.workspace = true
+edition.workspace = true
+
+[target.'cfg(target_os = "windows")'.dependencies]
+sidedesk-domain = { path = "../domain" }
+windows-sys = { version = "0.61", features = ["Win32_System_SystemInformation"] }

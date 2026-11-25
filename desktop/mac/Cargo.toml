@@ -1,0 +1,9 @@
+[package]
+name = "sidedesk-mac"
+version.workspace = true
+edition.workspace = true
+
+[target.'cfg(target_os = "macos")'.dependencies]
+core-foundation = "0.9"
+sidedesk-domain = { path = "../domain" }
+system-configuration-sys = "0.6"

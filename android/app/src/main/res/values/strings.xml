@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">SideDesk</string>
+    <string name="home_waiting">컴퓨터를 기다리는 중</string>
+</resources>
