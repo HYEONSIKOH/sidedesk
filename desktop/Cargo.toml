@@ -1,0 +1,7 @@
+[package]
+name = "sidedesk"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+sidedesk-core = { path = "../core" }
