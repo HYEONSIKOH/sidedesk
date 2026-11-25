@@ -7,3 +7,5 @@ local.properties
 *.keystore
 *.p12
 android/app/src/main/jniLibs/
+ios/Generated/
+ios/*.xcodeproj/
