@@ -21,7 +21,7 @@ class MainActivity : ComponentActivity() {
         enableEdgeToEdge()
         setContent {
             val state = home.state.collectAsStateWithLifecycle()
-            HomeScreen(state.value)
+            HomeScreen(state.value, home::answer)
         }
     }
 }

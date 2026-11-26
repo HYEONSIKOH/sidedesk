@@ -1,13 +1,15 @@
-use std::io::{self, Read, Write};
-use std::net::{Ipv4Addr, Shutdown, SocketAddr, TcpStream};
+use std::io::{self, ErrorKind, Read, Write};
+use std::net::{IpAddr, Ipv4Addr, SocketAddr, TcpStream};
 use std::time::Duration;
 
-use sidedesk_domain::{Phone, PhoneLinks, PortError};
+use sidedesk_domain::{Conn, Phone, PhoneLinks, PortError, Received};
 
-const SERVER: SocketAddr = SocketAddr::new(std::net::IpAddr::V4(Ipv4Addr::LOCALHOST), 5037);
-const SOCKET: &str = "localabstract:sidedesk-dev";
+const SERVER: SocketAddr = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 5037);
+const SOCKET: &str = "localabstract:sidedesk";
 const CONNECT: Duration = Duration::from_secs(1);
 const TRANSFER: Duration = Duration::from_secs(2);
+/// 연결 위에서 한 번 읽을 때 기다리는 시간. 그 사이에 보낼 것과 시간을 따진다.
+const POLL: Duration = Duration::from_millis(250);
 
 /// 이미 켜져 있는 adb 서버와 말한다. 서버를 켜거나 끄지 않고 포트를 새로 열지 않는다.
 pub struct AdbLinks {
@@ -45,44 +47,83 @@ fn broken(error: io::Error) -> PortError {
 }
 
 impl AdbLinks {
-    fn open(&self) -> Result<TcpStream, PortError> {
+    fn open(&self, read: Option<Duration>) -> Result<TcpStream, PortError> {
         let stream = TcpStream::connect_timeout(&self.server, CONNECT)
             .map_err(|error| PortError::new(format!("adb 서버에 접속하지 못함: {error}")))?;
-        stream.set_read_timeout(Some(TRANSFER)).map_err(broken)?;
+        stream.set_read_timeout(read).map_err(broken)?;
         stream.set_write_timeout(Some(TRANSFER)).map_err(broken)?;
         Ok(stream)
     }
 }
 
 impl PhoneLinks for AdbLinks {
-    fn label(&self) -> &str {
-        "adb"
-    }
-
     fn attached(&self) -> Result<Vec<Phone>, PortError> {
-        let mut stream = self.open()?;
+        let mut stream = self.open(Some(TRANSFER))?;
         request(&mut stream, "host:devices")?;
-        let list = read_text(&mut stream)?;
-        Ok(list
-            .lines()
-            .filter_map(|line| line.split_once('\t'))
-            .map(|(id, state)| Phone {
-                id: id.to_owned(),
-                blocked: blocked(state),
-            })
-            .collect())
+        Ok(phones(&read_text(&mut stream)?))
     }
 
-    fn send(&self, id: &str, bytes: &[u8]) -> Result<(), PortError> {
-        let mut stream = self.open()?;
+    fn watch(&self, changed: &mut dyn FnMut(Vec<Phone>)) -> Result<(), PortError> {
+        // 바뀔 때만 오므로 시간 제한을 두지 않는다.
+        let mut stream = self.open(None)?;
+        request(&mut stream, "host:track-devices")?;
+        loop {
+            changed(phones(&read_text(&mut stream)?));
+        }
+    }
+
+    fn connect(&self, id: &str) -> Result<Box<dyn Conn>, PortError> {
+        let mut stream = self.open(Some(TRANSFER))?;
         request(&mut stream, &format!("host:transport:{id}"))?;
         request(&mut stream, SOCKET).map_err(|refusal| match refusal {
             Refusal::Said(_) => PortError::new("폰의 앱이 꺼져 있거나 뒤에 있음"),
             Refusal::Broken(error) => error,
         })?;
-        stream.write_all(bytes).map_err(broken)?;
-        stream.shutdown(Shutdown::Write).map_err(broken)
+        stream.set_read_timeout(Some(POLL)).map_err(broken)?;
+        Ok(Box::new(AdbConn(stream)))
     }
+}
+
+struct AdbConn(TcpStream);
+
+impl Conn for AdbConn {
+    fn receive(&mut self, buffer: &mut [u8]) -> Result<Received, PortError> {
+        match self.0.read(buffer) {
+            Ok(0) => Ok(Received::Closed),
+            Ok(count) => Ok(Received::Bytes(count)),
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    ErrorKind::WouldBlock | ErrorKind::TimedOut | ErrorKind::Interrupted
+                ) =>
+            {
+                Ok(Received::Nothing)
+            }
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    ErrorKind::ConnectionReset | ErrorKind::BrokenPipe
+                ) =>
+            {
+                Ok(Received::Closed)
+            }
+            Err(error) => Err(broken(error)),
+        }
+    }
+
+    fn send(&mut self, bytes: &[u8]) -> Result<(), PortError> {
+        self.0.write_all(bytes).map_err(broken)
+    }
+}
+
+fn phones(list: &str) -> Vec<Phone> {
+    list.lines()
+        .filter_map(|line| line.split_once('\t'))
+        .map(|(id, state)| Phone {
+            id: id.to_owned(),
+            blocked: blocked(state),
+        })
+        .collect()
 }
 
 fn blocked(state: &str) -> Option<String> {
@@ -128,8 +169,8 @@ mod tests {
 
     type Served = (Vec<String>, Vec<u8>);
 
-    /// 요청을 하나 받을 때마다 답을 하나 보내고, 다 쓰면 남은 바이트를 돌려준다.
-    fn adb(answers: &'static [&'static str]) -> (AdbLinks, JoinHandle<Served>) {
+    /// 요청을 하나 받을 때마다 답을 하나 보낸다. 다 보낸 뒤 `rest` 를 보내고, 받은 나머지를 돌려준다.
+    fn adb(answers: &'static [&'static str], rest: &'static str) -> (AdbLinks, JoinHandle<Served>) {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let server = listener.local_addr().unwrap();
         let handle = thread::spawn(move || {
@@ -142,47 +183,63 @@ mod tests {
                 asked.push(command);
                 stream.write_all(answer.as_bytes()).unwrap();
             }
-            let mut rest = Vec::new();
-            if answers.len() > 1 {
-                stream.read_to_end(&mut rest).unwrap();
-            }
-            (asked, rest)
+            stream.write_all(rest.as_bytes()).unwrap();
+            let mut got = Vec::new();
+            stream
+                .set_read_timeout(Some(Duration::from_millis(300)))
+                .unwrap();
+            let _ = stream.read_to_end(&mut got);
+            (asked, got)
         });
         (AdbLinks { server }, handle)
     }
 
     #[test]
     fn lists_phones_with_the_reason_they_are_blocked() {
-        let (links, server) = adb(&["OKAY0021a\tdevice\nb\tunauthorized\nc\toffline"]);
+        let (links, server) = adb(&["OKAY0021a\tdevice\nb\tunauthorized\nc\toffline"], "");
         let phones = links.attached().unwrap();
         assert_eq!(phones[0].blocked, None);
         assert!(phones[1].blocked.as_ref().unwrap().contains("허용"));
-        assert_eq!(phones[2].id, "c");
         assert!(phones[2].blocked.is_some());
         assert_eq!(server.join().unwrap().0, ["host:devices"]);
     }
 
     #[test]
-    fn an_empty_list_is_fine() {
-        let (links, _server) = adb(&["OKAY0000"]);
-        assert_eq!(links.attached(), Ok(Vec::new()));
+    fn watches_phones_come_and_go() {
+        let (links, server) = adb(&["OKAY"], "0009a\tdevice\n00000009a\tdevice\n");
+        let mut seen = Vec::new();
+        let ended = links.watch(&mut |phones| seen.push(phones.len()));
+        assert!(ended.is_err());
+        assert_eq!(seen, [1, 0, 1]);
+        assert_eq!(server.join().unwrap().0, ["host:track-devices"]);
     }
 
     #[test]
-    fn sends_the_bytes_to_the_app() {
-        let (links, server) = adb(&["OKAY", "OKAY"]);
-        assert_eq!(links.send("a", b"hi"), Ok(()));
-        let (asked, rest) = server.join().unwrap();
-        assert_eq!(asked, ["host:transport:a", "localabstract:sidedesk-dev"]);
-        assert_eq!(rest, b"hi");
+    fn talks_to_the_app_through_the_connection() {
+        let (links, server) = adb(&["OKAY", "OKAY"], "pong");
+        let mut conn = links.connect("a").unwrap();
+        conn.send(b"ping").unwrap();
+        let mut buffer = [0; 16];
+        let mut got = Vec::new();
+        loop {
+            match conn.receive(&mut buffer).unwrap() {
+                Received::Bytes(count) => got.extend_from_slice(&buffer[..count]),
+                Received::Nothing => {}
+                Received::Closed => break,
+            }
+        }
+        assert_eq!(got, b"pong");
+        let (asked, sent) = server.join().unwrap();
+        assert_eq!(asked, ["host:transport:a", "localabstract:sidedesk"]);
+        assert_eq!(sent, b"ping");
     }
 
     #[test]
     fn tells_a_missing_app_from_a_missing_phone() {
-        let (links, _server) = adb(&["OKAY", "FAIL0006closed"]);
-        assert!(links.send("a", b"hi").unwrap_err().0.contains("앱이 꺼져"));
-        let (links, _server) = adb(&["FAIL0004gone"]);
-        assert!(links.send("a", b"hi").unwrap_err().0.contains("gone"));
+        let (links, _server) = adb(&["OKAY", "FAIL0006closed"], "");
+        assert!(links.connect("a").err().unwrap().0.contains("앱이 꺼져"));
+        let (links, _server) = adb(&["FAIL0004gone"], "");
+        assert!(links.connect("a").err().unwrap().0.contains("gone"));
     }
 
     #[test]
@@ -194,7 +251,7 @@ mod tests {
             &["OKAY0010short"],
             &["OK"],
         ] {
-            let (links, _server) = adb(answers);
+            let (links, _server) = adb(answers, "");
             assert!(links.attached().is_err(), "{answers:?}");
         }
     }
@@ -204,7 +261,12 @@ mod tests {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let server = listener.local_addr().unwrap();
         drop(listener);
-        let error = AdbLinks { server }.attached().unwrap_err();
-        assert!(error.0.contains("adb 서버"));
+        assert!(
+            AdbLinks { server }
+                .attached()
+                .unwrap_err()
+                .0
+                .contains("adb 서버")
+        );
     }
 }

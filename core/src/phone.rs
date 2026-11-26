@@ -1,75 +1,162 @@
-use std::sync::Mutex;
+//! 폰 앱(Kotlin, Swift)이 쓰는 연결.
 
-use crate::{FrameReader, WireError};
+use std::sync::{Arc, Mutex, MutexGuard};
+
+use crate::{Body, Event, Identity, KEY_LEN, Role, Session, SessionError};
+
+#[derive(uniffi::Record)]
+pub struct KeyPair {
+    pub private_key: Vec<u8>,
+    pub public_key: Vec<u8>,
+}
+
+#[uniffi::export]
+pub fn generate_key_pair() -> KeyPair {
+    let identity = Identity::generate();
+    KeyPair {
+        private_key: identity.private.to_vec(),
+        public_key: identity.public.to_vec(),
+    }
+}
+
+#[derive(Debug, PartialEq, uniffi::Enum)]
+pub enum PhoneEvent {
+    PairingCode { code: String },
+    Paired { computer_key: Vec<u8> },
+    Ready,
+    ComputerName { name: String },
+}
 
 #[derive(Debug, PartialEq, thiserror::Error, uniffi::Error)]
-pub enum ReceiveError {
+pub enum LinkError {
+    #[error("버전이 다름")]
+    Version { mine: u8, theirs: u8 },
+    #[error("짝을 맺지 않은 컴퓨터")]
+    NotPaired,
+    #[error("짝 맺기를 거절함")]
+    Rejected,
     #[error("{reason}")]
     Broken { reason: String },
 }
 
-impl From<WireError> for ReceiveError {
-    fn from(error: WireError) -> Self {
-        Self::Broken {
-            reason: error.to_string(),
+impl From<SessionError> for LinkError {
+    fn from(error: SessionError) -> Self {
+        match error {
+            SessionError::Version { mine, theirs } => Self::Version { mine, theirs },
+            SessionError::NotPaired => Self::NotPaired,
+            SessionError::Rejected => Self::Rejected,
+            SessionError::Broken(reason) => Self::Broken {
+                reason: reason.to_owned(),
+            },
         }
     }
+}
+
+fn key(bytes: &[u8]) -> Result<[u8; KEY_LEN], LinkError> {
+    bytes.try_into().map_err(|_| LinkError::Broken {
+        reason: "키 길이가 틀림".to_owned(),
+    })
 }
 
 /// 접속 하나를 맡는다. 새로 접속되면 새로 만든다.
-#[derive(Default, uniffi::Object)]
-pub struct PhoneReceiver {
-    reader: Mutex<FrameReader>,
-}
+#[derive(uniffi::Object)]
+pub struct PhoneSession(Mutex<Session>);
 
 #[uniffi::export]
-impl PhoneReceiver {
+impl PhoneSession {
     #[uniffi::constructor]
-    pub fn new() -> Self {
-        Self::default()
+    pub fn new(
+        private_key: Vec<u8>,
+        public_key: Vec<u8>,
+        computers: Vec<Vec<u8>>,
+    ) -> Result<Arc<Self>, LinkError> {
+        let identity = Identity {
+            private: key(&private_key)?,
+            public: key(&public_key)?,
+        };
+        let trusted = computers
+            .iter()
+            .map(|computer| key(computer))
+            .collect::<Result<_, _>>()?;
+        Ok(Arc::new(Self(Mutex::new(Session::new(
+            Role::Phone,
+            &identity,
+            trusted,
+            false,
+        )))))
     }
 
-    /// 다 모인 컴퓨터 이름을 돌려준다. 깨진 메시지 앞에 온 이름은 돌려주고 오류는 다음 호출에서 낸다.
-    pub fn receive(&self, bytes: Vec<u8>) -> Result<Vec<String>, ReceiveError> {
-        let mut reader = self.reader.lock().unwrap_or_else(|lock| lock.into_inner());
-        reader.push(&bytes);
-        let mut names = Vec::new();
+    pub fn feed(&self, bytes: Vec<u8>) -> Result<(), LinkError> {
+        Ok(self.lock().feed(&bytes)?)
+    }
+
+    pub fn take_output(&self) -> Vec<u8> {
+        self.lock().take_output()
+    }
+
+    pub fn next_event(&self) -> Option<PhoneEvent> {
+        let mut session = self.lock();
         loop {
-            match reader.pop() {
-                Ok(Some(hello)) => names.push(hello.computer_name),
-                Ok(None) => return Ok(names),
-                Err(error) if names.is_empty() => return Err(error.into()),
-                Err(_) => return Ok(names),
-            }
+            return match session.next_event()? {
+                Event::PairingCode(code) => Some(PhoneEvent::PairingCode { code }),
+                Event::Paired { peer } => Some(PhoneEvent::Paired {
+                    computer_key: peer.to_vec(),
+                }),
+                Event::Ready { .. } => Some(PhoneEvent::Ready),
+                Event::Message(Body::Hello(hello)) => Some(PhoneEvent::ComputerName {
+                    name: hello.computer_name,
+                }),
+                Event::Message(_) => continue,
+            };
         }
+    }
+
+    pub fn confirm(&self, same: bool) -> Result<(), LinkError> {
+        Ok(self.lock().confirm(same)?)
+    }
+}
+
+impl PhoneSession {
+    fn lock(&self) -> MutexGuard<'_, Session> {
+        self.0.lock().unwrap_or_else(|lock| lock.into_inner())
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{Hello, encode};
-
-    fn hello(name: &str) -> Vec<u8> {
-        encode(&Hello {
-            computer_name: name.to_owned(),
-        })
-    }
+    use crate::Hello;
 
     #[test]
-    fn returns_good_names_before_the_error() {
-        let receiver = PhoneReceiver::new();
-        let bytes = [hello("a"), vec![0; 4]].concat();
-        assert_eq!(receiver.receive(bytes), Ok(vec!["a".to_owned()]));
-        assert!(receiver.receive(Vec::new()).is_err());
-    }
-
-    #[test]
-    fn a_broken_connection_does_not_affect_the_next() {
-        assert!(PhoneReceiver::new().receive(vec![0; 4]).is_err());
+    fn a_known_computer_sends_its_name() {
+        let computer = Identity::generate();
+        let phone = generate_key_pair();
+        let phone_key: [u8; KEY_LEN] = phone.public_key.clone().try_into().unwrap();
+        let session = PhoneSession::new(
+            phone.private_key,
+            phone.public_key,
+            vec![computer.public.to_vec()],
+        )
+        .unwrap();
+        let mut c = Session::new(Role::Computer, &computer, vec![phone_key], false);
+        for _ in 0..3 {
+            session.feed(c.take_output()).unwrap();
+            c.feed(&session.take_output()).unwrap();
+        }
+        c.send(Body::Hello(Hello {
+            computer_name: "맥".into(),
+        }))
+        .unwrap();
+        session.feed(c.take_output()).unwrap();
+        assert_eq!(session.next_event(), Some(PhoneEvent::Ready));
         assert_eq!(
-            PhoneReceiver::new().receive(hello("b")),
-            Ok(vec!["b".to_owned()])
+            session.next_event(),
+            Some(PhoneEvent::ComputerName { name: "맥".into() })
         );
+    }
+
+    #[test]
+    fn rejects_bad_keys() {
+        assert!(PhoneSession::new(vec![0; 3], vec![0; 32], Vec::new()).is_err());
     }
 }

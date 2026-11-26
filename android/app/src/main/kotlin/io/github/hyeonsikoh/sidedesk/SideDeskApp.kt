@@ -5,10 +5,11 @@ import androidx.lifecycle.DefaultLifecycleObserver
 import androidx.lifecycle.LifecycleOwner
 import androidx.lifecycle.ProcessLifecycleOwner
 import io.github.hyeonsikoh.sidedesk.link.ComputerLink
-import io.github.hyeonsikoh.sidedesk.link.createLink
+import io.github.hyeonsikoh.sidedesk.link.KeyFiles
+import io.github.hyeonsikoh.sidedesk.link.PhoneLink
 
 class SideDeskApp : Application() {
-    val link: ComputerLink = createLink()
+    val link: ComputerLink by lazy { PhoneLink(KeyFiles(filesDir)) }
 
     override fun onCreate() {
         super.onCreate()

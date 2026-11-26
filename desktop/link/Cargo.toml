@@ -5,6 +5,3 @@ edition.workspace = true
 
 [dependencies]
 sidedesk-domain = { path = "../domain" }
-
-[features]
-dev-link = []
