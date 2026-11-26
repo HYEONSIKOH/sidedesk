@@ -166,3 +166,51 @@ mod tests {
         assert_eq!(prefs.check_key(&Secret::new("k")), KeyCheck::Unknown);
     }
 }
+
+/// 사람 키로 손으로 돌린다: `SIDEDESK_KMA_KEY_FILE=<키 파일> cargo test -p sidedesk real_kma -- --ignored`.
+/// 설정 창의 키 넣기와 같은 길(확인 → 키체인 저장)을 거친 뒤 서울 시청 좌표로 받는다. 키는 찍지 않는다.
+#[cfg(all(test, target_os = "macos"))]
+mod real {
+    use super::*;
+    use sidedesk_core::Provider;
+    use sidedesk_domain::{Place, WeatherSource};
+    use sidedesk_mac::{MacGet, MacKeychain};
+    use sidedesk_weather::Chooser;
+
+    #[test]
+    #[ignore = "기상청과 키체인을 실제로 쓴다. 손으로 돌린다"]
+    fn real_kma() {
+        let path = std::env::var("SIDEDESK_KMA_KEY_FILE").expect("키 파일 경로");
+        let key = Secret::new(std::fs::read_to_string(path).expect("키 파일").trim());
+        let get: Arc<dyn Get> = Arc::new(MacGet::default());
+        let file = std::env::temp_dir().join("sidedesk-real-weather.txt");
+        let prefs = Arc::new(WeatherPrefs::new(
+            file.clone(),
+            Box::new(MacKeychain::default()),
+            Some(Arc::clone(&get)),
+        ));
+        let check = prefs.check_key(&key);
+        eprintln!("키 확인: {check:?}");
+        assert!(matches!(check, KeyCheck::Good | KeyCheck::Limit));
+        prefs.save_key(&key).unwrap();
+        prefs.set_choice(Choice::Kma).unwrap();
+        let chooser = Chooser::new(prefs.clone(), get);
+        let weather = chooser
+            .fetch(Place {
+                latitude: 376,
+                longitude: 1270,
+            })
+            .unwrap();
+        eprintln!(
+            "받은 곳 {:?}, 기온 {}, 최고 {}, 최저 {}, 하늘 {:?}, 낮 {}",
+            Provider::try_from(weather.provider),
+            weather.temperature,
+            weather.high,
+            weather.low,
+            sidedesk_core::Sky::try_from(weather.sky),
+            weather.is_day
+        );
+        assert_eq!(weather.provider, Provider::Kma as i32);
+        let _ = std::fs::remove_file(file);
+    }
+}
