@@ -779,11 +779,14 @@ mod tests {
         );
         // 심볼릭 링크는 가리키는 실제 파일로 본다(개발자 모드나 관리자 권한이 없으면 건너뜀).
         let link = folder.join("notes.txt");
-        if std::os::windows::fs::symlink_file(folder.join("run.bat"), &link).is_ok() {
-            assert_eq!(
-                check_path(link.to_str().unwrap()),
-                Err("실행 파일은 앱 열기로 등록하세요")
-            );
+        // 대상(run.bat)은 서버 백신이 이미 지웠을 수 있다. 그러면 실제 경로를 못 풀어 "찾지 못함"으로 거절된다.
+        let target = folder.join("run.bat");
+        if std::os::windows::fs::symlink_file(&target, &link).is_ok() {
+            match check_path(link.to_str().unwrap()) {
+                Err("실행 파일은 앱 열기로 등록하세요") => {}
+                Err("파일이나 폴더를 찾지 못했습니다") => assert!(!target.exists()),
+                other => panic!("실행 파일을 가리키는 링크가 거절되지 않음: {other:?}"),
+            }
         } else {
             eprintln!("심볼릭 링크를 만들 수 없어 건너뜀");
         }

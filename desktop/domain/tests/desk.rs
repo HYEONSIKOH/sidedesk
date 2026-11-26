@@ -126,7 +126,9 @@ fn collects_only_while_someone_watches() {
         phone.set(&Subscribe::default());
         // 하던 수집이 끝나기를 기다린 뒤부터 센다.
         thread::sleep(Duration::from_millis(200));
+        // 앞에서 센 뒤 구독을 끊기 전까지 한 번 더 모았을 수 있으므로(느린 서버) 여기서 다시 센다.
         let stopped = count(&counts.performance);
+        let processes = count(&counts.processes);
         thread::sleep(Duration::from_millis(300));
         assert_eq!(count(&counts.performance), stopped);
         assert_eq!(count(&counts.processes), processes);
