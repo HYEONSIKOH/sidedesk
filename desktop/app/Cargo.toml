@@ -11,6 +11,8 @@ sidedesk-weather = { path = "../weather" }
 sidedesk-window = { path = "../window" }
 
 [target.'cfg(target_os = "macos")'.dependencies]
+sidedesk-agents = { path = "../agents" }
+sidedesk-forge = { path = "../forge" }
 sidedesk-mac = { path = "../mac" }
 
 [target.'cfg(target_os = "windows")'.dependencies]

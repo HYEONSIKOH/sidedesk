@@ -420,7 +420,10 @@ impl Session {
                 | Body::Processes(_)
                 | Body::CommandResult(_)
                 | Body::Location(_)
-                | Body::Weather(_)),
+                | Body::Weather(_)
+                | Body::AiSessions(_)
+                | Body::AiAlert(_)
+                | Body::Forge(_)),
             ) => {
                 self.events.push_back(Event::Message(body));
                 Ok(())

@@ -20,6 +20,10 @@ data class Colors(
     val ink: Color,
     val muted: Color,
     val danger: Color,
+    /** 일이 있는 작은 칸과 작업 중 카드 바탕(hero 의 AI 칸) */
+    val hot: Color,
+    /** 답변 대기처럼 사람 손이 필요한 것 */
+    val waiting: Color,
     /** 시계 숫자 위아래 그라데이션 */
     val digitTop: Color,
     val digitBottom: Color,
@@ -37,6 +41,8 @@ val DarkColors = Colors(
     ink = Color(0xFFDCE1E7),
     muted = Color(0xFF8B939E),
     danger = Color(0xFFE5484D),
+    hot = Color(0xFF2B3744),
+    waiting = Color(0xFFE0A458),
     digitTop = Color(0xFFD3DEE9),
     digitBottom = Color(0xFF7D93AB),
     dark = true,
@@ -53,6 +59,8 @@ val LightColors = Colors(
     ink = Color(0xFF2C333C),
     muted = Color(0xFF6E7783),
     danger = Color(0xFFD93D42),
+    hot = Color(0xFFDCE4EC),
+    waiting = Color(0xFFB7791F),
     digitTop = Color(0xFF7F97B0),
     digitBottom = Color(0xFFAABCCE),
     dark = false,

@@ -75,6 +75,13 @@ fn theme(mode: &str) -> Option<Theme> {
     }
 }
 
+/// 프로그램이 끝나기 직전에 부를 일(돌고 있는 외부 프로그램 정리 등)
+static ON_EXIT: std::sync::OnceLock<Box<dyn Fn() + Send + Sync>> = std::sync::OnceLock::new();
+
+pub fn on_exit(work: impl Fn() + Send + Sync + 'static) {
+    let _ = ON_EXIT.set(Box::new(work));
+}
+
 /// 창과 화면. 필드 순서대로 놓이므로 화면이 자료 폴더 설정과 창보다 먼저 사라진다.
 struct Parts {
     webview: WebView,
@@ -94,7 +101,17 @@ pub fn open(board: &'static Board, mode_file: PathBuf, data_folder: PathBuf) -> 
     let parts = build(&event_loop, board, saved, &data_folder)?;
     event_loop.run(move |event, _, flow| {
         *flow = ControlFlow::Wait;
+        // Dock 의 종료, 로그아웃처럼 창 닫기를 거치지 않고 끝날 때
+        if matches!(event, Event::LoopDestroyed) {
+            if let Some(work) = ON_EXIT.get() {
+                work();
+            }
+            return;
+        }
         if handle(&parts, event, &mode_file) {
+            if let Some(work) = ON_EXIT.get() {
+                work();
+            }
             std::process::exit(0);
         }
     })

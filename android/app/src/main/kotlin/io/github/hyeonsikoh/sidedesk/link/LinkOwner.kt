@@ -18,6 +18,12 @@ class LinkOwner(private val nanos: () -> Long = System::nanoTime) {
     val perf = MutableStateFlow<Perf?>(null)
     val processes = MutableStateFlow<Processes?>(null)
     val weather = MutableStateFlow<Weather?>(null)
+    val sessions = MutableStateFlow<List<AiSession>?>(null)
+    val forge = MutableStateFlow<Forge?>(null)
+    val alerts = MutableSharedFlow<AiAlert>(extraBufferCapacity = 64)
+    /** 이 세대에서 받은 알림 번호. 새 연결이면 비운다(컴퓨터가 다시 켜지면 번호가 1부터 다시 간다). */
+    private val seenAlerts = HashSet<Long>()
+    private var seenFor = 0
     val location = AtomicReference<LocationState>(LocationState.Unknown)
     val killResults = MutableSharedFlow<KillResult>(extraBufferCapacity = 64)
     val subscription = AtomicReference(Subscription.NONE)
@@ -121,6 +127,27 @@ class LinkOwner(private val nanos: () -> Long = System::nanoTime) {
 
     fun receivedProcesses(mine: Int, value: Processes) = synchronized(this) {
         if (generation == mine) processes.value = value
+    }
+
+    fun receivedSessions(mine: Int, value: List<AiSession>) = synchronized(this) {
+        if (generation == mine) sessions.value = value
+    }
+
+    fun receivedForge(mine: Int, value: Forge) = synchronized(this) {
+        if (generation == mine) forge.value = value
+    }
+
+    /** 지금 연결의 알림만, 같은 번호는 한 번만 넘긴다. */
+    fun receivedAlert(mine: Int, value: AiAlert) {
+        val fresh = synchronized(this) {
+            if (generation != mine) return
+            if (seenFor != mine) {
+                seenAlerts.clear()
+                seenFor = mine
+            }
+            seenAlerts.add(value.id)
+        }
+        if (fresh) alerts.tryEmit(value)
     }
 
     fun receivedWeather(mine: Int, value: Weather) = synchronized(this) {

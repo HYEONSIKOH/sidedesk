@@ -3,7 +3,7 @@ use std::fmt;
 use std::sync::Mutex;
 use std::sync::mpsc::Receiver;
 
-use sidedesk_core::{BEACON_LEN, Identity, KEY_LEN, Performance, Process, Weather};
+use sidedesk_core::{AiTool, BEACON_LEN, Forge, Identity, KEY_LEN, Performance, Process, Weather};
 
 #[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
 #[error("{0}")]
@@ -308,4 +308,46 @@ pub trait WeatherSetup: Send + Sync {
     fn check_key(&self, key: &Secret) -> KeyCheck;
     fn save_key(&self, key: &Secret) -> Result<(), PortError>;
     fn clear_key(&self) -> Result<(), PortError>;
+}
+
+/// 기록에서 읽은 세션의 단계. 상태 이름(끝남 등)은 domain 이 정한다.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Phase {
+    Working,
+    /// 도구 허락이나 사람의 답을 기다림
+    Waiting,
+    /// 답을 마침(10초 지나면 끝남)
+    TurnEnded,
+    /// 사람이 멈췄거나 작업 중에 닫힘. 끝남으로 보이되 알리지 않는다.
+    Stopped,
+    Unknown,
+}
+
+/// 기록에서 읽은 한 세션의 사실. 대화 내용은 담지 않는다.
+#[derive(Clone, Debug, PartialEq)]
+pub struct SessionFacts {
+    /// 도구와 세션 번호. 밖으로 보내지 않는다.
+    pub key: String,
+    pub tool: AiTool,
+    /// 줄 바꿈을 지우고 60글자로 자른 제목
+    pub title: String,
+    /// 작업 폴더의 마지막 이름
+    pub project: String,
+    pub open: bool,
+    pub phase: Phase,
+    /// 마지막 기록 시각
+    pub last_activity: std::time::SystemTime,
+}
+
+/// AI 세션 기록 읽기. 오류 문장에 경로나 기록 내용을 넣지 않는다.
+pub trait SessionLog: Send + Sync {
+    /// 바뀐 파일만 읽고 지금 아는 세션 전부를 돌려준다.
+    fn poll(&self) -> Result<Vec<SessionFacts>, PortError>;
+}
+
+/// GitHub, GitLab 수. 실패도 상태로 돌려준다.
+pub trait Forges: Send + Sync {
+    fn counts(&self) -> Forge;
+    /// 돌고 있는 외부 프로그램을 끝낸다(프로그램을 끌 때).
+    fn stop(&self) {}
 }

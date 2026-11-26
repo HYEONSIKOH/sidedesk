@@ -121,6 +121,9 @@ class Connection(
                         is PhoneEvent.Performance -> mine?.let { owner.receivedPerf(it, perf(event)) }
                         is PhoneEvent.Processes -> mine?.let { owner.receivedProcesses(it, processes(event)) }
                         is PhoneEvent.Weather -> mine?.let { owner.receivedWeather(it, weather(event)) }
+                        is PhoneEvent.AiSessions -> mine?.let { owner.receivedSessions(it, event.items.map(::session)) }
+                        is PhoneEvent.AiAlert -> mine?.let { owner.receivedAlert(it, alert(event.value)) }
+                        is PhoneEvent.Forge -> mine?.let { owner.receivedForge(it, Forge(forge(event.github), forge(event.gitlab))) }
                         is PhoneEvent.CommandResult ->
                             owner.receivedKill(KillResult(event.requestId.toLong(), event.ok, event.reason))
                     }
@@ -170,6 +173,7 @@ class Connection(
 
         private fun view(topic: Topic) = when (topic) {
             Topic.Weather -> View.WEATHER
+            Topic.Ai -> View.AI
             Topic.Perf -> View.PERFORMANCE
             Topic.Processes -> View.PROCESSES
         }
@@ -192,6 +196,55 @@ class Connection(
 
         private fun perf(event: PhoneEvent.Performance) = event.value.let {
             Perf(it.cpu, it.gpu, it.memory, it.disk, it.netDown.toLong(), it.netUp.toLong())
+        }
+
+        private fun session(it: uniffi.sidedesk_core.AiSessionInfo) = AiSession(
+            id = it.id,
+            tool = when (it.tool) {
+                uniffi.sidedesk_core.AiTool.CLAUDE_CODE -> AiTool.ClaudeCode
+                uniffi.sidedesk_core.AiTool.CODEX -> AiTool.Codex
+                uniffi.sidedesk_core.AiTool.UNKNOWN -> AiTool.Unknown
+            },
+            title = it.title,
+            project = it.project,
+            state = when (it.state) {
+                uniffi.sidedesk_core.AiState.WORKING -> AiState.Working
+                uniffi.sidedesk_core.AiState.WAITING -> AiState.Waiting
+                uniffi.sidedesk_core.AiState.DONE -> AiState.Done
+                uniffi.sidedesk_core.AiState.UNKNOWN -> AiState.Unknown
+            },
+            since = it.since.toLong(),
+            open = it.open,
+        )
+
+        private fun alert(it: uniffi.sidedesk_core.AiAlertInfo) = AiAlert(
+            id = it.id.toLong(),
+            sessionId = it.sessionId,
+            title = it.title,
+            kind = when (it.kind) {
+                uniffi.sidedesk_core.AiAlertKind.DONE -> AlertKind.Done
+                uniffi.sidedesk_core.AiAlertKind.WAITING -> AlertKind.Waiting
+                uniffi.sidedesk_core.AiAlertKind.UNKNOWN -> AlertKind.Unknown
+            },
+            at = it.at.toLong(),
+        )
+
+        /** 받은 적 없는 쪽은 모름으로 둔다. */
+        private fun forge(it: uniffi.sidedesk_core.ForgeInfo?) = if (it == null) {
+            ForgeCounts(ForgeState.Unknown, 0, 0, 0)
+        } else {
+            ForgeCounts(
+                state = when (it.state) {
+                    uniffi.sidedesk_core.ForgeState.OK -> ForgeState.Ok
+                    uniffi.sidedesk_core.ForgeState.MISSING -> ForgeState.Missing
+                    uniffi.sidedesk_core.ForgeState.SIGNED_OUT -> ForgeState.SignedOut
+                    uniffi.sidedesk_core.ForgeState.FAILED -> ForgeState.Failed
+                    uniffi.sidedesk_core.ForgeState.UNKNOWN -> ForgeState.Unknown
+                },
+                reviews = it.reviews.toInt(),
+                mine = it.mine.toInt(),
+                notices = it.notices.toInt(),
+            )
         }
 
         private fun sky(sky: uniffi.sidedesk_core.Sky) = when (sky) {

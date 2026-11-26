@@ -31,6 +31,14 @@ interface ComputerLink {
 
     val weather: StateFlow<Weather?>
 
+    /** AI 세션 목록. 받은 적 없으면 null */
+    val sessions: StateFlow<List<AiSession>?>
+
+    val forge: StateFlow<Forge?>
+
+    /** 세션 알림. 버리지 않는다. 한 연결 안의 같은 id 는 한 번만 온다. */
+    val alerts: SharedFlow<AiAlert>
+
     val killResults: SharedFlow<KillResult>
 
     fun start()

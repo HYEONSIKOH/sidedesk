@@ -24,6 +24,9 @@ class PhoneLink(context: Context, private val keys: KeyFiles) : ComputerLink {
     override val perf = owner.perf
     override val processes = owner.processes
     override val weather = owner.weather
+    override val sessions = owner.sessions
+    override val forge = owner.forge
+    override val alerts = owner.alerts
     override val killResults = owner.killResults
 
     // 줄이 하나라서 이전 소켓을 닫은 뒤에만 같은 이름을 다시 연다.
