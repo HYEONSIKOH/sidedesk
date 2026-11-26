@@ -4,6 +4,7 @@ use std::time::{Duration, Instant};
 
 use sidedesk_core::{Body, Event, Hello, KEY_LEN, Role, Session, SessionError};
 
+use crate::hub::{Hub, Subscriber};
 use crate::port::{
     Active, ComputerName, Conn, Keys, Link, Note, PairRequests, Phone, PortError, Prompt, Received,
     Report,
@@ -73,6 +74,7 @@ pub struct Context<'a> {
     pub report: &'a dyn Report,
     pub requests: &'a PairRequests,
     pub active: &'a Active,
+    pub hub: &'a Hub,
     pub timing: Timing,
 }
 
@@ -130,7 +132,13 @@ fn run(
     let mut answer: Option<Receiver<bool>> = None;
     // 숫자가 뜬 뒤 양쪽 답을 기다리는 마감. 컴퓨터가 먼저 답해도 폰의 답을 기다리며 남는다.
     let mut deadline: Option<Instant> = None;
+    let mut subscriber: Option<Subscriber> = None;
     loop {
+        if let Some(subscriber) = &subscriber {
+            for body in subscriber.take() {
+                session.send(body)?;
+            }
+        }
         let output = session.take_output();
         if !output.is_empty() {
             conn.send(&output)?;
@@ -158,6 +166,7 @@ fn run(
                         id,
                     });
                     peer = Some(key);
+                    subscriber = Some(context.hub.join());
                     fill_record(context, phone, key);
                     let computer_name = context.name.read()?;
                     session.send(Body::Hello(Hello { computer_name }))?;
@@ -169,6 +178,19 @@ fn run(
                             confirming.set(true);
                         }
                     }
+                }
+                Event::Message(Body::Subscribe(subscribe)) => {
+                    if let Some(subscriber) = &subscriber {
+                        subscriber.set(&subscribe);
+                    }
+                }
+                Event::Message(Body::KillProcess(command)) if subscriber.is_some() => {
+                    // Ping 주기를 기다리지 않고, 명령마다 등록이 남아 있는지 본다.
+                    if !is_trusted(context, peer)? {
+                        return Err(ServeError::Forgotten);
+                    }
+                    let result = context.hub.kill(&command);
+                    session.send(Body::CommandResult(result))?;
                 }
                 Event::Message(_) => {}
             }
@@ -202,13 +224,7 @@ fn run(
         }
         if Instant::now() >= next_ping {
             // 그 사이 짝을 끊었으면 더 붙어 있지 않는다.
-            if let Some(key) = peer
-                && !context
-                    .keys
-                    .trusted()?
-                    .iter()
-                    .any(|paired| paired.key == key)
-            {
+            if !is_trusted(context, peer)? {
                 return Err(ServeError::Forgotten);
             }
             session.ping()?;
@@ -234,6 +250,18 @@ fn run(
             Received::Closed => return Ok(Ended::Closed),
         }
     }
+}
+
+/// 아직 상대를 모르면(준비 전) 막지 않는다.
+fn is_trusted(context: &Context, peer: Option<[u8; KEY_LEN]>) -> Result<bool, ServeError> {
+    let Some(key) = peer else {
+        return Ok(true);
+    };
+    Ok(context
+        .keys
+        .trusted()?
+        .iter()
+        .any(|paired| paired.key == key))
 }
 
 /// 이름이나 일련번호 없이 저장된 옛 기록을 채운다. 실패해도 연결은 잇는다.

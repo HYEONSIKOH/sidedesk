@@ -2,7 +2,10 @@
 
 use std::sync::{Arc, Mutex, MutexGuard};
 
-use crate::{Body, Event, Identity, KEY_LEN, Role, Session, SessionError};
+use crate::{
+    Body, CommandResult, Event, Identity, KEY_LEN, KillProcess, Performance, Process, Processes,
+    Role, Session, SessionError, Subscribe,
+};
 
 #[derive(uniffi::Record)]
 pub struct KeyPair {
@@ -21,10 +24,103 @@ pub fn generate_key_pair() -> KeyPair {
 
 #[derive(Debug, PartialEq, uniffi::Enum)]
 pub enum PhoneEvent {
-    PairingCode { code: String },
-    Paired { computer_key: Vec<u8> },
-    Ready { computer_key: Vec<u8> },
-    ComputerName { name: String },
+    PairingCode {
+        code: String,
+    },
+    Paired {
+        computer_key: Vec<u8>,
+    },
+    Ready {
+        computer_key: Vec<u8>,
+    },
+    ComputerName {
+        name: String,
+    },
+    Performance {
+        value: PerformanceInfo,
+    },
+    Processes {
+        items: Vec<ProcessInfo>,
+    },
+    CommandResult {
+        request_id: u64,
+        ok: bool,
+        reason: String,
+    },
+}
+
+/// 폰에 보이는 자료. 시계는 폰이 혼자 그리므로 없다.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, uniffi::Enum)]
+pub enum View {
+    Performance,
+    Processes,
+}
+
+impl From<View> for crate::View {
+    fn from(view: View) -> Self {
+        match view {
+            View::Performance => Self::Performance,
+            View::Processes => Self::Processes,
+        }
+    }
+}
+
+/// 비율은 0~100, 네트워크는 초당 바이트.
+#[derive(Clone, Debug, PartialEq, uniffi::Record)]
+pub struct PerformanceInfo {
+    pub cpu: f32,
+    pub gpu: Option<f32>,
+    pub memory: f32,
+    pub memory_used: u64,
+    pub memory_total: u64,
+    pub disk: f32,
+    pub net_down: u64,
+    pub net_up: u64,
+}
+
+impl From<Performance> for PerformanceInfo {
+    fn from(p: Performance) -> Self {
+        Self {
+            cpu: p.cpu,
+            gpu: p.gpu,
+            memory: p.memory,
+            memory_used: p.memory_used,
+            memory_total: p.memory_total,
+            disk: p.disk,
+            net_down: p.net_down,
+            net_up: p.net_up,
+        }
+    }
+}
+
+/// cpu 는 코어 하나가 100, memory 는 바이트, started_at 은 유닉스 밀리초.
+#[derive(Clone, Debug, PartialEq, uniffi::Record)]
+pub struct ProcessInfo {
+    pub pid: u32,
+    pub name: String,
+    pub cpu: f32,
+    pub memory: u64,
+    pub started_at: u64,
+}
+
+impl From<Process> for ProcessInfo {
+    fn from(p: Process) -> Self {
+        Self {
+            pid: p.pid,
+            name: p.name,
+            cpu: p.cpu,
+            memory: p.memory,
+            started_at: p.started_at,
+        }
+    }
+}
+
+/// 명령 번호. 같은 명령을 다시 보낼 때는 같은 번호를 쓴다.
+#[uniffi::export]
+pub fn new_request_id() -> u64 {
+    let mut bytes = [0; 8];
+    getrandom::fill(&mut bytes).expect("난수를 얻지 못함");
+    u64::from_le_bytes(bytes)
 }
 
 #[derive(Debug, PartialEq, thiserror::Error, uniffi::Error)]
@@ -121,6 +217,23 @@ impl PhoneSession {
                 Event::Message(Body::Hello(hello)) => Some(PhoneEvent::ComputerName {
                     name: hello.computer_name,
                 }),
+                Event::Message(Body::Performance(value)) => Some(PhoneEvent::Performance {
+                    value: value.into(),
+                }),
+                Event::Message(Body::Processes(Processes { items })) => {
+                    Some(PhoneEvent::Processes {
+                        items: items.into_iter().map(Into::into).collect(),
+                    })
+                }
+                Event::Message(Body::CommandResult(CommandResult {
+                    request_id,
+                    ok,
+                    reason,
+                })) => Some(PhoneEvent::CommandResult {
+                    request_id,
+                    ok,
+                    reason,
+                }),
                 Event::Message(_) => continue,
             };
         }
@@ -128,6 +241,33 @@ impl PhoneSession {
 
     pub fn confirm(&self, same: bool) -> Result<(), LinkError> {
         Ok(self.lock().confirm(same)?)
+    }
+
+    /// 지금 보이는 것 전체를 알린다. 바뀔 때마다, 다시 붙을 때마다 보낸다.
+    /// 화면이 꺼지거나 앱이 뒤로 가면 `main` 없이 빈 `tiles` 로 보낸다.
+    pub fn subscribe(&self, main: Option<View>, tiles: Vec<View>) -> Result<(), LinkError> {
+        let main = main.map_or(crate::View::Nothing, Into::into) as i32;
+        let tiles = tiles
+            .into_iter()
+            .map(|view| crate::View::from(view) as i32)
+            .collect();
+        Ok(self
+            .lock()
+            .send(Body::Subscribe(Subscribe { main, tiles }))?)
+    }
+
+    /// 사람이 한 번 더 확인한 뒤에 부른다. 결과는 `CommandResult` 로 온다.
+    pub fn kill_process(
+        &self,
+        request_id: u64,
+        pid: u32,
+        started_at: u64,
+    ) -> Result<(), LinkError> {
+        Ok(self.lock().send(Body::KillProcess(KillProcess {
+            request_id,
+            pid,
+            started_at,
+        }))?)
     }
 }
 
@@ -174,6 +314,59 @@ mod tests {
             session.next_event(),
             Some(PhoneEvent::ComputerName { name: "맥".into() })
         );
+    }
+
+    #[test]
+    fn subscribes_kills_and_reads_values() {
+        let computer = Identity::generate();
+        let phone = generate_key_pair();
+        let phone_key: [u8; KEY_LEN] = phone.public_key.clone().try_into().unwrap();
+        let session = PhoneSession::new(
+            phone.private_key,
+            phone.public_key,
+            vec![computer.public.to_vec()],
+            true,
+        )
+        .unwrap();
+        let mut c = Session::new(Role::Computer, &computer, vec![phone_key], false);
+        for _ in 0..3 {
+            session.feed(c.take_output()).unwrap();
+            c.feed(&session.take_output()).unwrap();
+        }
+        session
+            .subscribe(Some(View::Processes), vec![View::Performance])
+            .unwrap();
+        session.kill_process(9, 42, 1_000).unwrap();
+        c.feed(&session.take_output()).unwrap();
+        let mut got = Vec::new();
+        while let Some(event) = c.next_event() {
+            got.push(event);
+        }
+        assert!(got.contains(&Event::Message(Body::Subscribe(Subscribe {
+            main: crate::View::Processes as i32,
+            tiles: vec![crate::View::Performance as i32],
+        }))));
+        assert!(got.contains(&Event::Message(Body::KillProcess(KillProcess {
+            request_id: 9,
+            pid: 42,
+            started_at: 1_000,
+        }))));
+        c.send(Body::Performance(Performance {
+            cpu: 12.5,
+            gpu: None,
+            ..Default::default()
+        }))
+        .unwrap();
+        session.feed(c.take_output()).unwrap();
+        assert!(matches!(
+            session.next_event(),
+            Some(PhoneEvent::Ready { .. })
+        ));
+        assert!(matches!(
+            session.next_event(),
+            Some(PhoneEvent::Performance { value }) if value.cpu == 12.5 && value.gpu.is_none()
+        ));
+        assert_ne!(new_request_id(), new_request_id());
     }
 
     #[test]

@@ -32,6 +32,8 @@ const FRESH: Duration = Duration::from_secs(2);
 const CONNECT_LIMIT: Duration = Duration::from_secs(10);
 const CHANNEL_LIMIT: Duration = Duration::from_secs(5);
 const READ_WAIT: Duration = Duration::from_millis(250);
+/// 읽을 것이 없을 때 다시 볼 간격. 짧으면 연결 하나가 CPU 를 깨워 먹는다.
+const READ_POLL: Duration = Duration::from_millis(20);
 const WRITE_LIMIT: Duration = Duration::from_secs(5);
 const PREFIX: &str = "ble:";
 
@@ -614,7 +616,7 @@ impl Conn for BleConn {
             if start.elapsed() >= READ_WAIT {
                 return Ok(Received::Nothing);
             }
-            thread::sleep(Duration::from_millis(5));
+            thread::sleep(READ_POLL);
         }
     }
 

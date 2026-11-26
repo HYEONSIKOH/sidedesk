@@ -7,9 +7,11 @@ use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
 use sidedesk_core::{Body, Event, Identity, KEY_LEN, Role, Session, beacon};
+use sidedesk_core::{Performance, Process};
 use sidedesk_domain::{
-    Active, ComputerName, Conn, Context, Ended, Keys, Link, Note, PairRequests, Paired, Phone,
-    PhoneLinks, PortError, Prompt, Received, Report, ServeError, Timing, keep_connected, serve,
+    Active, Cadence, ComputerName, Conn, Context, Ended, Hub, Keys, Link, Meter, Note,
+    PairRequests, Paired, Phone, PhoneLinks, PortError, ProcessTable, Prompt, Received, Report,
+    ServeError, Timing, keep_connected, serve,
 };
 
 struct Pipe {
@@ -223,7 +225,27 @@ impl Report for Notes {
     }
 }
 
+/// 이 시험들은 구독하지 않으므로 수집기는 불리지 않는다.
+struct Unused;
+
+impl Meter for Unused {
+    fn performance(&self) -> Result<Performance, PortError> {
+        unreachable!()
+    }
+}
+
+impl ProcessTable for Unused {
+    fn processes(&self) -> Result<Vec<Process>, PortError> {
+        unreachable!()
+    }
+
+    fn kill(&self, _pid: u32, _started_at: u64) -> Result<(), PortError> {
+        unreachable!()
+    }
+}
+
 struct World {
+    hub: Hub,
     computer: MemoryKeys,
     requests: PairRequests,
     person: Person,
@@ -243,6 +265,7 @@ impl World {
             })
             .collect();
         Self {
+            hub: Hub::new(Box::new(Unused), Box::new(Unused), Cadence::default()),
             computer: MemoryKeys {
                 identity: Identity::generate(),
                 trusted: Mutex::new(trusted),
@@ -267,6 +290,7 @@ impl World {
             report: &self.notes,
             requests: &self.requests,
             active: &self.active,
+            hub: &self.hub,
             timing: self.timing,
         }
     }
