@@ -334,11 +334,14 @@ impl Session {
         let length = transport
             .read_message(body, &mut plain)
             .map_err(|_| SessionError::Broken("복호화 실패"))?;
-        let body = Envelope::decode(&plain[..length])
-            .ok()
-            .and_then(|envelope| envelope.body)
-            .ok_or(SessionError::Broken("읽을 수 없는 메시지"))?;
-        self.handle(body)
+        let envelope = Envelope::decode(&plain[..length])
+            .map_err(|_| SessionError::Broken("읽을 수 없는 메시지"))?;
+        match envelope.body {
+            Some(body) => self.handle(body),
+            // 새 버전이 더한 메시지. 준비된 뒤에는 모르는 것을 버린다.
+            None if matches!(self.stage, Stage::Ready) => Ok(()),
+            None => Err(SessionError::Broken("읽을 수 없는 메시지")),
+        }
     }
 
     fn handle(&mut self, body: Body) -> Result<(), SessionError> {
@@ -408,7 +411,15 @@ impl Session {
                 self.finish_pairing();
                 Ok(())
             }
-            (Stage::Ready, body @ Body::Hello(_)) => {
+            (
+                Stage::Ready,
+                body @ (Body::Hello(_)
+                | Body::Subscribe(_)
+                | Body::KillProcess(_)
+                | Body::Performance(_)
+                | Body::Processes(_)
+                | Body::CommandResult(_)),
+            ) => {
                 self.events.push_back(Event::Message(body));
                 Ok(())
             }
@@ -450,14 +461,17 @@ impl Session {
     }
 
     fn write(&mut self, body: Body) -> Result<(), SessionError> {
-        let plain = Envelope { body: Some(body) }.encode_to_vec();
+        self.write_plain(&Envelope { body: Some(body) }.encode_to_vec())
+    }
+
+    fn write_plain(&mut self, plain: &[u8]) -> Result<(), SessionError> {
         if plain.len() + TAG_LEN > MAX_BODY {
             return Err(SessionError::Broken("보낼 메시지가 너무 큼"));
         }
         let transport = self.transport.as_mut().expect("핸드셰이크 끝");
         let mut message = vec![0; plain.len() + TAG_LEN];
         let length = transport
-            .write_message(&plain, &mut message)
+            .write_message(plain, &mut message)
             .map_err(|_| SessionError::Broken("암호화 실패"))?;
         self.out.extend_from_slice(&frame(&message[..length]));
         Ok(())
@@ -643,6 +657,23 @@ mod tests {
         pair.computer.send(Body::Ping(Default::default())).unwrap();
         pair.pump().unwrap();
         assert_eq!(pair.phone_events.last(), Some(&Event::Message(hello)));
+    }
+
+    #[test]
+    fn new_messages_pass_and_unknown_ones_are_skipped() {
+        let (computer, phone) = keys();
+        let mut pair = known(&computer, &phone);
+        // 새 버전이 더한 99번 메시지(빈 본문)
+        pair.computer.write_plain(&[0x9a, 0x06, 0x00]).unwrap();
+        let result = Body::CommandResult(crate::CommandResult {
+            request_id: 7,
+            ok: true,
+            reason: String::new(),
+        });
+        pair.computer.send(result.clone()).unwrap();
+        pair.pump().unwrap();
+        assert_eq!(pair.phone_events.last(), Some(&Event::Message(result)));
+        assert!(pair.phone.is_ready());
     }
 
     #[test]

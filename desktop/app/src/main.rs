@@ -7,15 +7,15 @@ use std::sync::mpsc::{self, Receiver};
 use std::thread;
 
 use sidedesk_domain::{
-    Active, ComputerName, Context, Ended, Keys, Note, PairRequests, PhoneLinks, Prompt, Report,
-    Timing, keep_connected, serve,
+    Active, Cadence, ComputerName, Context, Ended, Hub, Keys, Note, PairRequests, PhoneLinks,
+    Prompt, Report, Timing, keep_connected, serve,
 };
 use sidedesk_link::AdbLinks;
 #[cfg(target_os = "macos")]
-use sidedesk_mac::MacName as Name;
+use sidedesk_mac::{MacMeter, MacName as Name, MacProcesses};
 use sidedesk_window::{Board, Computer};
 #[cfg(target_os = "windows")]
-use sidedesk_windows::WindowsName as Name;
+use sidedesk_windows::{WindowsMeter, WindowsName as Name, WindowsProcesses};
 
 use crate::store::FileKeys;
 
@@ -65,10 +65,29 @@ impl Prompt for Terminal {
     }
 }
 
+#[cfg(target_os = "macos")]
+fn hub() -> Hub {
+    Hub::new(
+        Box::new(MacMeter::default()),
+        Box::new(MacProcesses::default()),
+        Cadence::default(),
+    )
+}
+
+#[cfg(target_os = "windows")]
+fn hub() -> Hub {
+    Hub::new(
+        Box::new(WindowsMeter),
+        Box::new(WindowsProcesses),
+        Cadence::default(),
+    )
+}
+
 fn run() -> Result<(), String> {
     let folder = store::folder().map_err(|e| e.0)?;
     let _lock = store::lock(&folder).map_err(|e| e.0)?;
     let keys = FileKeys::new(folder);
+    let hub = hub();
     let context = Context {
         name: &Name,
         keys: &keys,
@@ -76,10 +95,15 @@ fn run() -> Result<(), String> {
         report: &Terminal,
         requests: &PairRequests::default(),
         active: &Active::default(),
+        hub: &hub,
         timing: Timing::default(),
     };
     println!("기기를 기다리는 중. 끝내려면 Ctrl+C");
-    keep_connected(&[&AdbLinks::default()], &context, &AtomicBool::new(false));
+    thread::scope(|scope| {
+        scope.spawn(|| hub.run());
+        keep_connected(&[&AdbLinks::default()], &context, &AtomicBool::new(false));
+        hub.stop();
+    });
     Ok(())
 }
 
@@ -100,6 +124,8 @@ fn pair() -> Result<(), String> {
         _ => return Err("기기를 하나만 꽂고 다시 실행".to_owned()),
     };
     let mut conn = links.connect(&phone.id).map_err(|e| e.0)?;
+    // 등록만 하므로 구독이 없고 수집도 돌리지 않는다.
+    let hub = hub();
     let context = Context {
         name: &Name,
         keys: &keys,
@@ -107,6 +133,7 @@ fn pair() -> Result<(), String> {
         report: &Terminal,
         requests: &PairRequests::default(),
         active: &Active::default(),
+        hub: &hub,
         timing: Timing::default(),
     };
     match serve(
@@ -155,8 +182,10 @@ fn window() -> Result<(), String> {
         report: board,
         requests,
         active: Box::leak(Box::default()),
+        hub: Box::leak(Box::new(hub())),
         timing: Timing::default(),
     }));
+    thread::spawn(|| context.hub.run());
     thread::spawn(move || {
         let _lock = lock;
         let usb = AdbLinks::default();
