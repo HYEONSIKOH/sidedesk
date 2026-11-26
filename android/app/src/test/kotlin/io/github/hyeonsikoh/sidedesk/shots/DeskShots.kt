@@ -22,6 +22,10 @@ import io.github.hyeonsikoh.sidedesk.ai.AiScreenState
 import io.github.hyeonsikoh.sidedesk.ai.ForgeTab
 import io.github.hyeonsikoh.sidedesk.clock.ClockState
 import io.github.hyeonsikoh.sidedesk.desk.AiPart
+import io.github.hyeonsikoh.sidedesk.desk.ShortcutPart
+import io.github.hyeonsikoh.sidedesk.link.Shortcut
+import io.github.hyeonsikoh.sidedesk.link.Toggle
+import io.github.hyeonsikoh.sidedesk.shortcut.ShortcutState
 import io.github.hyeonsikoh.sidedesk.link.AiAlert
 import io.github.hyeonsikoh.sidedesk.link.AiSession
 import io.github.hyeonsikoh.sidedesk.link.AiState
@@ -110,6 +114,19 @@ class DeskShots(private val device: String, private val width: Int, private val 
             forge = Forge(ForgeCounts(ForgeState.Ok, 0, 0, 2), ForgeCounts(ForgeState.SignedOut, 0, 0, 0)),
         )
         val ALERT = AiAlert(7, "3", "문서 정리", AlertKind.Done, NOW)
+
+        private fun key(id: Int, icon: String, color: String, toggle: Toggle = Toggle.None, system: Boolean = false) =
+            Shortcut(id, "", icon, color, toggle, system)
+
+        /** 시안 넷째 그림의 열한 개 */
+        val KEYS = ShortcutState(
+            items = listOf(
+                key(1, "terminal", "slate"), key(2, "folder", "green"), key(3, "code", "purple"), key(4, "browser", "orange"),
+                key(5, "calculator", "teal"), key(6, "settings", "gray"), key(7, "activity", "olive"), key(8, "music", "rose"),
+                key(9, "volume", "sand", Toggle.On, system = true), key(10, "dnd", "sky", Toggle.Off, system = true), key(11, "lock", "gray", system = true),
+            ),
+        )
+        private val MORE = listOf(key(12, "file", "slate"), key(13, "star", "sand"), key(14, "bolt", "orange"), key(15, "mystery", "unknown"))
         private const val SHOT = "shot"
     }
 
@@ -147,12 +164,20 @@ class DeskShots(private val device: String, private val width: Int, private val 
         ClockState(face = face, theme = theme, picking = picking, via = if (dimmed) null else Via.Usb, weather = weather, weatherDimmed = dimmed)
 
     /** 기기 크기의 판에 그린다. 글자 배율은 Density 로 바꾼다. */
-    private fun shot(name: String, theme: Theme, desk: DeskState, clock: ClockState, scale: Float = 1f, ai: AiScreenState = AI) {
+    private fun shot(
+        name: String,
+        theme: Theme,
+        desk: DeskState,
+        clock: ClockState,
+        scale: Float = 1f,
+        ai: AiScreenState = AI,
+        keys: ShortcutState = KEYS,
+    ) {
         current = {
             val density = LocalDensity.current
             CompositionLocalProvider(LocalDensity provides Density(density.density, scale)) {
                 Box(Modifier.requiredSize(width.dp, height.dp).testTag(SHOT)) {
-                    SideDeskTheme(theme) { DeskScreen(desk, ClockPart(clock, { NOW }, {}, {}, {}, PICK), NONE, AiPart(ai) {}) }
+                    SideDeskTheme(theme) { DeskScreen(desk, ClockPart(clock, { NOW }, {}, {}, {}, PICK), NONE, AiPart(ai) {}, ShortcutPart(keys) {}) }
                 }
             }
         }
@@ -180,6 +205,12 @@ class DeskShots(private val device: String, private val width: Int, private val 
             shot("ai-lost", theme, desk(Screen.Ai, dimmed = true), clock(theme = theme, dimmed = true), ai = AI.copy(dimmed = true))
             shot("ai-alert-card", theme, desk(Screen.Ai), clock(theme = theme), ai = AI.copy(alert = ALERT))
             shot("home-ai-alert", theme, desk(), clock(theme = theme), ai = AI.copy(alert = ALERT))
+            shot("keys", theme, desk(Screen.Shortcuts), clock(theme = theme))
+            shot("keys-empty", theme, desk(Screen.Shortcuts), clock(theme = theme), keys = ShortcutState(items = emptyList()))
+            shot("keys-many", theme, desk(Screen.Shortcuts), clock(theme = theme), keys = KEYS.copy(items = KEYS.items!! + MORE))
+            shot("keys-failed", theme, desk(Screen.Shortcuts), clock(theme = theme), keys = KEYS.copy(notice = "터미널을 실행하지 못했습니다. 앱을 찾지 못했습니다"))
+            shot("keys-lost", theme, desk(Screen.Shortcuts, dimmed = true), clock(theme = theme, dimmed = true), keys = KEYS.copy(dimmed = true))
+            shot("keys-named", theme, desk(Screen.Shortcuts), clock(theme = theme), keys = KEYS.copy(items = KEYS.items!!.map { it.copy(name = it.name.ifEmpty { "이름" }) }))
             shot("home-ai-idle", theme, desk(), clock(theme = theme), ai = AiScreenState(sessions = emptyList(), busy = 0))
             shot("processes", theme, desk(Screen.Processes), clock(theme = theme))
         }
@@ -194,6 +225,7 @@ class DeskShots(private val device: String, private val width: Int, private val 
             }
             shot("font$scale-perf", Theme.Dark, desk(Screen.Perf), clock(theme = Theme.Dark), scale)
             shot("font$scale-ai", Theme.Dark, desk(Screen.Ai), clock(theme = Theme.Dark), scale)
+            shot("font$scale-keys-named", Theme.Dark, desk(Screen.Shortcuts), clock(theme = Theme.Dark), scale, keys = KEYS.copy(items = KEYS.items!!.map { it.copy(name = it.name.ifEmpty { "이름" }) }))
             shot("font$scale-home-ai-alert", Theme.Dark, desk(), clock(theme = Theme.Dark), scale, AI.copy(alert = ALERT))
             shot("font$scale-home-picking", Theme.Dark, desk(), clock(Face.Digits, Theme.Dark, picking = true), scale)
         }
