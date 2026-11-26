@@ -4,7 +4,9 @@ use std::time::{Duration, Instant};
 
 use sidedesk_core::{Body, Event, Hello, Role, Session, SessionError};
 
-use crate::port::{ComputerName, Conn, Keys, Note, PortError, Prompt, Received, Report};
+use crate::port::{
+    ComputerName, Conn, Keys, Note, PairRequests, Phone, PortError, Prompt, Received, Report,
+};
 
 #[derive(Clone, Copy, Debug)]
 pub struct Timing {
@@ -39,10 +41,12 @@ pub enum ServeError {
     Session(#[from] SessionError),
     #[error(transparent)]
     Port(#[from] PortError),
-    #[error("폰이 응답하지 않음")]
+    #[error("기기가 응답하지 않습니다")]
     Silent,
-    #[error("짝 맺기 숫자를 확인하지 않음")]
+    #[error("등록 번호를 확인하지 않음")]
     NoAnswer,
+    #[error("등록을 해제함")]
+    Forgotten,
 }
 
 impl ServeError {
@@ -52,7 +56,7 @@ impl ServeError {
             self,
             Self::Session(
                 SessionError::NotPaired | SessionError::Version { .. } | SessionError::Rejected
-            )
+            ) | Self::Forgotten
         )
     }
 }
@@ -62,19 +66,28 @@ pub struct Context<'a> {
     pub keys: &'a dyn Keys,
     pub prompt: &'a dyn Prompt,
     pub report: &'a dyn Report,
+    pub requests: &'a PairRequests,
     pub timing: Timing,
 }
 
 /// 폰 하나와 연결을 맺고, 끊길 때까지 살아 있게 한다.
 pub fn serve(
-    phone: &str,
+    phone: &Phone,
     conn: &mut dyn Conn,
     context: &Context,
     pairing: bool,
     stop: &AtomicBool,
 ) -> Result<Ended, ServeError> {
     let identity = context.keys.identity()?;
-    let mut session = Session::new(Role::Computer, &identity, context.keys.trusted()?, pairing);
+    let trusted = context
+        .keys
+        .trusted()?
+        .into_iter()
+        .map(|paired| paired.key)
+        .collect();
+    let mut session = Session::new(Role::Computer, &identity, trusted, pairing);
+    let id = phone.id.as_str();
+    let mut peer = None;
     let mut buffer = vec![0; 16 * 1024];
     let mut heard = Instant::now();
     let mut next_ping = Instant::now() + context.timing.ping;
@@ -89,17 +102,34 @@ pub fn serve(
         while let Some(event) = session.next_event() {
             match event {
                 Event::PairingCode(code) => {
-                    answer = Some(context.prompt.ask(phone, &code));
+                    answer = Some(context.prompt.ask(id, &code));
                     deadline = Some(Instant::now() + context.timing.answer);
                 }
                 Event::Paired { peer } => {
-                    context.keys.trust(peer)?;
-                    context.report.note(phone, Note::Paired);
+                    context
+                        .keys
+                        .trust(peer, phone.model.as_deref().unwrap_or(id), id)?;
+                    context.report.note(id, Note::Paired { key: peer });
                 }
-                Event::Ready { .. } => {
+                Event::Ready { peer: key } => {
+                    peer = Some(key);
+                    // 이름이나 일련번호 없이 저장된 옛 기록을 채운다. 실패해도 연결은 잇는다.
+                    let saved = context.keys.trusted()?.into_iter().find(|p| p.key == key);
+                    if let Some(saved) = saved.filter(|p| p.name.is_empty() || p.serial.is_empty())
+                    {
+                        let name = match saved.name.as_str() {
+                            "" => phone.model.as_deref().unwrap_or(id),
+                            name => name,
+                        };
+                        let serial = match saved.serial.as_str() {
+                            "" => id,
+                            serial => serial,
+                        };
+                        let _ = context.keys.update(key, name, serial);
+                    }
                     let computer_name = context.name.read()?;
                     session.send(Body::Hello(Hello { computer_name }))?;
-                    context.report.note(phone, Note::Connected);
+                    context.report.note(id, Note::Connected { key });
                 }
                 Event::Message(_) => {}
             }
@@ -132,6 +162,16 @@ pub fn serve(
             }
         }
         if Instant::now() >= next_ping {
+            // 그 사이 짝을 끊었으면 더 붙어 있지 않는다.
+            if let Some(key) = peer
+                && !context
+                    .keys
+                    .trusted()?
+                    .iter()
+                    .any(|paired| paired.key == key)
+            {
+                return Err(ServeError::Forgotten);
+            }
             session.ping()?;
             next_ping = Instant::now() + context.timing.ping;
             continue;

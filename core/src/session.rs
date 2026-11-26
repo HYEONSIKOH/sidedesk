@@ -30,11 +30,13 @@ pub enum Role {
 
 #[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
 pub enum SessionError {
-    #[error("버전이 다름 (내 버전 {mine}, 상대 {theirs})")]
+    #[error(
+        "버전이 달라 연결할 수 없습니다. 두 앱을 최신 버전으로 업데이트하세요 (내 버전 {mine}, 상대 {theirs})"
+    )]
     Version { mine: u8, theirs: u8 },
-    #[error("짝을 맺지 않은 상대")]
+    #[error("등록되지 않은 기기입니다. 등록을 눌러 다시 등록하세요")]
     NotPaired,
-    #[error("짝 맺기를 거절함")]
+    #[error("등록을 취소함")]
     Rejected,
     #[error("읽을 수 없는 연결: {0}")]
     Broken(&'static str),
@@ -380,7 +382,7 @@ impl Session {
             (Stage::AwaitReveal { commit: promise }, Body::PairReveal(reveal)) => {
                 self.theirs = exact(reveal.value)?;
                 if commit(&self.theirs) != promise {
-                    return Err(SessionError::Broken("짝 맺기 약속이 맞지 않음"));
+                    return Err(SessionError::Broken("등록 확인값이 맞지 않음"));
                 }
                 self.show_code();
                 Ok(())
@@ -473,7 +475,7 @@ fn commit(nonce: &[u8]) -> Vec<u8> {
 fn exact(value: Vec<u8>) -> Result<[u8; NONCE_LEN], SessionError> {
     value
         .try_into()
-        .map_err(|_| SessionError::Broken("짝 맺기 값의 길이가 틀림"))
+        .map_err(|_| SessionError::Broken("등록 값의 길이가 틀림"))
 }
 
 #[cfg(test)]
@@ -759,7 +761,7 @@ mod tests {
         };
         assert_eq!(
             p.feed(&c.take_output()),
-            Err(SessionError::Broken("짝 맺기 약속이 맞지 않음"))
+            Err(SessionError::Broken("등록 확인값이 맞지 않음"))
         );
     }
 
