@@ -13,7 +13,7 @@ use sidedesk_domain::{
     Active, Cadence, ComputerName, Context, Ended, Hub, Keys, Note, PairRequests, PhoneLinks,
     Prompt, Report, Timing, keep_connected, serve,
 };
-use sidedesk_link::AdbLinks;
+use sidedesk_link::{AdbLinks, UsbmuxLinks};
 #[cfg(target_os = "macos")]
 use sidedesk_mac::{MacGet, MacKeychain, MacMeter, MacName as Name, MacProcesses};
 use sidedesk_window::{Board, Computer};
@@ -123,6 +123,15 @@ fn hub(folder: &Path) -> (Hub, Arc<WeatherPrefs>) {
     (hub, prefs)
 }
 
+/// 아이폰 USB. 맥은 usbmuxd 유닉스 소켓, 윈도우는 애플 장치 서비스(127.0.0.1:27015)에 접속만 한다.
+fn iphones() -> UsbmuxLinks {
+    #[cfg(unix)]
+    let dial = sidedesk_link::UnixDial::default();
+    #[cfg(windows)]
+    let dial = sidedesk_link::TcpDial::default();
+    UsbmuxLinks::new(Box::new(dial), sidedesk_core::IOS_USB_PORT)
+}
+
 fn run() -> Result<(), String> {
     let folder = store::folder().map_err(|e| e.0)?;
     let _lock = store::lock(&folder).map_err(|e| e.0)?;
@@ -142,7 +151,11 @@ fn run() -> Result<(), String> {
     thread::scope(|scope| {
         scope.spawn(|| hub.run());
         scope.spawn(|| hub.run_weather());
-        keep_connected(&[&AdbLinks::default()], &context, &AtomicBool::new(false));
+        keep_connected(
+            &[&AdbLinks::default(), &iphones()],
+            &context,
+            &AtomicBool::new(false),
+        );
         hub.stop();
     });
     Ok(())
@@ -154,15 +167,26 @@ fn pair() -> Result<(), String> {
     // 등록만 하므로 구독이 없고 수집도 돌리지 않는다. 날씨 설정(키체인)도 열지 않는다.
     let hub = collectors();
     let keys = FileKeys::new(folder);
-    let links = AdbLinks::default();
-    let phones: Vec<_> = links
-        .attached()
-        .map_err(|e| e.0)?
-        .into_iter()
-        .filter(|p| p.blocked.is_none())
-        .collect();
-    let phone = match phones.as_slice() {
-        [phone] => phone,
+    // 안드로이드(adb)와 아이폰(usbmux)을 합친 목록에서 하나. 한쪽을 쓸 수 없어도 다른 쪽은 본다.
+    let (adb, iphone) = (AdbLinks::default(), iphones());
+    let sources: [&dyn PhoneLinks; 2] = [&adb, &iphone];
+    let mut phones = Vec::new();
+    let mut errors = Vec::new();
+    for links in sources {
+        match links.attached() {
+            Ok(list) => phones.extend(
+                list.into_iter()
+                    .filter(|p| p.blocked.is_none())
+                    .map(|p| (links, p)),
+            ),
+            Err(error) => errors.push(error.0),
+        }
+    }
+    if errors.len() == sources.len() {
+        return Err(errors.join("; "));
+    }
+    let (links, phone) = match phones.as_slice() {
+        [one] => one,
         [] => return Err("연결된 기기가 없음".to_owned()),
         _ => return Err("기기를 하나만 꽂고 다시 실행".to_owned()),
     };
@@ -236,10 +260,11 @@ fn window() -> Result<(), String> {
     thread::spawn(move || {
         let _lock = lock;
         let usb = AdbLinks::default();
+        let iphone = iphones();
         #[cfg(target_os = "macos")]
         if in_app_bundle() {
             let air = sidedesk_mac::BleLinks::start();
-            keep_connected(&[&usb, &air], context, &AtomicBool::new(false));
+            keep_connected(&[&usb, &iphone, &air], context, &AtomicBool::new(false));
             return;
         }
         // 맥 블루투스는 Info.plist 가 있는 SideDesk.app 안에서만 쓸 수 있다.
@@ -254,7 +279,7 @@ fn window() -> Result<(), String> {
             sidedesk_domain::Source::of(sidedesk_domain::Link::Ble),
             Some("윈도우에서는 블루투스를 아직 지원하지 않습니다".to_owned()),
         );
-        keep_connected(&[&usb], context, &AtomicBool::new(false));
+        keep_connected(&[&usb, &iphone], context, &AtomicBool::new(false));
     });
     sidedesk_window::open(board, mode_file, data_folder)
 }
