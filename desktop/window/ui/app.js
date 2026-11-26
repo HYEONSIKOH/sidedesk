@@ -60,7 +60,7 @@ function render(next) {
   const registered = state.paired.map((phone) => el('tr', {},
     el('td', {}, phone.name || '이름 없음'),
     el('td', { class: 'mono' }, phone.serial || '-'),
-    el('td', {}, phone.usb ? 'USB' : '-'),
+    el('td', {}, phone.link || '-'),
     el('td', {}, pill(phone.status, phone.reason)),
     el('td', { class: 'end' }, el('button', { class: 'button danger', on: () => forget(phone) },
       confirming === phone.key ? '한 번 더 누르면 해제' : '등록 해제')),
@@ -78,6 +78,8 @@ function render(next) {
   });
   $('device-rows').replaceChildren(...registered, ...fresh);
   $('device-empty').hidden = registered.length + fresh.length > 0;
+
+  $('problems').replaceChildren(...(state.problems || []).map((text) => el('p', { class: 'notice' }, text)));
 
   const notice = $('notice');
   notice.hidden = !state.notice;

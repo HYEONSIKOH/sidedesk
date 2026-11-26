@@ -1605,6 +1605,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "objc2-core-bluetooth"
+version = "0.3.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "79b30b9eacc37434a61377866f68b27acef9fa5496f25cc9ca8b2549032e0394"
+dependencies = [
+ "bitflags",
+ "dispatch2",
+ "objc2",
+ "objc2-core-foundation",
+ "objc2-foundation",
+]
+
+[[package]]
 name = "objc2-core-data"
 version = "0.3.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2256,6 +2269,11 @@ name = "sidedesk-mac"
 version = "0.1.0"
 dependencies = [
  "core-foundation 0.9.4",
+ "dispatch2",
+ "objc2",
+ "objc2-core-bluetooth",
+ "objc2-foundation",
+ "sidedesk-core",
  "sidedesk-domain",
  "system-configuration-sys",
 ]

@@ -2,10 +2,11 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, TryRecvError};
 use std::time::{Duration, Instant};
 
-use sidedesk_core::{Body, Event, Hello, Role, Session, SessionError};
+use sidedesk_core::{Body, Event, Hello, KEY_LEN, Role, Session, SessionError};
 
 use crate::port::{
-    ComputerName, Conn, Keys, Note, PairRequests, Phone, PortError, Prompt, Received, Report,
+    Active, ComputerName, Conn, Keys, Link, Note, PairRequests, Phone, PortError, Prompt, Received,
+    Report,
 };
 
 #[derive(Clone, Copy, Debug)]
@@ -33,6 +34,8 @@ pub enum Ended {
     Stopped,
     /// 짝을 맺었다. 짝 맺기로 붙었을 때만 여기서 끝난다.
     Paired,
+    /// 같은 기기가 USB 로 붙어 있어 블루투스가 스스로 물러났다. 알릴 것이 없다.
+    Yielded,
 }
 
 #[derive(Debug, PartialEq, Eq, thiserror::Error)]
@@ -47,6 +50,8 @@ pub enum ServeError {
     NoAnswer,
     #[error("등록을 해제함")]
     Forgotten,
+    #[error("다른 컴퓨터가 이 기기를 쓰고 있거나 USB 로 붙어 있습니다")]
+    Busy,
 }
 
 impl ServeError {
@@ -67,7 +72,21 @@ pub struct Context<'a> {
     pub prompt: &'a dyn Prompt,
     pub report: &'a dyn Report,
     pub requests: &'a PairRequests,
+    pub active: &'a Active,
     pub timing: Timing,
+}
+
+/// 잡은 자리를 연결이 끝날 때 놓는다.
+struct Hold<'a> {
+    active: &'a Active,
+    key: [u8; KEY_LEN],
+    link: Link,
+}
+
+impl Drop for Hold<'_> {
+    fn drop(&mut self) {
+        self.active.release(self.key, self.link);
+    }
 }
 
 /// 폰 하나와 연결을 맺고, 끊길 때까지 살아 있게 한다.
@@ -88,6 +107,9 @@ pub fn serve(
     let mut session = Session::new(Role::Computer, &identity, trusted, pairing);
     let id = phone.id.as_str();
     let mut peer = None;
+    let mut _hold = None;
+    // 블루투스는 기기가 이 연결을 받아들였는지(첫 Pong) 본 뒤에 연결됨을 알린다.
+    let mut confirming = false;
     let mut buffer = vec![0; 16 * 1024];
     let mut heard = Instant::now();
     let mut next_ping = Instant::now() + context.timing.ping;
@@ -112,24 +134,27 @@ pub fn serve(
                     context.report.note(id, Note::Paired { key: peer });
                 }
                 Event::Ready { peer: key } => {
-                    peer = Some(key);
-                    // 이름이나 일련번호 없이 저장된 옛 기록을 채운다. 실패해도 연결은 잇는다.
-                    let saved = context.keys.trusted()?.into_iter().find(|p| p.key == key);
-                    if let Some(saved) = saved.filter(|p| p.name.is_empty() || p.serial.is_empty())
-                    {
-                        let name = match saved.name.as_str() {
-                            "" => phone.model.as_deref().unwrap_or(id),
-                            name => name,
-                        };
-                        let serial = match saved.serial.as_str() {
-                            "" => id,
-                            serial => serial,
-                        };
-                        let _ = context.keys.update(key, name, serial);
+                    // 같은 기기에 다른 길이 이미 있으면 아무것도 알리지 않고 물러난다.
+                    if !context.active.claim(key, phone.link) {
+                        return Ok(Ended::Yielded);
                     }
+                    _hold = Some(Hold {
+                        active: context.active,
+                        key,
+                        link: phone.link,
+                    });
+                    peer = Some(key);
+                    fill_record(context, phone, key);
                     let computer_name = context.name.read()?;
                     session.send(Body::Hello(Hello { computer_name }))?;
-                    context.report.note(id, Note::Connected { key });
+                    match phone.link {
+                        Link::Usb => context.report.note(id, Note::Connected { key }),
+                        Link::Ble => {
+                            session.ping()?;
+                            next_ping = Instant::now() + context.timing.ping;
+                            confirming = true;
+                        }
+                    }
                 }
                 Event::Message(_) => {}
             }
@@ -180,12 +205,44 @@ pub fn serve(
             Received::Bytes(count) => {
                 heard = Instant::now();
                 session.feed(&buffer[..count])?;
+                if confirming && let Some(key) = peer {
+                    confirming = false;
+                    context.report.note(id, Note::Connected { key });
+                }
             }
             Received::Nothing if heard.elapsed() > context.timing.silence => {
                 return Err(ServeError::Silent);
             }
             Received::Nothing => {}
+            Received::Closed if confirming => return Err(ServeError::Busy),
             Received::Closed => return Ok(Ended::Closed),
         }
+    }
+}
+
+/// 이름이나 일련번호 없이 저장된 옛 기록을 채운다. 실패해도 연결은 잇는다.
+/// 일련번호는 USB 로 붙었을 때만 채운다(블루투스 식별자는 일련번호가 아니다).
+fn fill_record(context: &Context, phone: &Phone, key: [u8; KEY_LEN]) {
+    let Ok(trusted) = context.keys.trusted() else {
+        return;
+    };
+    let Some(saved) = trusted.into_iter().find(|p| p.key == key) else {
+        return;
+    };
+    let id = phone.id.as_str();
+    let usb = phone.link == Link::Usb;
+    if !saved.name.is_empty() && (!saved.serial.is_empty() || !usb) {
+        return;
+    }
+    let name = match saved.name.as_str() {
+        "" => phone.model.as_deref().unwrap_or(if usb { id } else { "" }),
+        name => name,
+    };
+    let serial = match (saved.serial.as_str(), usb) {
+        ("", true) => id,
+        (serial, _) => serial,
+    };
+    if name != saved.name || serial != saved.serial {
+        let _ = context.keys.update(key, name, serial);
     }
 }

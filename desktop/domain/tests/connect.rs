@@ -6,10 +6,10 @@ use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
-use sidedesk_core::{Body, Event, Identity, KEY_LEN, Role, Session};
+use sidedesk_core::{Body, Event, Identity, KEY_LEN, Role, Session, beacon};
 use sidedesk_domain::{
-    ComputerName, Conn, Context, Ended, Keys, Note, PairRequests, Paired, Phone, PhoneLinks,
-    PortError, Prompt, Received, Report, ServeError, Timing, keep_connected, serve,
+    Active, ComputerName, Conn, Context, Ended, Keys, Link, Note, PairRequests, Paired, Phone,
+    PhoneLinks, PortError, Prompt, Received, Report, ServeError, Timing, keep_connected, serve,
 };
 
 struct Pipe {
@@ -62,6 +62,8 @@ enum PhoneSays {
     Ignore,
     /// 이름을 받아도 닫지 않고 계속 붙어 있는다.
     Stay,
+    /// 연결이 Ready 가 되자마자 닫는다(다른 컴퓨터가 쓰고 있는 기기).
+    Busy,
 }
 
 /// 폰 쪽 세션. 컴퓨터 이름을 받으면 연결을 닫는다(Stay 는 빼고).
@@ -87,6 +89,10 @@ fn phone(
                 Received::Closed => return events,
             }
             while let Some(event) = session.next_event() {
+                if says == PhoneSays::Busy && matches!(event, Event::Ready { .. }) {
+                    let _ = pipe.send(&session.take_output());
+                    return events;
+                }
                 if let Event::PairingCode(_) = event
                     && says != PhoneSays::Ignore
                 {
@@ -109,10 +115,16 @@ fn phone(
 }
 
 fn p() -> Phone {
+    Phone::usb("p", Some("SM A716S".into()), None)
+}
+
+fn ble(key: &[u8; KEY_LEN]) -> Phone {
     Phone {
-        id: "p".into(),
-        model: Some("SM A716S".into()),
+        id: "ble:1".into(),
+        model: Some("Galaxy A71".into()),
         blocked: None,
+        link: Link::Ble,
+        beacon: Some(beacon(key)),
     }
 }
 
@@ -212,6 +224,7 @@ struct World {
     requests: PairRequests,
     person: Person,
     notes: Notes,
+    active: Active,
     timing: Timing,
 }
 
@@ -233,6 +246,7 @@ impl World {
             requests: PairRequests::default(),
             person: Person(answer, Mutex::default()),
             notes: Notes::default(),
+            active: Active::default(),
             timing: Timing {
                 ping: Duration::from_millis(20),
                 silence: Duration::from_millis(150),
@@ -248,6 +262,7 @@ impl World {
             prompt: &self.person,
             report: &self.notes,
             requests: &self.requests,
+            active: &self.active,
             timing: self.timing,
         }
     }
@@ -443,6 +458,10 @@ impl OnePhone {
 }
 
 impl PhoneLinks for OnePhone {
+    fn link(&self) -> Link {
+        self.phones[0].link
+    }
+
     fn attached(&self) -> Result<Vec<Phone>, PortError> {
         Ok(self.phones.clone())
     }
@@ -471,7 +490,7 @@ impl PhoneLinks for OnePhone {
 fn run_while(links: &OnePhone, world: &World, during: impl FnOnce()) {
     let stop = AtomicBool::new(false);
     thread::scope(|scope| {
-        scope.spawn(|| keep_connected(links, &world.context(), &stop));
+        scope.spawn(|| keep_connected(&[links], &world.context(), &stop));
         during();
         stop.store(true, Ordering::Relaxed);
     });
@@ -562,6 +581,10 @@ struct LateApp {
 }
 
 impl PhoneLinks for LateApp {
+    fn link(&self) -> Link {
+        Link::Usb
+    }
+
     fn attached(&self) -> Result<Vec<Phone>, PortError> {
         self.inner.attached()
     }
@@ -589,9 +612,244 @@ fn a_pair_request_waits_for_the_app_to_open() {
     world.requests.ask("p");
     let stop = AtomicBool::new(false);
     thread::scope(|scope| {
-        scope.spawn(|| keep_connected(&links, &world.context(), &stop));
+        scope.spawn(|| keep_connected(&[&links], &world.context(), &stop));
         thread::sleep(Duration::from_millis(3000));
         stop.store(true, Ordering::Relaxed);
     });
     assert_eq!(world.computer.keys(), [links.inner.identity.public]);
+}
+
+/// 목록을 시험 중에 바꿀 수 있는 링크. 접속할 때마다 폰 쪽 세션을 새로 띄운다.
+struct Switch {
+    link: Link,
+    phones: Mutex<Vec<Phone>>,
+    identity: Identity,
+    trusted: Vec<[u8; KEY_LEN]>,
+    says: PhoneSays,
+    connects: AtomicUsize,
+}
+
+impl Switch {
+    fn new(link: Link, phone: Phone, identity: Identity, trusted: Vec<[u8; KEY_LEN]>) -> Self {
+        Self {
+            link,
+            phones: Mutex::new(vec![phone]),
+            identity,
+            trusted,
+            says: PhoneSays::Stay,
+            connects: AtomicUsize::new(0),
+        }
+    }
+
+    fn unplug(&self) {
+        self.phones.lock().unwrap().clear();
+    }
+
+    fn plug(&self, phone: Phone) {
+        *self.phones.lock().unwrap() = vec![phone];
+    }
+}
+
+impl PhoneLinks for Switch {
+    fn link(&self) -> Link {
+        self.link
+    }
+
+    fn attached(&self) -> Result<Vec<Phone>, PortError> {
+        Ok(self.phones.lock().unwrap().clone())
+    }
+
+    fn watch(&self, changed: &mut dyn FnMut(Vec<Phone>)) -> Result<(), PortError> {
+        let mut last = None;
+        for _ in 0..250 {
+            let now = self.phones.lock().unwrap().clone();
+            if last.as_ref() != Some(&now) {
+                changed(now.clone());
+                last = Some(now);
+            }
+            thread::sleep(Duration::from_millis(20));
+        }
+        Ok(())
+    }
+
+    fn connect(&self, _id: &str) -> Result<Box<dyn Conn>, PortError> {
+        self.connects.fetch_add(1, Ordering::Relaxed);
+        let (mine, theirs) = pipes();
+        phone(
+            self.identity.clone(),
+            self.trusted.clone(),
+            self.says,
+            theirs,
+        );
+        Ok(Box::new(mine))
+    }
+}
+
+/// 시험 중 단언이 실패해도 멈추게 한다.
+struct StopOnDrop<'a>(&'a AtomicBool);
+
+impl Drop for StopOnDrop<'_> {
+    fn drop(&mut self) {
+        self.0.store(true, Ordering::Relaxed);
+    }
+}
+
+fn run_links(links: &[&dyn PhoneLinks], world: &World, during: impl FnOnce()) {
+    let stop = AtomicBool::new(false);
+    thread::scope(|scope| {
+        scope.spawn(|| keep_connected(links, &world.context(), &stop));
+        let _stop = StopOnDrop(&stop);
+        during();
+    });
+}
+
+fn connected_on(world: &World, id: &str) -> usize {
+    world
+        .notes
+        .0
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|(phone, note)| phone == id && matches!(note, Note::Connected { .. }))
+        .count()
+}
+
+#[test]
+fn bluetooth_waits_for_usb_and_takes_over_after_unplug() {
+    let phone_key = Identity::generate();
+    let public = phone_key.public;
+    let world = World::new(vec![public], None);
+    let computer = vec![world.computer.identity.public];
+    let usb = Switch::new(Link::Usb, p(), phone_key.clone(), computer.clone());
+    let air = Switch::new(Link::Ble, ble(&public), phone_key, computer);
+    // 블루투스 알림 신호는 USB 가 붙은 뒤에 보이게 한다.
+    air.unplug();
+    run_links(&[&usb, &air], &world, || {
+        thread::sleep(Duration::from_millis(500));
+        air.plug(ble(&public));
+        thread::sleep(Duration::from_millis(1500));
+        assert_eq!(connected_on(&world, "p"), 1);
+        assert_eq!(
+            air.connects.load(Ordering::Relaxed),
+            0,
+            "USB 가 있으면 블루투스로 붙지 않음"
+        );
+        usb.unplug();
+        thread::sleep(Duration::from_millis(1800));
+    });
+    assert_eq!(
+        connected_on(&world, "ble:1"),
+        1,
+        "뺀 뒤 2초 안에 블루투스로 붙음"
+    );
+}
+
+#[test]
+fn bluetooth_ignores_an_unregistered_beacon() {
+    let stranger = Identity::generate();
+    let world = World::new(Vec::new(), None);
+    let air = Switch::new(Link::Ble, ble(&stranger.public), stranger, Vec::new());
+    run_links(&[&air], &world, || {
+        thread::sleep(Duration::from_millis(1200))
+    });
+    assert_eq!(air.connects.load(Ordering::Relaxed), 0);
+    assert!(world.notes.0.lock().unwrap().is_empty());
+}
+
+#[test]
+fn bluetooth_reports_busy_when_the_phone_drops_it_at_ready() {
+    let phone_key = Identity::generate();
+    let public = phone_key.public;
+    let world = World::new(vec![public], None);
+    let mut air = Switch::new(
+        Link::Ble,
+        ble(&public),
+        phone_key,
+        vec![world.computer.identity.public],
+    );
+    air.says = PhoneSays::Busy;
+    run_links(&[&air], &world, || {
+        thread::sleep(Duration::from_millis(3500))
+    });
+    assert!(
+        air.connects.load(Ordering::Relaxed) <= 2,
+        "거절된 뒤에는 5초 쉬고 다시 시도"
+    );
+    assert_eq!(
+        connected_on(&world, "ble:1"),
+        0,
+        "받아들이기 전에는 연결됨을 알리지 않음"
+    );
+    assert!(world.notes.0.lock().unwrap().iter().any(
+        |(_, note)| matches!(note, Note::Lost(reason) if reason == &ServeError::Busy.to_string())
+    ));
+}
+
+#[test]
+fn bluetooth_waits_for_the_list_to_change_after_a_refusal() {
+    let phone_key = Identity::generate();
+    let public = phone_key.public;
+    let world = World::new(vec![public], None);
+    // 기기는 이 컴퓨터를 모른다.
+    let air = Switch::new(Link::Ble, ble(&public), phone_key, Vec::new());
+    run_links(&[&air], &world, || {
+        thread::sleep(Duration::from_millis(1500));
+        assert_eq!(air.connects.load(Ordering::Relaxed), 1);
+        world.computer.trust([7; KEY_LEN], "다른 기기", "").unwrap();
+        thread::sleep(Duration::from_millis(1500));
+    });
+    assert_eq!(
+        air.connects.load(Ordering::Relaxed),
+        2,
+        "등록 목록이 바뀌면 다시 시도"
+    );
+}
+
+#[test]
+fn bluetooth_fills_a_missing_name_but_keeps_the_serial() {
+    let phone_key = Identity::generate();
+    let public = phone_key.public;
+    let world = World::new(Vec::new(), None);
+    world.computer.trust(public, "", "R3C").unwrap();
+    let (mine, theirs) = pipes();
+    let handle = phone(
+        phone_key,
+        vec![world.computer.identity.public],
+        PhoneSays::Stay,
+        theirs,
+    );
+    let mut mine = mine;
+    let stop = AtomicBool::new(false);
+    let result = thread::scope(|scope| {
+        scope.spawn(|| {
+            thread::sleep(Duration::from_millis(300));
+            stop.store(true, Ordering::Relaxed);
+        });
+        serve(&ble(&public), &mut mine, &world.context(), false, &stop)
+    });
+    drop(mine);
+    handle.join().unwrap();
+    assert!(result.is_ok(), "{result:?}");
+    let saved = world.computer.trusted().unwrap();
+    assert_eq!(saved[0].name, "Galaxy A71");
+    assert_eq!(saved[0].serial, "R3C");
+}
+
+#[test]
+fn usb_wins_the_slot_over_bluetooth() {
+    let active = Active::default();
+    let key = [1; KEY_LEN];
+    assert!(active.claim(key, Link::Usb));
+    assert!(!active.claim(key, Link::Ble));
+    active.release(key, Link::Ble);
+    assert!(
+        active.holds(key, Link::Usb),
+        "블루투스가 USB 자리를 놓지 않음"
+    );
+    active.release(key, Link::Usb);
+    assert!(active.claim(key, Link::Ble));
+    assert!(
+        active.claim(key, Link::Usb),
+        "USB 는 블루투스 자리를 가져감"
+    );
 }

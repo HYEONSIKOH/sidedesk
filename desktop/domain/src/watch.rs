@@ -4,18 +4,33 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
 use std::time::Duration;
 
-use crate::port::{Note, Phone, PhoneLinks};
-use crate::serve::{Context, Ended, serve};
+use sidedesk_core::{KEY_LEN, beacon};
+
+use crate::port::{Link, Note, Phone, PhoneLinks};
+use crate::serve::{Context, Ended, ServeError, serve};
 
 pub const RETRY: Duration = Duration::from_secs(1);
+/// 다른 컴퓨터가 쓰고 있어 거절됐을 때 다시 시도하는 간격
+pub const BUSY_RETRY: Duration = Duration::from_secs(5);
 
-/// 붙은 폰마다 스레드 하나를 두고 연결을 유지한다. `stop` 이 켜질 때까지 돌아오지 않는다.
-pub fn keep_connected(links: &dyn PhoneLinks, context: &Context, stop: &AtomicBool) {
+/// 링크마다 기기 목록을 지켜보고, 기기마다 스레드 하나를 두고 연결을 유지한다.
+/// `stop` 이 켜질 때까지 돌아오지 않는다.
+pub fn keep_connected(links: &[&dyn PhoneLinks], context: &Context, stop: &AtomicBool) {
+    thread::scope(|scope| {
+        for &link in links {
+            scope.spawn(move || watch_link(link, context, stop));
+        }
+    });
+}
+
+fn watch_link(links: &dyn PhoneLinks, context: &Context, stop: &AtomicBool) {
+    let link = links.link();
     thread::scope(|scope| {
         let mut workers: HashMap<String, Arc<AtomicBool>> = HashMap::new();
         while !stop.load(Ordering::Relaxed) {
             let watched = links.watch(&mut |phones| {
-                context.report.phones(&phones);
+                context.report.link(link, None);
+                context.report.phones(link, &phones);
                 let ready: HashSet<String> = phones
                     .iter()
                     .filter(|phone| phone.blocked.is_none())
@@ -39,7 +54,10 @@ pub fn keep_connected(links: &dyn PhoneLinks, context: &Context, stop: &AtomicBo
                         let quit = Arc::new(AtomicBool::new(false));
                         let flag = Arc::clone(&quit);
                         scope.spawn(move || {
-                            keep_one(links, context, &phone, &flag);
+                            match phone.link {
+                                Link::Usb => keep_usb(links, context, &phone, &flag),
+                                Link::Ble => keep_ble(links, context, &phone, &flag),
+                            }
                             context.requests.take(&phone.id);
                         });
                         quit
@@ -47,9 +65,9 @@ pub fn keep_connected(links: &dyn PhoneLinks, context: &Context, stop: &AtomicBo
                 }
             });
             if let Err(error) = watched {
-                context.report.note("adb", Note::Lost(error.0));
+                context.report.link(link, Some(error.0));
             }
-            rest(stop);
+            rest(stop, RETRY);
         }
         for quit in workers.values() {
             quit.store(true, Ordering::Relaxed);
@@ -57,7 +75,7 @@ pub fn keep_connected(links: &dyn PhoneLinks, context: &Context, stop: &AtomicBo
     });
 }
 
-fn keep_one(links: &dyn PhoneLinks, context: &Context, phone: &Phone, quit: &AtomicBool) {
+fn keep_usb(links: &dyn PhoneLinks, context: &Context, phone: &Phone, quit: &AtomicBool) {
     let id = phone.id.as_str();
     let mut last_failure = None;
     while !quit.load(Ordering::Relaxed) {
@@ -71,12 +89,13 @@ fn keep_one(links: &dyn PhoneLinks, context: &Context, phone: &Phone, quit: &Ato
                     Ok(Ended::Stopped) => return,
                     // 짝을 맺었으니 저장한 키로 바로 다시 붙는다.
                     Ok(Ended::Paired) => continue,
+                    Ok(Ended::Yielded) => {}
                     Ok(Ended::Closed) => context.report.note(id, Note::Lost("끊김".to_owned())),
                     Err(error) if error.is_final() => {
                         context.report.note(id, Note::Refused(error.to_string()));
                         // 다시 꽂거나 짝 맺기를 누를 때까지 기다린다.
                         while !quit.load(Ordering::Relaxed) && !context.requests.is_asked(id) {
-                            rest(quit);
+                            rest(quit, RETRY);
                         }
                         continue;
                     }
@@ -91,14 +110,84 @@ fn keep_one(links: &dyn PhoneLinks, context: &Context, phone: &Phone, quit: &Ato
                 }
             }
         }
-        rest(quit);
+        rest(quit, RETRY);
     }
 }
 
-fn rest(quit: &AtomicBool) {
+/// 등록된 키 중 알림 신호 지문이 맞는 것
+pub fn registered_key(context: &Context, phone: &Phone) -> Option<[u8; KEY_LEN]> {
+    let mark = phone.beacon?;
+    context
+        .keys
+        .trusted()
+        .ok()?
+        .into_iter()
+        .map(|paired| paired.key)
+        .find(|key| beacon(key) == mark)
+}
+
+fn trusted_keys(context: &Context) -> Vec<[u8; KEY_LEN]> {
+    context
+        .keys
+        .trusted()
+        .map(|list| list.into_iter().map(|paired| paired.key).collect())
+        .unwrap_or_default()
+}
+
+/// 블루투스 기기 하나. 등록 확인과 USB 확인을 시도할 때마다 한다. 짝 맺기는 하지 않는다.
+fn keep_ble(links: &dyn PhoneLinks, context: &Context, phone: &Phone, quit: &AtomicBool) {
+    let id = phone.id.as_str();
+    let mut last_failure = None;
+    while !quit.load(Ordering::Relaxed) {
+        let Some(key) = registered_key(context, phone) else {
+            rest(quit, RETRY);
+            continue;
+        };
+        if context.active.holds(key, Link::Usb) {
+            rest(quit, RETRY);
+            continue;
+        }
+        let mut wait = RETRY;
+        match links.connect(id) {
+            Ok(mut conn) => {
+                last_failure = None;
+                match serve(phone, conn.as_mut(), context, false, quit) {
+                    Ok(Ended::Stopped) => return,
+                    Ok(Ended::Paired | Ended::Yielded) => {}
+                    Ok(Ended::Closed) => context.report.note(id, Note::Lost("끊김".to_owned())),
+                    Err(ServeError::Busy) => {
+                        context
+                            .report
+                            .note(id, Note::Lost(ServeError::Busy.to_string()));
+                        wait = BUSY_RETRY;
+                    }
+                    Err(error) if error.is_final() => {
+                        context.report.note(id, Note::Refused(error.to_string()));
+                        // 블루투스에는 짝 맺기 요청이 없으므로, 등록 목록이 바뀔 때까지 기다린다.
+                        let before = trusted_keys(context);
+                        while !quit.load(Ordering::Relaxed) && trusted_keys(context) == before {
+                            rest(quit, RETRY);
+                        }
+                        continue;
+                    }
+                    Err(error) => context.report.note(id, Note::Lost(error.to_string())),
+                }
+            }
+            Err(error) => {
+                if last_failure.as_ref() != Some(&error) {
+                    context.report.note(id, Note::Lost(error.0.clone()));
+                    last_failure = Some(error);
+                }
+            }
+        }
+        rest(quit, wait);
+    }
+}
+
+fn rest(quit: &AtomicBool, time: Duration) {
     let step = Duration::from_millis(50);
     let mut waited = Duration::ZERO;
-    while waited < RETRY && !quit.load(Ordering::Relaxed) {
+    while waited < time && !quit.load(Ordering::Relaxed) {
         thread::sleep(step);
         waited += step;
     }
