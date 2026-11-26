@@ -28,11 +28,13 @@ impl Tail {
         let meta = std::fs::metadata(path)?;
         let len = meta.len();
         self.modified = meta.modified().ok();
-        if self.seen && len == self.offset {
+        // 바꿔치기는 길이가 같아도 알아야 하므로 파일 번호를 먼저 본다.
+        let inode = inode(&meta);
+        let replaced = self.seen && inode != self.inode;
+        if self.seen && !replaced && len == self.offset {
             return Ok(Vec::new());
         }
-        let inode = inode(&meta);
-        if len < self.offset || (self.seen && inode != self.inode) {
+        if len < self.offset || replaced {
             *self = Self {
                 modified: self.modified,
                 ..Self::default()
@@ -120,6 +122,13 @@ mod tests {
         assert_eq!(
             tail.read(&path).unwrap(),
             [b"one".to_vec(), b"two".to_vec(), b"three".to_vec()]
+        );
+        // 길이까지 같은 새 파일로 바꿔치기돼도 알아챈다.
+        std::fs::write(&other, b"uno\ndos\ntres\n").unwrap();
+        std::fs::rename(&other, &path).unwrap();
+        assert_eq!(
+            tail.read(&path).unwrap(),
+            [b"uno".to_vec(), b"dos".to_vec(), b"tres".to_vec()]
         );
         let _ = std::fs::remove_file(&path);
     }

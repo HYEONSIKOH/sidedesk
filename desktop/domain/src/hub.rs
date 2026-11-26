@@ -289,7 +289,10 @@ impl Hub {
                 drop(state);
                 let counts = panic::catch_unwind(AssertUnwindSafe(|| forges.counts()));
                 state = self.lock();
-                if let Ok(counts) = counts {
+                // 끄는 중에 끊긴 실행의 실패는 보내지 않는다.
+                if let Ok(counts) = counts
+                    && !state.stopped
+                {
                     state.ai.forge_publish(counts, (self.wall)());
                 }
                 continue;
