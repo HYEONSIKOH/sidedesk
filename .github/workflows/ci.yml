@@ -81,3 +81,59 @@ jobs:
       - name: Gradle
         working-directory: android
         run: ./gradlew --no-daemon testDebugUnitTest assembleDebug
+
+  ios:
+    name: iOS (시뮬레이터)
+    runs-on: macos-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-ios,aarch64-apple-ios-sim
+      - uses: Swatinem/rust-cache@v2
+      - name: 도구
+        run: |
+          xcodebuild -version
+          command -v xcodegen > /dev/null || brew install xcodegen
+      - name: 공용 코어
+        run: scripts/build-ios.sh
+      - name: 프로젝트
+        working-directory: ios
+        run: xcodegen
+      # 서버 이미지마다 시뮬레이터가 다르므로 이름을 박지 않고, 가장 새 iOS 런타임의 첫 아이폰을 고른다.
+      - name: 시뮬레이터
+        run: |
+          id=$(xcrun simctl list devices available -j | python3 -c '
+          import json, re, sys
+          devices = json.load(sys.stdin)["devices"]
+          def version(runtime):
+              found = re.search(r"iOS-(\d+)-(\d+)", runtime)
+              return tuple(map(int, found.groups())) if found else None
+          runtimes = sorted((version(r), r) for r in devices if version(r) and version(r) >= (18, 0))
+          for _, runtime in reversed(runtimes):
+              phones = [d for d in devices[runtime] if d["name"].startswith("iPhone")]
+              if phones:
+                  print(phones[0]["udid"], runtime, phones[0]["name"], file=sys.stderr)
+                  print(phones[0]["udid"])
+                  break
+          ')
+          echo "SIM=$id" >> "$GITHUB_ENV"
+          xcrun simctl boot "$id" || true
+      - name: 빌드
+        id: build
+        working-directory: ios
+        run: xcodebuild build-for-testing -project SideDesk.xcodeproj -scheme SideDesk -destination "id=$SIM" -derivedDataPath "$RUNNER_TEMP/dd" -quiet
+      - name: 시험
+        working-directory: ios
+        run: xcodebuild test-without-building -project SideDesk.xcodeproj -scheme SideDesk -destination "id=$SIM" -derivedDataPath "$RUNNER_TEMP/dd"
+      - name: 화면 찍기
+        if: always() && steps.build.outcome == 'success'
+        run: scripts/shoot-ios.sh "$SIM" "$RUNNER_TEMP/dd/Build/Products/Debug-iphonesimulator/SideDesk.app" "$RUNNER_TEMP/shots"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: ios-screenshots
+          path: ${{ runner.temp }}/shots
+          retention-days: 7
+          if-no-files-found: ignore
