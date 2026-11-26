@@ -4,7 +4,7 @@
 pub struct Envelope {
     #[prost(
         oneof = "envelope::Body",
-        tags = "1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13"
+        tags = "1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15"
     )]
     pub body: Option<envelope::Body>,
 }
@@ -43,6 +43,12 @@ pub mod envelope {
         /// 컴퓨터 → 폰
         #[prost(message, tag = "13")]
         CommandResult(super::CommandResult),
+        /// 폰 → 컴퓨터
+        #[prost(message, tag = "14")]
+        Location(super::Location),
+        /// 컴퓨터 → 폰
+        #[prost(message, tag = "15")]
+        Weather(super::Weather),
     }
 }
 
@@ -82,6 +88,7 @@ pub enum View {
     Nothing = 0,
     Performance = 1,
     Processes = 2,
+    Weather = 3,
 }
 
 /// 지금 보이는 것 전체. 받을 때마다 앞의 구독을 바꾼다. 둘 다 비면 아무것도 안 본다.
@@ -162,4 +169,62 @@ pub struct CommandResult {
     /// 실패한 까닭. 성공이면 비어 있다.
     #[prost(string, tag = "3")]
     pub reason: String,
+}
+
+/// 폰의 대략적인 위치(x10, 소수 첫째). 둘 다 없으면 위치 없음.
+#[derive(Clone, PartialEq, prost::Message)]
+pub struct Location {
+    #[prost(sint32, optional, tag = "1")]
+    pub latitude_tenths: Option<i32>,
+    #[prost(sint32, optional, tag = "2")]
+    pub longitude_tenths: Option<i32>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, prost::Enumeration)]
+#[repr(i32)]
+pub enum Sky {
+    Unknown = 0,
+    Clear = 1,
+    PartlyCloudy = 2,
+    Cloudy = 3,
+    Fog = 4,
+    Drizzle = 5,
+    Rain = 6,
+    Snow = 7,
+    Shower = 8,
+    Thunderstorm = 9,
+}
+
+/// 실제로 날씨를 받은 곳
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, prost::Enumeration)]
+#[repr(i32)]
+pub enum Provider {
+    Unknown = 0,
+    Kma = 1,
+    OpenMeteo = 2,
+}
+
+/// 기온은 °C, 최고와 최저는 오늘 값.
+#[derive(Clone, PartialEq, prost::Message)]
+pub struct Weather {
+    #[prost(float, tag = "1")]
+    pub temperature: f32,
+    #[prost(float, tag = "2")]
+    pub high: f32,
+    #[prost(float, tag = "3")]
+    pub low: f32,
+    #[prost(enumeration = "Sky", tag = "4")]
+    pub sky: i32,
+    #[prost(bool, tag = "5")]
+    pub is_day: bool,
+    /// 받은 시각(유닉스 밀리초)
+    #[prost(uint64, tag = "6")]
+    pub fetched_at: u64,
+    /// 어느 위치의 값인지(x10)
+    #[prost(sint32, tag = "7")]
+    pub latitude_tenths: i32,
+    #[prost(sint32, tag = "8")]
+    pub longitude_tenths: i32,
+    #[prost(enumeration = "Provider", tag = "9")]
+    pub provider: i32,
 }

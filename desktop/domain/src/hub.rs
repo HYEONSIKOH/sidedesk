@@ -46,7 +46,7 @@ impl Cadence {
         let (main, tile) = match view {
             View::Performance => (self.performance_main, self.performance_tile),
             View::Processes => (self.processes_main, self.processes_tile),
-            View::Nothing => return None,
+            View::Nothing | View::Weather => return None,
         };
         if subscribe.main == view as i32 {
             Some(main)
