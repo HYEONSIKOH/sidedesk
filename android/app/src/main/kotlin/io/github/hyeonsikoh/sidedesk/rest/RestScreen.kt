@@ -115,7 +115,7 @@ fun RestSettings(panel: RestPanel, modifier: Modifier = Modifier) {
     Column(modifier.verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(6.dp)) {
         Line("켜 두기") { KeepOn.entries.forEach { Chip(it.label, it == s.keepOn) { panel.setKeepOn(it) } } }
         Line("쉬기") { RestAfter.entries.forEach { Chip(it.label, it == s.restAfter) { panel.setRestAfter(it) } } }
-        Line("알림에 깨우기") {
+        Line("알림이 오면\n깨우기") {
             Chip("켬", s.wakeOnAlert) { panel.setWakeOnAlert(true) }
             Chip("끔", !s.wakeOnAlert) { panel.setWakeOnAlert(false) }
         }
@@ -131,7 +131,8 @@ fun RestSettings(panel: RestPanel, modifier: Modifier = Modifier) {
 @Composable
 private fun Line(label: String, chips: @Composable () -> Unit) {
     Row(verticalAlignment = Alignment.CenterVertically) {
-        Text(label, color = Palette.muted, fontSize = fit(12.dp), maxLines = 1, modifier = Modifier.width(84.dp))
+        // 긴 이름(알림이 오면 깨우기)은 낱말 사이에서 두 줄로 나눠 적는다(한글은 글자 사이에서 끊기므로).
+        Text(label, color = Palette.muted, fontSize = fit(12.dp), lineHeight = fit(14.dp), maxLines = 2, modifier = Modifier.width(84.dp).padding(end = 6.dp))
         Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(6.dp)) { chips() }
     }
 }
