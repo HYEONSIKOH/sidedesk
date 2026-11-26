@@ -22,16 +22,26 @@ final class PhoneLink: ComputerLink {
         let owner = LinkOwner(
             publish: { snapshot in
                 onMain {
-                    feed.state = snapshot.state
+                    // 같은 값을 다시 넣으면 Observation 이 보는 화면을 다시 그리므로 바뀐 것만 넣는다.
+                    if feed.state != snapshot.state { feed.state = snapshot.state }
                     if let perf = snapshot.perf, perf != feed.perf || feed.perf == nil {
                         feed.receive(perf: perf)
                     }
-                    feed.processes = snapshot.processes
-                    feed.weather = snapshot.weather
+                    if feed.processes != snapshot.processes { feed.processes = snapshot.processes }
+                    if feed.weather != snapshot.weather { feed.weather = snapshot.weather }
+                    if feed.sessions != snapshot.sessions { feed.sessions = snapshot.sessions }
+                    if feed.forge != snapshot.forge { feed.forge = snapshot.forge }
+                    if feed.shortcuts != snapshot.shortcuts { feed.shortcuts = snapshot.shortcuts }
+                    feed.receive(nowPlaying: snapshot.nowPlaying)
+                    if feed.volume != snapshot.volume { feed.volume = snapshot.volume }
+                    if feed.artworks.keys != snapshot.artworks.keys { feed.artworks = snapshot.artworks }
                 }
             },
-            emitKill: { result in
+            emitResult: { result in
                 onMain { feed.emit(result) }
+            },
+            emitAlert: { alert in
+                onMain { feed.emit(alert) }
             }
         )
         self.owner = owner
@@ -65,8 +75,16 @@ final class PhoneLink: ComputerLink {
         owner.setLocation(location)
     }
 
-    func kill(_ command: KillCommand) {
-        owner.kill(command)
+    func send(_ command: Command) {
+        owner.send(command)
+    }
+
+    func runShortcut(_ command: RunShortcut) -> Bool {
+        owner.runShortcut(command)
+    }
+
+    func music(_ command: MusicCommand) -> Bool {
+        owner.music(command)
     }
 
     func giveUp(_ commandId: UInt64) {

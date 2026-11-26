@@ -31,6 +31,11 @@ protocol Settings: AnyObject {
     var theme: String? { get set }
     /// 위치 안내를 한 번 보였는지
     var askedLocation: Bool { get set }
+    /// 쉴 때 화면 설정. 모르는 값이면 기본값으로 읽는다.
+    var keepOn: String? { get set }
+    var restAfter: String? { get set }
+    var wakeOnAlert: Bool { get set }
+    var vibration: String? { get set }
 }
 
 @MainActor
@@ -54,6 +59,26 @@ final class DefaultsSettings: Settings {
     var askedLocation: Bool {
         get { defaults.bool(forKey: "askedLocation") }
         set { defaults.set(newValue, forKey: "askedLocation") }
+    }
+
+    var keepOn: String? {
+        get { defaults.string(forKey: "keepOn") }
+        set { defaults.set(newValue, forKey: "keepOn") }
+    }
+
+    var restAfter: String? {
+        get { defaults.string(forKey: "restAfter") }
+        set { defaults.set(newValue, forKey: "restAfter") }
+    }
+
+    var wakeOnAlert: Bool {
+        get { defaults.bool(forKey: "wakeOnAlert") }
+        set { defaults.set(newValue, forKey: "wakeOnAlert") }
+    }
+
+    var vibration: String? {
+        get { defaults.string(forKey: "vibration") }
+        set { defaults.set(newValue, forKey: "vibration") }
     }
 }
 

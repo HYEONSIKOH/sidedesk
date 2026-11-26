@@ -9,6 +9,11 @@ final class FakeLink: ComputerLink {
     var subscriptions: [Subscription] = []
     var locations: [LocationState] = []
     var kills: [KillCommand] = []
+    var sent: [Command] = []
+    var shortcutRuns: [RunShortcut] = []
+    var musicCommands: [MusicCommand] = []
+    /// runShortcut, music 이 받아들일지
+    var accepts = true
     var givenUp: [UInt64] = []
     var answers: [Bool] = []
     var started = 0
@@ -18,7 +23,20 @@ final class FakeLink: ComputerLink {
     func stop() { stopped += 1 }
     func subscribe(_ subscription: Subscription) { subscriptions.append(subscription) }
     func setLocation(_ location: LocationState) { locations.append(location) }
-    func kill(_ command: KillCommand) { kills.append(command) }
+    func send(_ command: Command) {
+        sent.append(command)
+        if case .kill(let kill) = command { kills.append(kill) }
+    }
+
+    func runShortcut(_ command: RunShortcut) -> Bool {
+        shortcutRuns.append(command)
+        return accepts
+    }
+
+    func music(_ command: MusicCommand) -> Bool {
+        musicCommands.append(command)
+        return accepts
+    }
     func giveUp(_ commandId: UInt64) { givenUp.append(commandId) }
     func answer(_ same: Bool) { answers.append(same) }
 }
@@ -28,6 +46,10 @@ final class MemorySettings: Settings {
     var face: String?
     var theme: String?
     var askedLocation = false
+    var keepOn: String?
+    var restAfter: String?
+    var wakeOnAlert = false
+    var vibration: String?
 
     init(face: String? = nil, theme: String? = nil) {
         self.face = face
@@ -159,6 +181,13 @@ final class FakeSession: CoreSession {
     func sendNoLocation() throws { located.append("none") }
 
     func killProcess(requestId: UInt64, pid: Int32, startedAt: Int64) throws { killed.append(requestId) }
+
+    var shortcuts: [(UInt64, UInt32, UInt64)] = []
+    var music: [(UInt64, MusicAction, Int)] = []
+
+    func runShortcut(requestId: UInt64, shortcutId: UInt32, book: UInt64) throws { shortcuts.append((requestId, shortcutId, book)) }
+
+    func musicCommand(requestId: UInt64, action: MusicAction, level: Int) throws { music.append((requestId, action, level)) }
 }
 
 let mac = Data(repeating: 7, count: 32)
@@ -175,4 +204,13 @@ func weather(fetchedAt: Int64 = 0, source: WeatherSource = .openMeteo) -> Weathe
 
 func process(_ pid: Int32, _ name: String, cpu: Float = 0, memory: Int64 = 0) -> ComputerProcess {
     ComputerProcess(pid: pid, startedAt: 100, name: name, cpu: cpu, memoryBytes: memory)
+}
+
+@MainActor
+final class FakeBuzzer: Buzzer {
+    var buzzes: [AlertKind] = []
+    var taps = 0
+
+    func buzz(_ kind: AlertKind) { buzzes.append(kind) }
+    func tap() { taps += 1 }
 }

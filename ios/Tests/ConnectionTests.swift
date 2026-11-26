@@ -118,7 +118,7 @@ struct ConnectionTests {
         owner.subscription = Subscription(big: .perf, small: [.weather])
         owner.setLocation(.at(latitude: 37.5, longitude: 127))
         run(.usb, FakeSession([.success([.ready(computerKey: mac)])]), FakePipe([chunk], clock: clock), owner)
-        owner.kill(KillCommand(commandId: 42, pid: 7, startedAt: 1))
+        owner.send(.kill(KillCommand(commandId: 42, pid: 7, startedAt: 1)))
         let session = FakeSession([.success([.ready(computerKey: mac)])])
         run(.bluetooth, session, FakePipe([chunk], clock: clock), owner)
         #expect(session.killed == [42])

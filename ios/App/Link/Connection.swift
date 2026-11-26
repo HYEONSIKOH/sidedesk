@@ -24,6 +24,13 @@ enum CoreEvent: Equatable {
     case processes([ComputerProcess])
     case commandResult(requestId: UInt64, ok: Bool, reason: String)
     case weather(Weather)
+    case aiSessions([AiSession])
+    case aiAlert(AiAlert)
+    case forge(Forge)
+    case shortcuts(book: UInt64, items: [Shortcut])
+    case nowPlaying(NowPlaying)
+    case artwork(hash: UInt64, jpeg: Data)
+    case volume(Volume)
 }
 
 enum CoreError: Error, Equatable {
@@ -44,6 +51,8 @@ protocol CoreSession: AnyObject {
     func sendLocation(latitude: Double, longitude: Double) throws
     func sendNoLocation() throws
     func killProcess(requestId: UInt64, pid: Int32, startedAt: Int64) throws
+    func runShortcut(requestId: UInt64, shortcutId: UInt32, book: UInt64) throws
+    func musicCommand(requestId: UInt64, action: MusicAction, level: Int) throws
 }
 
 struct Identity: Sendable, Equatable {
@@ -165,7 +174,7 @@ final class Connection {
         var computer = Data()
         var subscribed: Subscription?
         let location = LocationGate()
-        var sentKills = Set<UInt64>()
+        var sentCommands = Set<UInt64>()
 
         func flush() throws {
             let output = session.takeOutput()
@@ -188,8 +197,19 @@ final class Connection {
             case .unknown?, nil:
                 break
             }
-            for kill in owner.pendingKills(computer: computer) where sentKills.insert(kill.commandId).inserted {
-                try session.killProcess(requestId: kill.commandId, pid: kill.pid, startedAt: kill.startedAt)
+            // 볼륨은 대기열 밖이다. 이 연결에서 든 마지막 값만 한 번 보낸다.
+            if let mine, let volume = owner.takeVolume(mine) {
+                try session.musicCommand(requestId: volume.commandId, action: volume.action, level: volume.level)
+            }
+            for command in owner.pendingCommands(computer: computer) where sentCommands.insert(command.commandId).inserted {
+                switch command {
+                case .kill(let kill):
+                    try session.killProcess(requestId: kill.commandId, pid: kill.pid, startedAt: kill.startedAt)
+                case .shortcut(let run):
+                    try session.runShortcut(requestId: run.commandId, shortcutId: run.shortcutId, book: run.book)
+                case .music(let music):
+                    try session.musicCommand(requestId: music.commandId, action: music.action, level: music.level)
+                }
             }
             try flush()
         }
@@ -223,7 +243,21 @@ final class Connection {
                 case .weather(let value):
                     if let mine { owner.receivedWeather(mine, value) }
                 case .commandResult(let id, let ok, let reason):
-                    owner.receivedKill(KillResult(commandId: id, ok: ok, reason: reason))
+                    owner.receivedResult(CommandResult(commandId: id, ok: ok, reason: reason))
+                case .aiSessions(let items):
+                    if let mine { owner.receivedSessions(mine, items) }
+                case .aiAlert(let alert):
+                    if let mine { owner.receivedAlert(mine, alert) }
+                case .forge(let forge):
+                    if let mine { owner.receivedForge(mine, forge) }
+                case .shortcuts(let book, let items):
+                    if let mine { owner.receivedShortcuts(mine, book: book, items) }
+                case .nowPlaying(let value):
+                    if let mine { owner.receivedNowPlaying(mine, value) }
+                case .artwork(let hash, let jpeg):
+                    if let mine { owner.receivedArtwork(mine, hash: hash, jpeg: jpeg) }
+                case .volume(let value):
+                    if let mine { owner.receivedVolume(mine, value) }
                 }
             }
             return true

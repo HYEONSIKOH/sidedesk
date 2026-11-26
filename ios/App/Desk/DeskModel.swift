@@ -9,14 +9,20 @@ enum Sort: Sendable {
 /// 큰 화면에 띄울 수 있는 것. 옆으로 밀면 이 차례로 돈다.
 enum Screen: CaseIterable, Sendable {
     case home
+    case ai
     case perf
     case processes
+    case shortcuts
+    case music
 
     var topic: Topic {
         switch self {
         case .home: .weather
+        case .ai: .ai
         case .perf: .perf
         case .processes: .processes
+        case .shortcuts: .shortcuts
+        case .music: .music
         }
     }
 }
@@ -60,7 +66,7 @@ final class DeskModel {
             received = Array((received + [perf.receivePerSecond]).suffix(Self.history))
             sent = Array((sent + [perf.sendPerSecond]).suffix(Self.history))
         }
-        link.feed.onKillResult { [weak self] result in
+        link.feed.onResult { [weak self] result in
             guard let self, let name = names.removeValue(forKey: result.commandId) else { return }
             notice = Self.message(name, result)
         }
@@ -123,7 +129,7 @@ final class DeskModel {
         guard let target = asking else { return }
         let id = newCommandId()
         names[id] = target.name
-        link.kill(KillCommand(commandId: id, pid: target.pid, startedAt: target.startedAt))
+        link.send(.kill(KillCommand(commandId: id, pid: target.pid, startedAt: target.startedAt)))
         let wait = giveUpAfter
         Task { [weak self] in
             try? await Task.sleep(for: wait)
@@ -137,11 +143,27 @@ final class DeskModel {
         notice = nil
     }
 
-    private func tellComputer() {
-        link.subscribe(visible ? Subscription(big: big.topic, small: Set(small.map(\.topic))) : .none)
+    @ObservationIgnored private var resting = false
+
+    /// 쉬는 동안은 시계와 AI 알림만 쓰므로 날씨와 AI 만 받는다. 깨면 원래 표로 돌아간다.
+    func setResting(_ value: Bool) {
+        guard resting != value else { return }
+        resting = value
+        tellComputer()
     }
 
-    private static func message(_ name: String, _ result: KillResult) -> String {
+    private func tellComputer() {
+        let subscription: Subscription = if !visible {
+            .none
+        } else if resting {
+            Subscription(big: .weather, small: [.ai])
+        } else {
+            Subscription(big: big.topic, small: Set(small.map(\.topic)))
+        }
+        link.subscribe(subscription)
+    }
+
+    private static func message(_ name: String, _ result: CommandResult) -> String {
         if result.ok { return "\(eul(name)) 끝냈습니다" }
         if result.reason.trimmingCharacters(in: .whitespaces).isEmpty { return "\(eul(name)) 끝내지 못했습니다" }
         return "\(eul(name)) 끝내지 못했습니다. \(result.reason)"
