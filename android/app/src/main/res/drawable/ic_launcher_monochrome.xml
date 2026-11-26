@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 안드로이드 13 테마 아이콘용 단색 층. 앞 층과 같은 모양 -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <path
+        android:strokeColor="#FFFFFFFF"
+        android:strokeWidth="4"
+        android:pathData="M45,33 L63,33 A5,5 0 0 1 68,38 L68,70 A5,5 0 0 1 63,75 L45,75 A5,5 0 0 1 40,70 L40,38 A5,5 0 0 1 45,33 Z" />
+    <path
+        android:fillColor="#FFFFFFFF"
+        android:pathData="M54,64.5 m-3,0 a3,3 0 1 0 6,0 a3,3 0 1 0 -6,0" />
+</vector>

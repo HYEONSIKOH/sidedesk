@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <style name="Theme.SideDesk" parent="@android:style/Theme.Material.NoActionBar">
+        <item name="android:windowBackground">@color/window_background</item>
+        <item name="android:statusBarColor">@color/window_background</item>
+        <item name="android:navigationBarColor">@color/window_background</item>
+        <!-- 시스템 스플래시: 바탕은 어둡게, 가운데는 앱 아이콘 -->
+        <item name="android:windowSplashScreenBackground">@color/window_background</item>
+    </style>
+</resources>
