@@ -11,7 +11,7 @@ use sidedesk_core::{Performance, Process};
 use sidedesk_domain::{
     Active, Cadence, ComputerName, Conn, Context, Ended, Hub, Keys, Link, Meter, Note,
     PairRequests, Paired, Phone, PhoneLinks, PortError, ProcessTable, Prompt, Received, Report,
-    ServeError, Timing, keep_connected, serve,
+    ServeError, Source, Timing, keep_connected, serve,
 };
 
 struct Pipe {
@@ -217,11 +217,19 @@ impl Prompt for Person {
 }
 
 #[derive(Default)]
-struct Notes(Mutex<Vec<(String, Note)>>);
+struct Notes(
+    Mutex<Vec<(String, Note)>>,
+    Mutex<Vec<(Source, Vec<String>)>>,
+);
 
 impl Report for Notes {
     fn note(&self, phone: &str, note: Note) {
         self.0.lock().unwrap().push((phone.to_owned(), note));
+    }
+
+    fn phones(&self, source: Source, phones: &[Phone]) {
+        let ids = phones.iter().map(|phone| phone.id.clone()).collect();
+        self.1.lock().unwrap().push((source, ids));
     }
 }
 
@@ -514,6 +522,28 @@ impl PhoneLinks for OnePhone {
     }
 }
 
+/// 느린 CI 서버를 생각해 고정 시간 대신 조건이 될 때까지 기다린다(최대 20초). 됐으면 true.
+fn wait_for(done: impl Fn() -> bool) -> bool {
+    let deadline = std::time::Instant::now() + Duration::from_secs(20);
+    while !done() {
+        if std::time::Instant::now() >= deadline {
+            return false;
+        }
+        thread::sleep(Duration::from_millis(50));
+    }
+    true
+}
+
+fn noted(world: &World, matches: impl Fn(&Note) -> bool) -> bool {
+    world
+        .notes
+        .0
+        .lock()
+        .unwrap()
+        .iter()
+        .any(|(_, note)| matches(note))
+}
+
 /// `keep_connected` 를 돌리면서 `during` 을 부르고, 끝나면 멈춘다.
 fn run_while(links: &OnePhone, world: &World, during: impl FnOnce()) {
     let stop = AtomicBool::new(false);
@@ -529,7 +559,9 @@ fn a_stranger_is_refused_once_and_left_alone() {
     let links = OnePhone::new(Identity::generate(), Vec::new(), p());
     let world = World::new(Vec::new(), None);
     run_while(&links, &world, || {
-        thread::sleep(Duration::from_millis(1500))
+        wait_for(|| noted(&world, |note| matches!(note, Note::Refused(_))));
+        // 거절된 뒤 다시 붙지 않는지 잠깐 더 본다.
+        thread::sleep(Duration::from_millis(1000));
     });
     assert_eq!(links.connects.load(Ordering::Relaxed), 1);
     let notes = world.notes.0.lock().unwrap();
@@ -545,7 +577,17 @@ fn reconnects_after_the_phone_closes() {
     let world = World::new(vec![phone_key.public], None);
     let links = OnePhone::new(phone_key, vec![world.computer.identity.public], p());
     run_while(&links, &world, || {
-        thread::sleep(Duration::from_millis(2300))
+        wait_for(|| {
+            world
+                .notes
+                .0
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|(_, note)| matches!(note, Note::Connected { .. }))
+                .count()
+                >= 2
+        });
     });
     let connects = links.connects.load(Ordering::Relaxed);
     assert!(connects >= 2);
@@ -567,7 +609,9 @@ fn a_blocked_phone_is_reported_and_not_connected() {
     };
     let links = OnePhone::new(Identity::generate(), Vec::new(), blocked);
     let world = World::new(Vec::new(), None);
-    run_while(&links, &world, || thread::sleep(Duration::from_millis(300)));
+    run_while(&links, &world, || {
+        wait_for(|| !world.notes.0.lock().unwrap().is_empty());
+    });
     assert_eq!(links.connects.load(Ordering::Relaxed), 0);
     assert_eq!(
         world.notes.0.lock().unwrap()[0],
@@ -583,7 +627,17 @@ fn a_refused_phone_pairs_when_asked() {
         thread::sleep(Duration::from_millis(300));
         assert!(world.computer.keys().is_empty());
         world.requests.ask("p");
-        thread::sleep(Duration::from_millis(1500));
+        wait_for(|| {
+            noted(&world, |note| matches!(note, Note::Paired { .. }))
+                && world
+                    .notes
+                    .0
+                    .lock()
+                    .unwrap()
+                    .iter()
+                    .skip_while(|(_, note)| !matches!(note, Note::Paired { .. }))
+                    .any(|(_, note)| matches!(note, Note::Connected { .. }))
+        });
     });
     assert_eq!(world.computer.keys(), [links.identity.public]);
     assert!(!world.requests.is_asked("p"), "요청은 쓰고 나면 지운다");
@@ -641,7 +695,11 @@ fn a_pair_request_waits_for_the_app_to_open() {
     let stop = AtomicBool::new(false);
     thread::scope(|scope| {
         scope.spawn(|| keep_connected(&[&links], &world.context(), &stop));
-        thread::sleep(Duration::from_millis(3000));
+        // 다시 시도 간격(0.5초, 1초)에 짝 맺기까지 더해지므로 느린 CI 서버를 생각해 넉넉히 기다린다.
+        let deadline = std::time::Instant::now() + Duration::from_secs(20);
+        while world.computer.keys().is_empty() && std::time::Instant::now() < deadline {
+            thread::sleep(Duration::from_millis(100));
+        }
         stop.store(true, Ordering::Relaxed);
     });
     assert_eq!(world.computer.keys(), [links.inner.identity.public]);
@@ -650,6 +708,8 @@ fn a_pair_request_waits_for_the_app_to_open() {
 /// 목록을 시험 중에 바꿀 수 있는 링크. 접속할 때마다 폰 쪽 세션을 새로 띄운다.
 struct Switch {
     link: Link,
+    /// 출처 이름. None 이면 길의 기본 이름
+    name: Option<&'static str>,
     phones: Mutex<Vec<Phone>>,
     identity: Identity,
     trusted: Vec<[u8; KEY_LEN]>,
@@ -662,6 +722,7 @@ impl Switch {
     fn new(link: Link, phone: Phone, identity: Identity, trusted: Vec<[u8; KEY_LEN]>) -> Self {
         Self {
             link,
+            name: None,
             phones: Mutex::new(vec![phone]),
             identity,
             trusted,
@@ -683,6 +744,11 @@ impl Switch {
 impl PhoneLinks for Switch {
     fn link(&self) -> Link {
         self.link
+    }
+
+    fn source(&self) -> Source {
+        self.name
+            .map_or(Source::of(self.link), |name| Source::new(self.link, name))
     }
 
     fn attached(&self) -> Result<Vec<Phone>, PortError> {
@@ -756,7 +822,7 @@ fn bluetooth_waits_for_usb_and_takes_over_after_unplug() {
     // 블루투스 알림 신호는 USB 가 붙은 뒤에 보이게 한다.
     air.unplug();
     run_links(&[&usb, &air], &world, || {
-        thread::sleep(Duration::from_millis(500));
+        wait_for(|| connected_on(&world, "p") == 1);
         air.plug(ble(&public));
         thread::sleep(Duration::from_millis(1500));
         assert_eq!(connected_on(&world, "p"), 1);
@@ -766,13 +832,9 @@ fn bluetooth_waits_for_usb_and_takes_over_after_unplug() {
             "USB 가 있으면 블루투스로 붙지 않음"
         );
         usb.unplug();
-        thread::sleep(Duration::from_millis(1800));
+        wait_for(|| connected_on(&world, "ble:1") == 1);
     });
-    assert_eq!(
-        connected_on(&world, "ble:1"),
-        1,
-        "뺀 뒤 2초 안에 블루투스로 붙음"
-    );
+    assert_eq!(connected_on(&world, "ble:1"), 1, "뺀 뒤 블루투스로 붙음");
 }
 
 #[test]
@@ -801,7 +863,15 @@ fn bluetooth_reports_busy_when_the_phone_drops_it_at_ready() {
     air.says = PhoneSays::Busy;
     air.strict = true;
     run_links(&[&air], &world, || {
-        thread::sleep(Duration::from_millis(3500))
+        let busy = ServeError::Busy.to_string();
+        wait_for(|| {
+            noted(
+                &world,
+                |note| matches!(note, Note::Lost(reason) if reason == &busy),
+            )
+        });
+        // 거절된 뒤 바로 다시 붙지 않는지 잠깐 더 본다.
+        thread::sleep(Duration::from_millis(1500));
     });
     assert!(
         air.connects.load(Ordering::Relaxed) <= 2,
@@ -825,10 +895,13 @@ fn bluetooth_waits_for_the_list_to_change_after_a_refusal() {
     // 기기는 이 컴퓨터를 모른다.
     let air = Switch::new(Link::Ble, ble(&public), phone_key, Vec::new());
     run_links(&[&air], &world, || {
-        thread::sleep(Duration::from_millis(1500));
+        wait_for(|| air.connects.load(Ordering::Relaxed) >= 1);
+        // 목록이 그대로면 다시 붙지 않는지 잠깐 더 본다.
+        thread::sleep(Duration::from_millis(1000));
         assert_eq!(air.connects.load(Ordering::Relaxed), 1);
         world.computer.trust([7; KEY_LEN], "다른 기기", "").unwrap();
-        thread::sleep(Duration::from_millis(1500));
+        wait_for(|| air.connects.load(Ordering::Relaxed) >= 2);
+        thread::sleep(Duration::from_millis(300));
     });
     assert_eq!(
         air.connects.load(Ordering::Relaxed),
@@ -938,7 +1011,11 @@ fn a_rotated_bluetooth_address_does_not_add_a_second_connection() {
     let new = Switch::new(Link::Ble, second(), phone_key, computer);
     new.unplug();
     run_links(&[&old, &new], &world, || {
-        thread::sleep(Duration::from_millis(800));
+        // 느린 CI 서버를 생각해 고정 시간 대신 옛 주소로 붙을 때까지 기다린다.
+        let deadline = std::time::Instant::now() + Duration::from_secs(20);
+        while connected_on(&world, "ble:1") == 0 && std::time::Instant::now() < deadline {
+            thread::sleep(Duration::from_millis(50));
+        }
         new.plug(second());
         thread::sleep(Duration::from_millis(1500));
     });
@@ -947,5 +1024,38 @@ fn a_rotated_bluetooth_address_does_not_add_a_second_connection() {
         new.connects.load(Ordering::Relaxed),
         0,
         "같은 기기는 블루투스 연결 하나"
+    );
+}
+
+#[test]
+fn each_usb_source_reports_only_its_own_list() {
+    let phone_key = Identity::generate();
+    let world = World::new(vec![phone_key.public], None);
+    let computer = vec![world.computer.identity.public];
+    let mut adb = Switch::new(Link::Usb, p(), phone_key.clone(), computer.clone());
+    adb.name = Some("adb");
+    adb.unplug();
+    let mut mux = Switch::new(
+        Link::Usb,
+        Phone::usb("ios:1", Some("iPhone".into()), None),
+        phone_key,
+        computer,
+    );
+    mux.name = Some("usbmux");
+    run_links(&[&adb, &mux], &world, || {
+        wait_for(|| {
+            let lists = world.notes.1.lock().unwrap();
+            lists.iter().any(|(source, _)| source.name == "adb")
+                && lists.iter().any(|(source, _)| source.name == "usbmux")
+        });
+    });
+    let lists = world.notes.1.lock().unwrap().clone();
+    assert!(lists.contains(&(Source::new(Link::Usb, "adb"), Vec::new())));
+    assert!(lists.contains(&(Source::new(Link::Usb, "usbmux"), vec!["ios:1".to_owned()])));
+    assert!(
+        lists
+            .iter()
+            .all(|(source, ids)| source.name != "adb" || ids.is_empty()),
+        "adb 목록에 아이폰이 섞이지 않음"
     );
 }

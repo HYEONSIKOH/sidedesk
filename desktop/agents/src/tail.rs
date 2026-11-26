@@ -16,7 +16,7 @@ pub struct Tail {
     /// 아직 줄 바꿈이 오지 않은 끝 조각
     carry: Vec<u8>,
     seen: bool,
-    /// 같은 이름으로 새로 쓰였는지 보려는 파일 번호(유닉스)
+    /// 같은 이름으로 새로 쓰였는지 보려는 파일 번호(유닉스 inode, 윈도우 볼륨 + 파일 번호)
     inode: u64,
     pub modified: Option<SystemTime>,
 }
@@ -29,7 +29,7 @@ impl Tail {
         let len = meta.len();
         self.modified = meta.modified().ok();
         // 바꿔치기는 길이가 같아도 알아야 하므로 파일 번호를 먼저 본다.
-        let inode = inode(&meta);
+        let inode = inode(path, &meta);
         let replaced = self.seen && inode != self.inode;
         if self.seen && !replaced && len == self.offset {
             return Ok(Vec::new());
@@ -71,12 +71,31 @@ impl Tail {
 }
 
 #[cfg(unix)]
-fn inode(meta: &std::fs::Metadata) -> u64 {
+fn inode(_path: &Path, meta: &std::fs::Metadata) -> u64 {
     std::os::unix::fs::MetadataExt::ino(meta)
 }
 
-#[cfg(not(unix))]
-fn inode(_meta: &std::fs::Metadata) -> u64 {
+/// 볼륨 번호와 파일 번호를 섞은 값. 못 읽으면 0(바꿔치기를 길이로만 알아챈다).
+#[cfg(windows)]
+fn inode(path: &Path, _meta: &std::fs::Metadata) -> u64 {
+    use std::os::windows::io::AsRawHandle;
+    use windows_sys::Win32::Storage::FileSystem::{
+        BY_HANDLE_FILE_INFORMATION, GetFileInformationByHandle,
+    };
+    let Ok(file) = File::open(path) else {
+        return 0;
+    };
+    let mut info = BY_HANDLE_FILE_INFORMATION::default();
+    // SAFETY: 열린 파일의 핸들과 채울 구조체. 핸들은 file 이 닫는다.
+    if unsafe { GetFileInformationByHandle(file.as_raw_handle(), &mut info) } == 0 {
+        return 0;
+    }
+    let index = (u64::from(info.nFileIndexHigh) << 32) | u64::from(info.nFileIndexLow);
+    index ^ (u64::from(info.dwVolumeSerialNumber) << 32)
+}
+
+#[cfg(not(any(unix, windows)))]
+fn inode(_path: &Path, _meta: &std::fs::Metadata) -> u64 {
     0
 }
 

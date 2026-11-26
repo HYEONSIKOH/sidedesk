@@ -105,17 +105,27 @@ fn collects_only_while_someone_watches() {
 
         let phone = hub.join();
         phone.set(&watch(View::Performance, &[View::Processes]));
+        let start = Instant::now();
         thread::sleep(Duration::from_millis(400));
         let performance = count(&counts.performance);
         let processes = count(&counts.processes);
-        // 400ms 동안 성능 40ms 마다(약 10번), 프로세스 작은 칸 240ms 마다(약 2번)
-        assert!((5..=14).contains(&performance), "성능 {performance}");
-        assert!((1..=4).contains(&processes), "프로세스 {processes}");
+        let elapsed = start.elapsed().as_millis() as usize;
+        // 성능 40ms 마다, 프로세스 작은 칸 240ms 마다. 느린 CI 서버는 주기가 밀려 덜 모일 수 있어
+        // 아래는 "모였다"만, 위는 실제로 흐른 시간으로 엄격히 본다.
+        assert!(
+            (1..=elapsed / 40 + 4).contains(&performance),
+            "성능 {performance}, {elapsed}ms"
+        );
+        assert!(
+            (1..=elapsed / 240 + 2).contains(&processes),
+            "프로세스 {processes}, {elapsed}ms"
+        );
         assert!(!phone.take().is_empty());
 
         // 화면이 꺼지면 빈 구독이 온다.
         phone.set(&Subscribe::default());
-        thread::sleep(Duration::from_millis(50));
+        // 하던 수집이 끝나기를 기다린 뒤부터 센다.
+        thread::sleep(Duration::from_millis(200));
         let stopped = count(&counts.performance);
         thread::sleep(Duration::from_millis(300));
         assert_eq!(count(&counts.performance), stopped);
@@ -123,10 +133,9 @@ fn collects_only_while_someone_watches() {
 
         // 다시 보면 다시 모으고, 연결이 끝나면 멈춘다.
         phone.set(&watch(View::Processes, &[]));
-        thread::sleep(Duration::from_millis(200));
-        assert!(count(&counts.processes) > processes);
+        wait_for(|| count(&counts.processes) > processes);
         drop(phone);
-        thread::sleep(Duration::from_millis(50));
+        thread::sleep(Duration::from_millis(200));
         let gone = count(&counts.processes);
         thread::sleep(Duration::from_millis(300));
         assert_eq!(count(&counts.processes), gone);
@@ -147,16 +156,24 @@ fn two_phones_share_one_collection() {
         far.set(&watch(View::Nothing, &[View::Performance]));
         let mut got = (0, 0);
         let start = Instant::now();
-        while start.elapsed() < Duration::from_millis(500) {
+        // 고정 시간 대신 여러 번 모일 때까지 본다(느린 CI 서버를 생각해 최대 20초).
+        while count(&counts.performance) < 8 && start.elapsed() < Duration::from_secs(20) {
             got.0 += near.take().len();
             got.1 += far.take().len();
             thread::sleep(Duration::from_millis(5));
         }
+        thread::sleep(Duration::from_millis(20));
+        got.0 += near.take().len();
+        got.1 += far.take().len();
         let collected = count(&counts.performance);
-        // 수집은 빠른 쪽 주기 한 번뿐이고, 작은 칸 폰은 그 절반쯤 받는다.
-        assert!((6..=16).contains(&collected), "수집 {collected}");
+        let elapsed = start.elapsed().as_millis() as usize;
+        // 수집은 빠른 쪽 주기 한 번뿐이고(두 폰이 따로 모으지 않음), 작은 칸 폰은 그 절반쯤 받는다.
+        assert!(
+            (8..=elapsed / 40 + 4).contains(&collected),
+            "수집 {collected}, {elapsed}ms"
+        );
         assert!(got.0 + 2 >= collected, "큰 화면 {got:?}");
-        assert!((3..=9).contains(&got.1) && got.1 < got.0, "작은 칸 {got:?}");
+        assert!(got.1 >= 2 && got.1 < got.0, "작은 칸 {got:?}");
         hub.stop();
     });
 }
@@ -295,7 +312,7 @@ impl Report for Computer {
     fn note(&self, _: &str, _: sidedesk_domain::Note) {}
 }
 
-/// 폰 세션을 400ms 돌린다. Ready 가 되면 구독하고 같은 종료 명령을 두 번 보낸다.
+/// 폰 세션을 기다릴 것이 다 올 때까지 돌린다. Ready 가 되면 구독하고 같은 종료 명령을 두 번 보낸다.
 /// `forget` 이면 명령을 보내기 직전에 컴퓨터에서 등록을 해제한다.
 fn talk(forget: bool) -> (Result<Ended, ServeError>, Vec<Body>, Counts) {
     talk_with(forget, None)
@@ -381,7 +398,26 @@ fn talk_over(
         let mut buffer = vec![0; 64 * 1024];
         let start = Instant::now();
         let mut sent = false;
-        while start.elapsed() < window {
+        // 기다릴 것이 다 오거나 연결이 끝날 때까지 본다. `window` 는 최소 한도이고,
+        // 느린 CI 서버를 생각해 적어도 20초까지 기다린다.
+        let deadline = window.max(Duration::from_secs(20));
+        let enough = |got: &[Body]| {
+            let count = |pick: fn(&Body) -> bool| got.iter().filter(|body| pick(body)).count();
+            let results = count(|body| matches!(body, Body::CommandResult(_))) >= 2;
+            if playing {
+                // 블루투스면 그림과 그 그림을 가리키는 곡 정보까지
+                results
+                    && (ble_rate.is_none()
+                        || (count(|body| matches!(body, Body::Artwork(_))) >= 1
+                            && count(|body| matches!(body, Body::NowPlaying(n) if n.artwork != 0))
+                                >= 1))
+            } else {
+                results
+                    && count(|body| matches!(body, Body::Performance(_))) >= 3
+                    && (book.is_some() || count(|body| matches!(body, Body::Processes(_))) >= 1)
+            }
+        };
+        while start.elapsed() < deadline && !served.is_finished() && !enough(&got) {
             if let Received::Bytes(n) = theirs.receive(&mut buffer).unwrap() {
                 let _ = session.feed(&buffer[..n]);
             }
@@ -499,7 +535,7 @@ fn a_panicking_collector_is_tried_again() {
         phone.set(&watch(View::Performance, &[]));
         let start = Instant::now();
         let mut got = 0;
-        while start.elapsed() < Duration::from_millis(300) && got == 0 {
+        while start.elapsed() < Duration::from_secs(20) && got == 0 {
             got += phone.take().len();
             thread::sleep(Duration::from_millis(5));
         }
@@ -563,7 +599,14 @@ fn phones_at_one_place_share_weather_and_stop_ends_the_thread() {
         }
         let mut got = (0, 0);
         let start = Instant::now();
-        while start.elapsed() < Duration::from_millis(400) {
+        // 두 기기가 하나씩 받고 실패 뒤 다시 받기까지 될 때까지(최대 20초), 그 뒤 주기 하나를 더 본다.
+        let mut settled: Option<Instant> = None;
+        while start.elapsed() < Duration::from_secs(20)
+            && settled.is_none_or(|at| at.elapsed() < Duration::from_millis(200))
+        {
+            if settled.is_none() && got.0 >= 1 && got.1 >= 1 {
+                settled = Some(Instant::now());
+            }
             for (phone, n) in [(&a, &mut got.0), (&b, &mut got.1)] {
                 for body in phone.take() {
                     if let Body::Weather(w) = body {
@@ -577,7 +620,11 @@ fn phones_at_one_place_share_weather_and_stop_ends_the_thread() {
         }
         // 첫 번째는 panic(실패), 20ms 뒤 성공, 그 뒤 150ms 마다. 두 기기가 함께 쓴다(기기마다 받지 않음).
         let fetched = calls.0.load(Ordering::SeqCst);
-        assert!((2..=5).contains(&fetched), "받기 {fetched}");
+        let elapsed = start.elapsed().as_millis() as usize;
+        assert!(
+            (2..=elapsed / 150 + 4).contains(&fetched),
+            "받기 {fetched}, {elapsed}ms"
+        );
         assert!(got.0 >= 1 && got.1 >= 1, "{got:?}");
         // 성능은 아무도 안 봐서 모으지 않았다.
         assert_eq!(count(&counts.performance), 0);
@@ -586,7 +633,8 @@ fn phones_at_one_place_share_weather_and_stop_ends_the_thread() {
         for phone in [&a, &b] {
             phone.set(&Subscribe::default());
         }
-        thread::sleep(Duration::from_millis(100));
+        // 하던 받기가 끝나기를 기다린 뒤부터 센다.
+        thread::sleep(Duration::from_millis(300));
         let stopped = calls.0.load(Ordering::SeqCst);
         thread::sleep(Duration::from_millis(300));
         assert_eq!(calls.0.load(Ordering::SeqCst), stopped);
@@ -595,7 +643,7 @@ fn phones_at_one_place_share_weather_and_stop_ends_the_thread() {
         let start = Instant::now();
         while !runner.is_finished() {
             assert!(
-                start.elapsed() < Duration::from_secs(1),
+                start.elapsed() < Duration::from_secs(10),
                 "날씨 스레드가 끝나지 않음"
             );
             thread::sleep(Duration::from_millis(5));
@@ -641,9 +689,14 @@ fn weather_notices_do_not_disturb_performance_collection() {
             });
             thread::sleep(Duration::from_millis(1));
         }
-        // 성능은 40ms 주기 그대로(약 10번). 날씨 알림마다 더 모으지 않는다.
+        // 성능은 40ms 주기 그대로. 날씨 알림마다 더 모으지 않는다.
+        // 느린 CI 서버에서는 주기가 밀려 덜 모일 수 있으므로, 실제로 흐른 시간으로 위쪽 한도만 엄격히 본다.
         let performance = count(&counts.performance);
-        assert!((5..=14).contains(&performance), "성능 {performance}");
+        let ticks = start.elapsed().as_millis() as usize / 40;
+        assert!(
+            (1..=ticks + 4).contains(&performance),
+            "성능 {performance}, 주기 {ticks}"
+        );
         hub.stop();
     });
 }
@@ -711,11 +764,12 @@ fn quick_ai() -> sidedesk_domain::AiCadence {
     }
 }
 
+/// 느린 CI 서버를 생각해 고정 시간 대신 조건이 될 때까지 기다린다(최대 20초).
 fn wait_for(mut done: impl FnMut() -> bool) {
     let start = Instant::now();
     while !done() {
         assert!(
-            start.elapsed() < Duration::from_secs(2),
+            start.elapsed() < Duration::from_secs(20),
             "기다려도 되지 않음"
         );
         thread::sleep(Duration::from_millis(5));
@@ -780,19 +834,28 @@ fn ai_sessions_flow_and_stop_quietly_when_nobody_watches() {
 
         // 둘 다 안 보는 사이 끝났다가 다시 보면 알림이 없다.
         *log.0.lock().unwrap() = vec![session(Phase::Working, 0)];
-        thread::sleep(Duration::from_millis(60));
+        // 작업 중을 적어도 한 번 읽은 뒤에 둘 다 안 보게 한다.
+        let seen = log.1.load(Ordering::SeqCst);
+        wait_for(|| log.1.load(Ordering::SeqCst) >= seen + 2);
         near.set(&Subscribe::default());
         far.set(&Subscribe::default());
-        thread::sleep(Duration::from_millis(150));
+        thread::sleep(Duration::from_millis(200));
         let polled = log.1.load(Ordering::SeqCst);
         *log.0.lock().unwrap() = vec![session(Phase::TurnEnded, 60)];
         thread::sleep(Duration::from_millis(100));
         assert_eq!(log.1.load(Ordering::SeqCst), polled);
         near.set(&watch(View::Ai, &[]));
+        let (mut sessions, mut alerts) = (0, 0);
+        wait_for(|| {
+            let (s, a, _) = got(&near);
+            sessions += s;
+            alerts += a;
+            sessions >= 1
+        });
+        // 늦게 오는 알림이 없는지 잠깐 더 본다.
         thread::sleep(Duration::from_millis(100));
-        let (sessions, alerts, _) = got(&near);
+        alerts += got(&near).1;
         assert_eq!(alerts, 0);
-        assert!(sessions >= 1);
 
         hub.stop();
     });

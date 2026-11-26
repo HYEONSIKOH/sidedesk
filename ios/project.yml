@@ -8,20 +8,42 @@ settings:
     SWIFT_VERSION: "6.0"
     ARCHS: arm64
 targets:
-  SideDesk:
-    type: application
+  # core 의 Swift 바인딩. `View`, `ProcessInfo` 같은 이름이 SwiftUI, Foundation 과 겹치지 않게 모듈을 나눈다.
+  SideDeskBridge:
+    type: framework.static
     platform: iOS
     sources:
-      - App
       - Generated/sidedesk_core.swift
     dependencies:
       - framework: Generated/SideDeskCore.xcframework
         embed: false
     settings:
       base:
+        PRODUCT_BUNDLE_IDENTIFIER: io.github.hyeonsikoh.sidedesk.bridge
+        GENERATE_INFOPLIST_FILE: YES
+        # 만들어진 코드라 Swift 6 엄격 검사 밖에 둔다.
+        SWIFT_VERSION: "5.0"
+  SideDesk:
+    type: application
+    platform: iOS
+    sources:
+      - path: App
+        excludes:
+          - Info.plist
+    dependencies:
+      - target: SideDeskBridge
+      - framework: Generated/SideDeskCore.xcframework
+        embed: false
+    settings:
+      base:
         PRODUCT_BUNDLE_IDENTIFIER: io.github.hyeonsikoh.sidedesk
         GENERATE_INFOPLIST_FILE: YES
+        INFOPLIST_FILE: App/Info.plist
+        INFOPLIST_KEY_CFBundleDisplayName: SideDesk
         INFOPLIST_KEY_UILaunchScreen_Generation: YES
+        INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone: UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight
+        INFOPLIST_KEY_NSBluetoothAlwaysUsageDescription: 케이블 없이 컴퓨터와 연결합니다
+        INFOPLIST_KEY_NSLocationWhenInUseUsageDescription: 대략적인 위치를 컴퓨터를 거쳐 날씨 제공처로 보내 날씨를 받습니다
         MARKETING_VERSION: 0.1.0
         CURRENT_PROJECT_VERSION: 1
   SideDeskTests:

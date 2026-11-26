@@ -2243,6 +2243,7 @@ dependencies = [
  "serde_json",
  "sidedesk-core",
  "sidedesk-domain",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -2338,6 +2339,7 @@ version = "0.1.0"
 dependencies = [
  "sidedesk-core",
  "sidedesk-domain",
+ "sidedesk-weather",
  "windows-sys 0.61.2",
 ]
 

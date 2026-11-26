@@ -33,3 +33,13 @@ impl ComputerName for WindowsName {
         Ok(String::from_utf16_lossy(&buffer[..length as usize]))
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn reads_this_computer() {
+        assert!(!WindowsName.read().unwrap().is_empty());
+    }
+}

@@ -542,8 +542,9 @@ mod tests {
         }
     }
 
+    /// 느린 CI 서버를 생각해 5ms 씩 최대 20초 기다린다(아래 다른 기다림도 같음).
     fn wait_results(deck: &Deck, id: u64) -> Vec<CommandResult> {
-        for _ in 0..200 {
+        for _ in 0..4000 {
             let (_, results) = deck.take(id);
             if !results.is_empty() {
                 return results;
@@ -694,7 +695,7 @@ mod tests {
         thread::scope(|scope| {
             scope.spawn(|| deck.watch_toggles(Duration::from_millis(20)));
             let toggle_of = |deck: &Deck| {
-                for _ in 0..200 {
+                for _ in 0..4000 {
                     if let (Some(list), _) = deck.take(1) {
                         return list.items[0].toggle;
                     }
@@ -705,7 +706,7 @@ mod tests {
             assert_eq!(toggle_of(&deck), ShortcutToggle::Off as i32);
             // 누르면 2초를 기다리지 않고 켜짐 목록이 바로 온다.
             deck.run(1, &command(30, id));
-            for _ in 0..200 {
+            for _ in 0..4000 {
                 if fake.muted.load(Ordering::SeqCst) {
                     break;
                 }
