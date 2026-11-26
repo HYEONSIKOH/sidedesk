@@ -32,3 +32,20 @@ impl Speaker for WindowsSpeaker {
         Err(unsupported())
     }
 }
+
+#[cfg(test)]
+mod probe {
+    use windows::Media::Control::GlobalSystemMediaTransportControlsSessionManager;
+
+    /// 패키지 없는(MSIX 아닌) 앱에서 시스템 미디어 세션 관리자를 열 수 있는지 먼저 본다.
+    #[test]
+    #[ignore = "윈도우 시스템 미디어를 부른다. CI 윈도우 작업에서 돌린다"]
+    fn windows_only_the_media_session_manager_opens_without_a_package() {
+        let manager = GlobalSystemMediaTransportControlsSessionManager::RequestAsync()
+            .expect("요청")
+            .join()
+            .expect("세션 관리자");
+        let current = manager.GetCurrentSession();
+        eprintln!("지금 세션 있음: {}", current.is_ok());
+    }
+}

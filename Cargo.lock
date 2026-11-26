@@ -2340,6 +2340,7 @@ dependencies = [
  "sidedesk-core",
  "sidedesk-domain",
  "sidedesk-weather",
+ "windows",
  "windows-sys 0.61.2",
 ]
 
