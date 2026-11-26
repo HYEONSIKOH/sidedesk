@@ -399,6 +399,10 @@ def report(scan: Scan) -> int:
 
 
 def main(argv: list[str]) -> int:
+    # 윈도우 콘솔의 기본 인코딩(cp1252 등)은 한글을 못 써서 출력하다 멈춘다.
+    for stream in (sys.stdout, sys.stderr):
+        if hasattr(stream, "reconfigure"):
+            stream.reconfigure(encoding="utf-8", errors="replace")
     parser = argparse.ArgumentParser(description="비밀값과 개인 정보 찾기")
     parser.add_argument("--repo", action="store_true")
     parser.add_argument("--history", action="store_true")
