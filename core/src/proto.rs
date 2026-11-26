@@ -4,7 +4,7 @@
 pub struct Envelope {
     #[prost(
         oneof = "envelope::Body",
-        tags = "1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20"
+        tags = "1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24"
     )]
     pub body: Option<envelope::Body>,
 }
@@ -64,6 +64,18 @@ pub mod envelope {
         /// 폰 → 컴퓨터. 결과는 CommandResult
         #[prost(message, tag = "20")]
         RunShortcut(super::RunShortcut),
+        /// 컴퓨터 → 폰
+        #[prost(message, tag = "21")]
+        NowPlaying(super::NowPlaying),
+        /// 컴퓨터 → 폰
+        #[prost(message, tag = "22")]
+        Artwork(super::Artwork),
+        /// 컴퓨터 → 폰
+        #[prost(message, tag = "23")]
+        Volume(super::Volume),
+        /// 폰 → 컴퓨터. 결과는 CommandResult
+        #[prost(message, tag = "24")]
+        MusicCommand(super::MusicCommand),
     }
 }
 
@@ -108,6 +120,8 @@ pub enum View {
     Ai = 4,
     /// main 이면 단축키 큰 화면, tiles 면 작은 칸. 같은 목록을 받는다.
     Shortcuts = 5,
+    /// main 이면 곡, 그림, 볼륨. tiles 에만 있으면 곡만.
+    Music = 6,
 }
 
 /// 지금 보이는 것 전체. 받을 때마다 앞의 구독을 바꾼다. 둘 다 비면 아무것도 안 본다.
@@ -405,4 +419,95 @@ pub struct RunShortcut {
     pub shortcut_id: u32,
     #[prost(uint64, tag = "3")]
     pub book: u64,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, prost::Enumeration)]
+#[repr(i32)]
+pub enum MusicPlayer {
+    /// 재생 중인 것이 없음
+    None = 0,
+    /// 맥 음악 앱
+    Music = 1,
+    Spotify = 2,
+    /// 윈도우 시스템 미디어
+    System = 3,
+}
+
+/// 지금 곡과 재생 상태. 바뀔 때만.
+#[derive(Clone, PartialEq, prost::Message)]
+pub struct NowPlaying {
+    #[prost(enumeration = "MusicPlayer", tag = "1")]
+    pub player: i32,
+    #[prost(string, tag = "2")]
+    pub title: String,
+    #[prost(string, tag = "3")]
+    pub artist: String,
+    #[prost(string, tag = "4")]
+    pub album: String,
+    /// 0 이면 모름
+    #[prost(uint64, tag = "5")]
+    pub duration_ms: u64,
+    /// 그림 해시. 0 이면 그림 없음
+    #[prost(uint64, tag = "6")]
+    pub artwork: u64,
+    #[prost(bool, tag = "7")]
+    pub playing: bool,
+    /// 보내는 순간의 위치
+    #[prost(uint64, tag = "8")]
+    pub position_ms: u64,
+    /// 컴퓨터가 위치를 잰 때(유닉스 밀리초, 참고용)
+    #[prost(uint64, tag = "9")]
+    pub measured_at: u64,
+    #[prost(bool, tag = "10")]
+    pub can_play: bool,
+    #[prost(bool, tag = "11")]
+    pub can_next: bool,
+    #[prost(bool, tag = "12")]
+    pub can_previous: bool,
+}
+
+/// 앨범 그림 한 장(한 변 최대 320px JPEG)
+#[derive(Clone, PartialEq, prost::Message)]
+pub struct Artwork {
+    #[prost(uint64, tag = "1")]
+    pub hash: u64,
+    #[prost(bytes = "vec", tag = "2")]
+    pub jpeg: Vec<u8>,
+}
+
+#[derive(Clone, Copy, PartialEq, prost::Message)]
+pub struct Volume {
+    /// 출력 장치가 있는지
+    #[prost(bool, tag = "1")]
+    pub available: bool,
+    /// 0~100
+    #[prost(uint32, tag = "2")]
+    pub level: u32,
+    #[prost(bool, tag = "3")]
+    pub muted: bool,
+    /// 바꿀 수 있는 장치인지
+    #[prost(bool, tag = "4")]
+    pub settable: bool,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, prost::Enumeration)]
+#[repr(i32)]
+pub enum MusicAction {
+    Unknown = 0,
+    PlayPause = 1,
+    Next = 2,
+    Previous = 3,
+    /// level 로 맞춘다
+    SetVolume = 4,
+}
+
+#[derive(Clone, Copy, PartialEq, prost::Message)]
+pub struct MusicCommand {
+    #[prost(uint64, tag = "1")]
+    pub request_id: u64,
+    #[prost(enumeration = "MusicAction", tag = "2")]
+    pub action: i32,
+    /// SetVolume 일 때 0~100
+    #[prost(uint32, tag = "3")]
+    pub level: u32,
 }
