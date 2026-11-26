@@ -103,24 +103,25 @@ pub fn muted() -> Option<bool> {
     read_u32(device, first).map(|value| value != 0)
 }
 
-/// 지금 상태를 뒤집는다.
+/// 지금 상태를 뒤집는다. 쓸 수 있는지 모두 먼저 보고, 중간에 실패하면 앞엣것을 되돌린다.
 pub fn toggle_mute() -> Result<(), PortError> {
-    let failed = || PortError::new("실행하지 못했습니다");
-    let device = output_device().ok_or_else(failed)?;
+    let failed = |text: &str| PortError::new(text);
+    let device = output_device().ok_or_else(|| failed("소리 출력 장치를 찾지 못했습니다"))?;
     let elements = mute_elements(device);
     let now = elements
         .first()
         .and_then(|address| read_u32(device, address))
-        .ok_or_else(failed)?;
-    let next: u32 = u32::from(now == 0);
+        .ok_or_else(|| failed("이 장치는 소리를 끌 수 없습니다"))?;
     for address in &elements {
         let mut settable = 0u8;
         // SAFETY: address 는 살아 있다.
         let status = unsafe { AudioObjectIsPropertySettable(device, address, &mut settable) };
         if status != 0 || settable == 0 {
-            return Err(failed());
+            return Err(failed("이 장치는 소리를 끌 수 없습니다"));
         }
-        // SAFETY: next 는 u32 크기다.
+    }
+    let write = |address: &Address, value: u32| {
+        // SAFETY: value 는 u32 크기다.
         let status = unsafe {
             AudioObjectSetPropertyData(
                 device,
@@ -128,11 +129,18 @@ pub fn toggle_mute() -> Result<(), PortError> {
                 0,
                 ptr::null(),
                 size_of::<u32>() as u32,
-                (&raw const next).cast(),
+                (&raw const value).cast(),
             )
         };
-        if status != 0 {
-            return Err(failed());
+        status == 0
+    };
+    let next = u32::from(now == 0);
+    for (index, address) in elements.iter().enumerate() {
+        if !write(address, next) {
+            for done in &elements[..index] {
+                write(done, now);
+            }
+            return Err(failed("소리 장치를 바꾸지 못했습니다"));
         }
     }
     Ok(())

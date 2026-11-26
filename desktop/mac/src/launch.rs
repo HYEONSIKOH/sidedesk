@@ -27,33 +27,47 @@ const KEY_SETTINGS: &str =
     "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility";
 
 pub struct MacLauncher {
-    /// 방해 금지는 우리가 마지막으로 바꾼 값만 안다.
-    focus: Mutex<Option<bool>>,
+    /// 방해 금지는 우리가 마지막으로 바꾼 값만 안다. 켜기, 끄기 단축어 쌍마다 따로.
+    focus: Mutex<HashMap<(String, String), bool>>,
     children: Mutex<HashMap<u32, Child>>,
     stopped: AtomicBool,
     home: PathBuf,
+    tool: PathBuf,
+    limit: Duration,
 }
 
 impl MacLauncher {
     pub fn new(home: PathBuf) -> Self {
+        Self::with_tool(home, PathBuf::from(SHORTCUTS), SHORTCUTS_LIMIT)
+    }
+
+    /// 시험에서 단축어 프로그램과 시간 제한을 바꾼다.
+    pub fn with_tool(home: PathBuf, tool: PathBuf, limit: Duration) -> Self {
         Self {
-            focus: Mutex::new(None),
+            focus: Mutex::default(),
             children: Mutex::default(),
             stopped: AtomicBool::new(false),
             home,
+            tool,
+            limit,
         }
     }
 
     /// 쉘 없이 정해진 인자로 돌린다. 시간이 넘으면 끝내고 거둔다.
-    fn shortcuts(&self, args: &[&str]) -> Option<(bool, Vec<u8>)> {
+    /// `capture` 가 아니면 출력을 받지 않는다(단축어가 띄운 손자가 파이프를 물고 남아도 막히지 않게).
+    fn shortcuts(&self, args: &[&str], capture: bool) -> Option<(bool, Vec<u8>)> {
         if self.stopped.load(Ordering::SeqCst) {
             return None;
         }
-        let mut child = Command::new(SHORTCUTS)
+        let mut child = Command::new(&self.tool)
             .args(args)
             .current_dir(&self.home)
             .stdin(Stdio::null())
-            .stdout(Stdio::piped())
+            .stdout(if capture {
+                Stdio::piped()
+            } else {
+                Stdio::null()
+            })
             .stderr(Stdio::null())
             .spawn()
             .ok()?;
@@ -72,7 +86,17 @@ impl MacLauncher {
                 kept
             })
         });
-        self.lock_children().insert(pid, child);
+        {
+            let mut children = self.lock_children();
+            children.insert(pid, child);
+            // 띄우는 사이 stop 이 왔으면 바로 끝낸다.
+            if self.stopped.load(Ordering::SeqCst)
+                && let Some(mut child) = children.remove(&pid)
+            {
+                let _ = child.kill();
+                let _ = child.wait();
+            }
+        }
         let start = Instant::now();
         let ok = loop {
             let mut children = self.lock_children();
@@ -84,7 +108,7 @@ impl MacLauncher {
                     children.remove(&pid);
                     break status.success();
                 }
-                Ok(None) if start.elapsed() < SHORTCUTS_LIMIT => {}
+                Ok(None) if start.elapsed() < self.limit => {}
                 _ => {
                     let _ = child.kill();
                     let _ = child.wait();
@@ -105,17 +129,22 @@ impl MacLauncher {
             .unwrap_or_else(|lock| lock.into_inner())
     }
 
+    fn lock_focus(&self) -> std::sync::MutexGuard<'_, HashMap<(String, String), bool>> {
+        self.focus.lock().unwrap_or_else(|lock| lock.into_inner())
+    }
+
+    /// 상태 잠금은 읽고 쓸 때만 쥔다(단축어가 도는 10초 동안 상태 물음을 막지 않게).
     fn focus(&self, on: &str, off: &str) -> Result<(), PortError> {
-        let mut state = self.focus.lock().unwrap_or_else(|lock| lock.into_inner());
+        let pair = (on.to_owned(), off.to_owned());
         // 모르면 켠다.
-        let turn_on = *state != Some(true);
+        let turn_on = self.lock_focus().get(&pair) != Some(&true);
         let name = if turn_on { on } else { off };
         if name.starts_with('-') {
             return Err(PortError::new("단축어를 찾지 못했습니다"));
         }
-        match self.shortcuts(&["run", name]) {
+        match self.shortcuts(&["run", name], false) {
             Some((true, _)) => {
-                *state = Some(turn_on);
+                self.lock_focus().insert(pair, turn_on);
                 Ok(())
             }
             _ => Err(PortError::new("단축어를 찾지 못했습니다")),
@@ -183,8 +212,8 @@ impl Launcher for MacLauncher {
                 action: SystemAction::Mute,
             } => audio::muted(),
             Action::System {
-                action: SystemAction::Focus { .. },
-            } => *self.focus.lock().unwrap_or_else(|lock| lock.into_inner()),
+                action: SystemAction::Focus { on, off },
+            } => self.lock_focus().get(&(on.clone(), off.clone())).copied(),
             _ => None,
         }
     }
@@ -239,7 +268,7 @@ impl ShortcutHelp for MacLauncher {
     }
 
     fn focus_shortcuts(&self) -> Vec<String> {
-        match self.shortcuts(&["list"]) {
+        match self.shortcuts(&["list"], true) {
             Some((true, output)) => String::from_utf8_lossy(&output)
                 .lines()
                 .map(str::trim)
@@ -248,6 +277,14 @@ impl ShortcutHelp for MacLauncher {
                 .collect(),
             _ => Vec::new(),
         }
+    }
+
+    fn app_exists(&self, bundle: &str) -> bool {
+        autoreleasepool(|_| {
+            NSWorkspace::sharedWorkspace()
+                .URLForApplicationWithBundleIdentifier(&NSString::from_str(bundle))
+                .is_some()
+        })
     }
 
     fn open_key_settings(&self) {
@@ -352,6 +389,63 @@ mod tests {
             },
         };
         assert!(launcher.run(&focus).is_err());
+    }
+
+    #[test]
+    fn slow_shortcuts_are_ended_and_stop_ends_running_ones() {
+        let focus = Action::System {
+            action: SystemAction::Focus {
+                on: "5".into(),
+                off: "5".into(),
+            },
+        };
+        // /bin/sleep 을 단축어 프로그램 대신 쓴다. 시간 제한을 넘기면 끝내고 실패로 본다.
+        let quick = MacLauncher::with_tool(
+            std::env::temp_dir(),
+            PathBuf::from("/bin/sleep"),
+            Duration::from_millis(200),
+        );
+        let start = Instant::now();
+        assert!(quick.shortcuts(&["5"], false).is_some_and(|(ok, _)| !ok));
+        assert!(start.elapsed() < Duration::from_secs(2));
+        let launcher = std::sync::Arc::new(MacLauncher::with_tool(
+            std::env::temp_dir(),
+            PathBuf::from("/bin/sleep"),
+            Duration::from_secs(10),
+        ));
+        let worker = {
+            let launcher = std::sync::Arc::clone(&launcher);
+            thread::spawn(move || launcher.shortcuts(&["5"], false))
+        };
+        thread::sleep(Duration::from_millis(200));
+        let start = Instant::now();
+        launcher.stop();
+        let _ = worker.join().unwrap();
+        assert!(start.elapsed() < Duration::from_secs(1));
+        assert!(launcher.run(&focus).is_err());
+    }
+
+    #[test]
+    fn focus_state_is_per_pair() {
+        let launcher = MacLauncher::new(std::env::temp_dir());
+        launcher
+            .lock_focus()
+            .insert(("업무 켜기".into(), "업무 끄기".into()), true);
+        let pair = |on: &str, off: &str| Action::System {
+            action: SystemAction::Focus {
+                on: on.into(),
+                off: off.into(),
+            },
+        };
+        assert_eq!(launcher.toggle(&pair("업무 켜기", "업무 끄기")), Some(true));
+        assert_eq!(launcher.toggle(&pair("수면 켜기", "수면 끄기")), None);
+    }
+
+    #[test]
+    fn apps_can_be_checked_by_bundle() {
+        let launcher = MacLauncher::new(std::env::temp_dir());
+        assert!(launcher.app_exists("com.apple.finder"));
+        assert!(!launcher.app_exists("invalid.sidedesk.nothing"));
     }
 
     #[test]

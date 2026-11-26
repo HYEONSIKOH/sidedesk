@@ -77,6 +77,10 @@ impl Deck {
                 Err(error) => (Saved::new(0), Some(error.0)),
             };
             let repaired = saved.repair();
+            // 되돌렸거나 바로잡았으면 곧바로 저장해, 다음에 켤 때 또 되돌리지 않게 한다.
+            if notice.is_some() || repaired {
+                let _ = self.store.save(&saved);
+            }
             inner.notice = notice.or_else(|| {
                 repaired.then(|| "같은 번호의 단축키가 있어 뒤엣것을 뺐습니다".to_owned())
             });
@@ -237,7 +241,9 @@ impl Deck {
         }
         let saved = inner.saved.as_ref().expect("불러옴");
         let refuse = |reason: &str| done(request_id, Err(reason.to_owned()));
-        let outcome = if command.book != saved.book {
+        let outcome = if inner.stopped {
+            Err(refuse("프로그램을 끄는 중이라 실행하지 않았습니다"))
+        } else if command.book != saved.book {
             Err(refuse(
                 "다른 컴퓨터의 단축키입니다. 목록을 다시 받는 중입니다",
             ))
@@ -687,18 +693,31 @@ mod tests {
         assert_eq!(list.items[0].toggle, ShortcutToggle::None as i32);
         thread::scope(|scope| {
             scope.spawn(|| deck.watch_toggles(Duration::from_millis(20)));
-            for _ in 0..100 {
-                if let (Some(list), _) = deck.take(1) {
-                    assert_eq!(list.items[0].toggle, ShortcutToggle::Off as i32);
+            let toggle_of = |deck: &Deck| {
+                for _ in 0..200 {
+                    if let (Some(list), _) = deck.take(1) {
+                        return list.items[0].toggle;
+                    }
+                    thread::sleep(Duration::from_millis(5));
+                }
+                panic!("목록이 다시 오지 않음");
+            };
+            assert_eq!(toggle_of(&deck), ShortcutToggle::Off as i32);
+            // 누르면 2초를 기다리지 않고 켜짐 목록이 바로 온다.
+            deck.run(1, &command(30, id));
+            for _ in 0..200 {
+                if fake.muted.load(Ordering::SeqCst) {
                     break;
                 }
                 thread::sleep(Duration::from_millis(5));
             }
-            // 누르면 바로 켜짐으로
-            deck.run(1, &command(30, id));
-            wait_results(&deck, 1);
-            assert!(fake.muted.load(Ordering::SeqCst));
+            assert_eq!(toggle_of(&deck), ShortcutToggle::On as i32);
             deck.stop();
+            // 멈춘 뒤에는 실행하지 않는다.
+            deck.run(1, &command(31, id));
+            let (_, results) = deck.take(1);
+            let refused = results.iter().find(|r| r.request_id == 31).unwrap();
+            assert!(!refused.ok);
         });
         // 보지 않는 구독자에게는 목록을 보내지 않는다.
         deck.join(2);

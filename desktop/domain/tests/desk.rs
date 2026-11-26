@@ -827,3 +827,44 @@ fn a_forgotten_phone_cannot_run_shortcuts() {
             .any(|body| matches!(body, Body::CommandResult(_)))
     );
 }
+
+#[test]
+fn shortcut_subscriptions_and_a_hub_without_a_deck() {
+    // 장부가 없으면 "없는 단축키"로 바로 거절한다.
+    let counts = Counts::default();
+    let bare = hub(&counts);
+    let phone = bare.join();
+    phone.run_shortcut(&sidedesk_core::RunShortcut {
+        request_id: 1,
+        shortcut_id: 1,
+        book: 1,
+    });
+    let results: Vec<_> = phone
+        .take()
+        .into_iter()
+        .filter_map(|body| match body {
+            Body::CommandResult(result) => Some(result),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(results.len(), 1);
+    assert_eq!(results[0].reason, "없는 단축키입니다");
+    drop(phone);
+
+    // tiles 에 단축키가 있으면 목록이 오고, 빼면 더 오지 않는다.
+    let (deck, _) = url_deck();
+    let hub = hub(&counts).with_shortcuts(deck);
+    let phone = hub.join();
+    phone.set(&watch(View::Performance, &[View::Shortcuts]));
+    let lists = |phone: &sidedesk_domain::Subscriber<'_>| {
+        phone
+            .take()
+            .into_iter()
+            .filter(|body| matches!(body, Body::Shortcuts(s) if s.book == 77 && s.items.len() == 1))
+            .count()
+    };
+    assert_eq!(lists(&phone), 1);
+    phone.set(&watch(View::Performance, &[]));
+    phone.set(&watch(View::Shortcuts, &[]));
+    assert_eq!(lists(&phone), 1);
+}

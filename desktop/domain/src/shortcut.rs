@@ -107,7 +107,7 @@ pub const KEY_CODES: [&str; 74] = [
 ];
 
 /// 파일 열기로 받지 않는 확장자(기본 앱이 열면서 무언가를 실행하거나 다른 주소로 넘김)
-const RUNNABLE: [&str; 15] = [
+const RUNNABLE: [&str; 23] = [
     "app",
     "command",
     "sh",
@@ -123,6 +123,14 @@ const RUNNABLE: [&str; 15] = [
     "inetloc",
     "fileloc",
     "url",
+    "prefpane",
+    "mpkg",
+    "mobileconfig",
+    "scptd",
+    "osax",
+    "service",
+    "wflow",
+    "shortcut",
 ];
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -309,7 +317,9 @@ pub fn check_path(path: &str) -> Result<(), &'static str> {
             .and_then(|e| e.to_str())
             .is_some_and(|e| RUNNABLE.contains(&e.to_ascii_lowercase().as_str()))
     };
-    if runnable(std::path::Path::new(path)) || runnable(&real) || executable(&real) {
+    // 실행 비트는 확장자가 없을 때만 본다(exFAT, FAT 저장 장치의 문서는 모두 실행 비트가 있다).
+    let bare = real.extension().is_none();
+    if runnable(std::path::Path::new(path)) || runnable(&real) || (bare && executable(&real)) {
         return Err("실행 파일은 앱 열기로 등록하세요");
     }
     Ok(())
@@ -363,6 +373,10 @@ pub trait ShortcutHelp: Send + Sync {
     fn pick_path(&self) -> Option<String>;
     /// 단축어 앱의 단축어 이름
     fn focus_shortcuts(&self) -> Vec<String>;
+    /// 묶음 ID 의 앱이 아직 있는지
+    fn app_exists(&self, _bundle: &str) -> bool {
+        true
+    }
     /// 손쉬운 사용 설정을 연다.
     fn open_key_settings(&self) {}
 }
@@ -400,7 +414,15 @@ mod tests {
         std::fs::write(&plain, b"x").unwrap();
         assert_eq!(check_path(plain.to_str().unwrap()), Ok(()));
         assert_eq!(check_path(dir.to_str().unwrap()), Ok(()));
-        for name in ["a.APP", "b.command", "c.webloc", "d.Terminal", "e.fileloc"] {
+        for name in [
+            "a.APP",
+            "b.command",
+            "c.webloc",
+            "d.Terminal",
+            "e.fileloc",
+            "f.mobileconfig",
+            "g.shortcut",
+        ] {
             let path = dir.join(name);
             std::fs::write(&path, b"x").unwrap();
             assert!(check_path(path.to_str().unwrap()).is_err(), "{name}");
@@ -416,6 +438,11 @@ mod tests {
             let link = dir.join("innocent.txt");
             std::os::unix::fs::symlink(&script, &link).unwrap();
             assert!(check_path(link.to_str().unwrap()).is_err());
+            // 확장자가 있는 문서는 실행 비트가 있어도 받는다(USB 저장 장치).
+            let document = dir.join("report.pdf");
+            std::fs::write(&document, b"x").unwrap();
+            std::fs::set_permissions(&document, std::fs::Permissions::from_mode(0o777)).unwrap();
+            assert_eq!(check_path(document.to_str().unwrap()), Ok(()));
         }
         let _ = std::fs::remove_dir_all(&dir);
     }

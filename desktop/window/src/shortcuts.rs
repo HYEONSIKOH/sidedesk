@@ -90,8 +90,9 @@ impl ShortcutsPanel {
             }),
             "shortcut-remove" => value
                 .as_u64()
+                .and_then(|id| u32::try_from(id).ok())
                 .ok_or_else(|| "없는 단축키입니다".to_owned())
-                .and_then(|id| self.deck.remove(id as u32))
+                .and_then(|id| self.deck.remove(id))
                 .map(|()| Some("지웠습니다")),
             "shortcut-move" => serde_json::from_value::<Move>(value)
                 .map_err(|_| "없는 단축키입니다".to_owned())
@@ -176,7 +177,12 @@ impl ShortcutsPanel {
     }
 
     pub fn snapshot(&self) -> String {
-        let items: Vec<Value> = self.deck.items().iter().map(row).collect();
+        let items: Vec<Value> = self
+            .deck
+            .items()
+            .iter()
+            .map(|shortcut| row(shortcut, self.help.as_ref()))
+            .collect();
         let needs_keys = self.deck.items().iter().any(|s| {
             matches!(
                 s.action,
@@ -218,9 +224,13 @@ impl ShortcutsPanel {
 }
 
 /// 목록 한 줄: 보일 것만(전체 경로, 주소, 키 이름은 넣지 않음)
-fn row(shortcut: &Shortcut) -> Value {
+fn row(shortcut: &Shortcut, help: &dyn ShortcutHelp) -> Value {
     let (kind, summary, problem) = match &shortcut.action {
-        Action::App { label, .. } => ("app", label.clone(), None),
+        Action::App { label, bundle } => (
+            "app",
+            label.clone(),
+            (!help.app_exists(bundle)).then_some("앱 없음"),
+        ),
         Action::Open { path } => {
             let name = std::path::Path::new(path)
                 .file_name()
@@ -332,6 +342,9 @@ mod tests {
         fn focus_shortcuts(&self) -> Vec<String> {
             vec!["집중 켜기".into()]
         }
+        fn app_exists(&self, bundle: &str) -> bool {
+            bundle != "gone.app"
+        }
     }
 
     fn panel() -> &'static ShortcutsPanel {
@@ -379,6 +392,34 @@ mod tests {
         assert_eq!(snapshot(panel)["message"]["good"], false);
         assert!(panel.command(r#"{"shortcut-move":{"id":1,"step":1}}"#));
         assert_eq!(snapshot(panel)["items"].as_array().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn odd_names_round_trip_and_unknown_kinds_are_refused() {
+        let panel = panel();
+        let odd = json!({"shortcut-save": {"name": "따옴\"표\n<b>", "icon": "star", "color": "gray",
+            "action": {"kind": "url", "url": "https://example.com"}}});
+        assert!(panel.command(&odd.to_string()));
+        let now = snapshot(panel);
+        assert_eq!(now["items"][0]["name"], "따옴\"표<b>");
+        assert!(
+            panel.command(
+                r#"{"shortcut-save":{"name":"x","action":{"kind":"shell","command":"rm"}}}"#
+            )
+        );
+        assert_eq!(snapshot(panel)["message"]["good"], false);
+        // 넘치는 번호는 자르지 않고 거절한다.
+        assert!(panel.command(r#"{"shortcut-remove":4294967297}"#));
+        assert_eq!(snapshot(panel)["items"].as_array().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn missing_apps_are_marked() {
+        let panel = panel();
+        assert!(panel.command(
+            r#"{"shortcut-save":{"name":"없는 앱","action":{"kind":"app","bundle":"gone.app","label":"사라짐"}}}"#
+        ));
+        assert_eq!(snapshot(panel)["items"][0]["problem"], "앱 없음");
     }
 
     #[test]
