@@ -12,6 +12,15 @@ use sidedesk_domain::{
 
 type Listener = Box<dyn Fn(String) + Send>;
 
+/// 화면이 보낸 것이 고르기 창 요청이면 폴더인지 여부
+pub(crate) fn pick_request(body: &str) -> Option<bool> {
+    match body.trim() {
+        r#"{"shortcut-pick":true}"# => Some(false),
+        r#"{"shortcut-pick-folder":true}"# => Some(true),
+        _ => None,
+    }
+}
+
 #[derive(Default)]
 struct State {
     apps: Option<Vec<AppChoice>>,
@@ -133,6 +142,17 @@ impl ShortcutsPanel {
         drop(state);
         self.publish();
         true
+    }
+
+    /// 고르기 창을 띄우고 고른 것을 화면에 알린다. 이벤트 루프(UI 스레드)에서 부른다.
+    pub fn pick(&self, folder: bool) {
+        let picked = if folder {
+            self.help.pick_folder()
+        } else {
+            self.help.pick_path()
+        };
+        self.lock().picked = picked;
+        self.publish();
     }
 
     /// 앱 목록과 단축어 목록은 느릴 수 있어 따로 스레드에서 한 번

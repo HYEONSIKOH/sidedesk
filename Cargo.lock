@@ -2328,6 +2328,7 @@ dependencies = [
  "sidedesk-weather",
  "sidedesk-window",
  "sidedesk-windows",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

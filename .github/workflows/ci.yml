@@ -50,10 +50,19 @@ jobs:
       - name: 수집기 걸린 시간
         run: cargo test -p sidedesk-windows -- values_are_in_range lists_this_process --nocapture
       - run: cargo build --release -p sidedesk
+      - name: 콘솔 명령(sidedesk-cli)의 종료 코드와 사용법
+        shell: pwsh
+        run: |
+          $out = & ./target/release/sidedesk-cli.exe 모르는것 2>&1
+          if ($LASTEXITCODE -ne 1) { throw "종료 코드 $LASTEXITCODE" }
+          if (-not ($out -match 'sidedesk-cli pair')) { throw "사용법이 없음: $out" }
+          Write-Output "종료 코드 1, $out"
       - uses: actions/upload-artifact@v4
         with:
           name: sidedesk-windows
-          path: target/release/sidedesk.exe
+          path: |
+            target/release/sidedesk.exe
+            target/release/sidedesk-cli.exe
           retention-days: 7
 
   android:
