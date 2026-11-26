@@ -17,8 +17,8 @@ pub use port::{
 };
 pub use serve::{Context, Ended, ServeError, Timing, serve};
 pub use shortcut::{
-    Action, AppChoice, COLORS, Combo, ICONS, KEY_CODES, Launcher, Saved, Shortcut, ShortcutHelp,
-    ShortcutStore, SystemAction, check_path, check_url,
+    Action, AppChoice, COLORS, Combo, ICONS, KEY_CODES, Launcher, NAME_LEN, PATH_LEN, Saved,
+    Shortcut, ShortcutHelp, ShortcutStore, SystemAction, URL_LEN, check_path, check_url,
 };
 pub use watch::{BUSY_RETRY, RETRY, keep_connected, registered_key};
 pub use weather::WeatherCadence;

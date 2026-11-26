@@ -122,3 +122,15 @@ td { padding: 14px 8px; border-bottom: 1px solid var(--line); font-size: 13px; v
 .actions { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
 
 @media (prefers-reduced-motion: reduce) { .button { transition: none; } }
+
+.dialog.wide { width: 440px; text-align: left; display: grid; gap: 10px; }
+.dialog .row { display: flex; align-items: center; gap: 10px; font-size: 13px; }
+.dialog .field, .dialog .select { flex: 1; width: 100%; box-sizing: border-box; }
+.select.list { height: auto; padding: 4px; }
+.actions.start { display: flex; justify-content: flex-start; margin-top: 16px; }
+.swatches { display: flex; flex-wrap: wrap; gap: 6px; }
+.swatch { width: 26px; height: 26px; border-radius: 7px; border: 2px solid transparent; font-size: 10px; color: #fff; padding: 0; }
+.swatch.on { border-color: var(--ink); }
+.chip { display: inline-grid; place-items: center; width: 28px; height: 28px; border-radius: 7px; color: #fff; font-size: 11px; font-weight: 700; }
+.problem { margin-left: 6px; color: var(--red-ink); font-size: 12px; }
+.kind[hidden] { display: none; }

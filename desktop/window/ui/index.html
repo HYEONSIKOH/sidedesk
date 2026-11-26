@@ -14,6 +14,7 @@
   <nav class="menu">
     <p class="menu-title">설정</p>
     <button class="menu-item" data-page="phones">기기</button>
+    <button class="menu-item" data-page="shortcuts">단축키</button>
     <button class="menu-item" data-page="general">일반</button>
     <button class="menu-item" data-page="about">정보</button>
   </nav>
@@ -27,6 +28,22 @@
       <tbody id="device-rows"></tbody>
     </table>
     <p class="empty" id="device-empty">기기가 없습니다. 기기를 USB로 연결하고 SideDesk 앱을 여세요.</p>
+  </section>
+  <section class="page" id="shortcuts">
+    <h1>단축키</h1>
+    <p class="lead">기기에 띄울 버튼을 등록합니다. 기기는 번호만 보내고, 실행할 내용은 이 컴퓨터에만 있습니다.</p>
+    <p class="notice" id="shortcut-notice" hidden></p>
+    <div class="notice" id="shortcut-keys" hidden>
+      키 조합과 화면 잠금을 쓰려면 시스템 설정 &gt; 개인정보 보호 및 보안 &gt; 손쉬운 사용에서 SideDesk 를 켜세요.
+      <button class="button outline" id="shortcut-key-settings">설정 열기</button>
+    </div>
+    <p class="notice calm" id="shortcut-message" hidden></p>
+    <table>
+      <thead><tr><th>그림</th><th>이름</th><th>할 일</th><th class="end">관리</th></tr></thead>
+      <tbody id="shortcut-rows"></tbody>
+    </table>
+    <p class="empty" id="shortcut-empty">단축키가 없습니다.</p>
+    <div class="actions start"><button class="button primary" id="shortcut-add">단축키 더하기</button></div>
   </section>
   <section class="page" id="general">
     <h1>일반</h1>
@@ -83,6 +100,57 @@
     <div class="actions">
       <button class="button primary" id="pairing-yes">등록</button>
       <button class="button outline" id="pairing-no">취소</button>
+    </div>
+  </div>
+</div>
+<div class="veil" id="shortcut-box" hidden>
+  <div class="dialog wide" role="dialog" aria-modal="true" aria-labelledby="shortcut-box-title">
+    <h2 id="shortcut-box-title">단축키</h2>
+    <label class="row">종류
+      <select class="select" id="sb-kind">
+        <option value="app">앱 열기</option>
+        <option value="open">파일, 폴더 열기</option>
+        <option value="url">주소 열기</option>
+        <option value="keys">키 조합</option>
+        <option value="system">시스템 동작</option>
+      </select>
+    </label>
+    <div class="kind" data-kind="app">
+      <input class="field" id="sb-app-find" placeholder="앱 이름으로 찾기" autocomplete="off" spellcheck="false">
+      <select class="select list" id="sb-app" size="6"></select>
+      <p class="hint" id="sb-app-loading">앱 목록을 읽는 중입니다.</p>
+    </div>
+    <div class="kind" data-kind="open">
+      <div class="inline"><button class="button outline" id="sb-pick">고르기</button><span id="sb-path-name"></span></div>
+      <p class="hint mono" id="sb-path"></p>
+    </div>
+    <div class="kind" data-kind="url">
+      <input class="field" id="sb-url" placeholder="https://" autocomplete="off" spellcheck="false">
+      <p class="hint">http 나 https 로 시작하는 주소만 열 수 있습니다.</p>
+    </div>
+    <div class="kind" data-kind="keys">
+      <input class="field" id="sb-keys" readonly placeholder="여기를 누르고 키를 누르세요">
+      <p class="hint">그 순간 앞에 있는 창에 보냅니다.</p>
+    </div>
+    <div class="kind" data-kind="system">
+      <select class="select" id="sb-system">
+        <option value="mute">소리 끄기/켜기</option>
+        <option value="lock">화면 잠금</option>
+        <option value="focus">방해 금지</option>
+      </select>
+      <div id="sb-focus">
+        <label class="row">켜기 단축어 <select class="select" id="sb-focus-on"></select></label>
+        <label class="row">끄기 단축어 <select class="select" id="sb-focus-off"></select></label>
+        <p class="hint">단축어 앱에서 "집중 모드 설정" 동작으로 켜기와 끄기 단축어를 만들어 두세요.</p>
+      </div>
+    </div>
+    <label class="row">이름 <input class="field" id="sb-name" maxlength="40" autocomplete="off"></label>
+    <div class="row">그림 <div class="swatches" id="sb-icons"></div></div>
+    <div class="row">색 <div class="swatches" id="sb-colors"></div></div>
+    <p class="hint bad" id="sb-error" hidden></p>
+    <div class="actions">
+      <button class="button primary" id="sb-save">저장</button>
+      <button class="button outline" id="sb-cancel">취소</button>
     </div>
   </div>
 </div>
