@@ -1,6 +1,7 @@
 package io.github.hyeonsikoh.sidedesk.shortcut
 
 import androidx.compose.animation.core.animateFloatAsState
+import io.github.hyeonsikoh.sidedesk.ui.Track
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
@@ -59,6 +60,7 @@ fun gridOf(width: Float, height: Float, count: Int): Grid {
 /** 단축키 큰 화면. 누르면 번호만 보내고, 실패할 때만 판 아래에 한 줄 보인다. */
 @Composable
 fun ShortcutBig(state: ShortcutState, onPress: (Int) -> Unit, modifier: Modifier = Modifier) {
+    Track("keys-big")
     BoxWithConstraints(modifier.fillMaxSize()) {
         val items = state.items
         val width = maxWidth.value
@@ -176,6 +178,7 @@ fun onColor(background: Color): Color = if (background.luminance() > 0.4f) Color
 /** 작은 칸(시안 .mdeck). 앞 네 개의 그림을 작게 놓는다. 좁으면 2×2 */
 @Composable
 fun ShortcutTile(state: ShortcutState, modifier: Modifier) {
+    Track("keys-tile")
     BoxWithConstraints(modifier.clip(RoundedCornerShape(20.dp)).background(Palette.side).padding(8.dp), contentAlignment = Alignment.Center) {
         val first = state.items.orEmpty().take(4)
         if (first.isEmpty()) {

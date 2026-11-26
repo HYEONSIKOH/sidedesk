@@ -1,6 +1,7 @@
 package io.github.hyeonsikoh.sidedesk.ai
 
 import androidx.compose.animation.core.Animatable
+import io.github.hyeonsikoh.sidedesk.ui.Track
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -22,6 +23,9 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.staticCompositionLocalOf
+import androidx.compose.runtime.MutableState
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
@@ -70,6 +74,7 @@ private fun toolText(tool: AiTool) = when (tool) {
 /** AI 큰 화면. 위는 세션 카드, 아래는 GitHub/GitLab 숫자 */
 @Composable
 fun AiBig(state: AiScreenState, now: Long, onTab: (ForgeTab) -> Unit, modifier: Modifier = Modifier) {
+    Track("ai-big")
     Column(modifier.fillMaxSize()) {
         BoxWithConstraints(Modifier.weight(1f).fillMaxWidth().alpha(if (state.dimmed) DIM else 1f)) {
             if (state.sessions.isEmpty()) {
@@ -247,16 +252,23 @@ private fun Count(value: String, label: String) {
     }
 }
 
+/** 마지막으로 출렁인 알림 번호. 화면 틀 바깥(앱 화면)에 두어 쉬는 동안 틀이 빠져도 남는다. */
+val LocalPulsed = staticCompositionLocalOf<MutableState<Long?>> { mutableStateOf(null) }
+
 /**
  * AI 작은 칸. "AI n 작업 중", 일이 있으면 hot 바탕, 답변 대기가 있으면 주황 점.
  * 알림이 오면 살짝 커졌다 돌아오고 4초 동안 제목과 바뀐 상태를 보인다.
  */
 @Composable
 fun AiTile(state: AiScreenState, modifier: Modifier) {
+    Track("ai-tile")
     val pulse = remember { Animatable(1f) }
     val alert = state.alert
+    val pulsed = LocalPulsed.current
     LaunchedEffect(alert?.id) {
-        if (alert != null) {
+        // 같은 알림으로는 한 번만 출렁인다. 쉬고 깨어 칸이 새로 구성되어도 다시 출렁이지 않는다.
+        if (alert != null && pulsed.value != alert.id) {
+            pulsed.value = alert.id
             pulse.animateTo(1.06f, tween(140))
             pulse.animateTo(1f, tween(220))
         }

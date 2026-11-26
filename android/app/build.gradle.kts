@@ -18,6 +18,26 @@ android {
         ndk { abiFilters += "arm64-v8a" }
     }
 
+    buildTypes {
+        debug {
+            buildConfigField("boolean", "CHECK", "true")
+        }
+        release {
+            isMinifyEnabled = true
+            isShrinkResources = true
+            proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
+            buildConfigField("boolean", "CHECK", "false")
+        }
+        // 실제 폰에서 메모리, 프레임, 배터리를 재는 빌드. 릴리스와 같이 줄이고 디버그 키로 서명해 설치할 수 있다.
+        // 화면 고르기 값(am start 의 screen, rest)을 읽는다.
+        create("measure") {
+            initWith(getByName("release"))
+            signingConfig = signingConfigs.getByName("debug")
+            matchingFallbacks += "release"
+            buildConfigField("boolean", "CHECK", "true")
+        }
+    }
+
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
@@ -61,7 +81,8 @@ androidComponents {
     onVariants { variant ->
         val core = tasks.register<BuildCore>("buildCore${variant.name.replaceFirstChar(Char::uppercase)}") {
             executable = rootDir.resolve("../scripts/build-android.sh").path
-            profile = variant.buildType
+            // core 는 디버그 아니면 릴리스로 빌드한다(측정 빌드도 릴리스 core).
+            profile = if (variant.buildType == "debug") "debug" else "release"
         }
         variant.sources.jniLibs?.addGeneratedSourceDirectory(core, BuildCore::libraries)
         variant.sources.java?.addGeneratedSourceDirectory(core, BuildCore::kotlin)

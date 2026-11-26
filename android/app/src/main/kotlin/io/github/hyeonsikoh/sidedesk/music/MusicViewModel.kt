@@ -1,5 +1,6 @@
 package io.github.hyeonsikoh.sidedesk.music
 
+import android.os.SystemClock
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import io.github.hyeonsikoh.sidedesk.ai.Buzzer
@@ -71,8 +72,8 @@ class MusicViewModel(
     private val link: ComputerLink,
     private val buzzer: Buzzer,
     private val newCommandId: () -> Long,
-    /** 단조 밀리초. LinkOwner 가 받은 때를 적는 시계와 같아야 한다. */
-    private val clock: () -> Long = { System.nanoTime() / 1_000_000 },
+    /** 부팅 뒤 밀리초(깊은 잠 포함). LinkOwner 가 받은 때를 적는 시계와 같아야 한다. */
+    private val clock: () -> Long = SystemClock::elapsedRealtime,
 ) : ViewModel() {
     private val _state = MutableStateFlow(MusicState())
     val state: StateFlow<MusicState> = _state.asStateFlow()

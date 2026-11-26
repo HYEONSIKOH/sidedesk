@@ -1,6 +1,7 @@
 package io.github.hyeonsikoh.sidedesk.music
 
 import android.graphics.BitmapFactory
+import io.github.hyeonsikoh.sidedesk.ui.Track
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.Image
@@ -57,6 +58,7 @@ import io.github.hyeonsikoh.sidedesk.ui.fit
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
+import io.github.hyeonsikoh.sidedesk.clock.rememberStarted
 import kotlin.math.min
 
 private const val DIM = 0.4f
@@ -69,12 +71,17 @@ class MusicActions(
     val releaseVolume: () -> Unit,
 )
 
-/** 화면이 보이는 동안 0.5초마다 단조 시각을 다시 읽는다. 시험에서는 고정 시각을 넘긴다. */
+/**
+ * 재생 중이고 화면이 보이는 동안만 0.5초마다 시각을 다시 읽는다. 멈췄으면 진행 바가 서 있어 읽지 않는다.
+ * 화면이 다시 보이면(START) 곧바로 다시 읽는다.
+ */
 @Composable
-fun rememberTicks(clock: () -> Long): Long {
+fun rememberTicks(clock: () -> Long, running: Boolean): Long {
     var value by remember { mutableLongStateOf(clock()) }
-    LaunchedEffect(clock) {
-        while (true) {
+    val started = rememberStarted()
+    LaunchedEffect(clock, running, started) {
+        value = clock()
+        while (running && started) {
             delay(500)
             value = clock()
         }
@@ -95,6 +102,7 @@ private fun rememberArt(jpeg: ByteArray?): ImageBitmap? = produceState<ImageBitm
 /** 음악 큰 화면(시안 다섯째 그림). 가로는 왼쪽 그림, 세로는 위 그림 */
 @Composable
 fun MusicBig(state: MusicState, nowMs: Long, actions: MusicActions, modifier: Modifier = Modifier) {
+    Track("music-big")
     BoxWithConstraints(modifier.fillMaxSize()) {
         val wide = maxWidth > maxHeight
         val art = if (wide) min(maxHeight.value - 16f, maxWidth.value * 0.42f) else min(maxWidth.value * 0.72f, maxHeight.value * 0.42f)
@@ -350,6 +358,7 @@ private fun VolumeBar(state: MusicState, actions: MusicActions) {
  */
 @Composable
 fun MusicTile(state: MusicState, nowMs: Long, actions: MusicActions, modifier: Modifier) {
+    Track("music-tile")
     val now = state.now
     BoxWithConstraints(modifier.clip(RoundedCornerShape(20.dp)).background(Palette.side)) {
         val narrow = maxWidth < 96.dp

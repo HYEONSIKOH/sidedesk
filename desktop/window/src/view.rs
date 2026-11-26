@@ -2,11 +2,13 @@ use std::borrow::Cow;
 use std::path::{Path, PathBuf};
 
 use tao::dpi::LogicalSize;
-use tao::event::{Event, WindowEvent};
-use tao::event_loop::{ControlFlow, EventLoop, EventLoopBuilder};
+use tao::event::{Event, StartCause, WindowEvent};
+use tao::event_loop::{ControlFlow, EventLoopBuilder, EventLoopProxy, EventLoopWindowTarget};
 #[cfg(target_os = "macos")]
 use tao::platform::macos::{WindowBuilderExtMacOS, WindowExtMacOS};
 use tao::window::{Theme, Window, WindowBuilder};
+use tray_icon::menu::{Menu, MenuEvent, MenuId, MenuItem};
+use tray_icon::{Icon, TrayIcon, TrayIconBuilder};
 use wry::http::{Response, header::CONTENT_TYPE};
 use wry::{WebContext, WebView, WebViewBuilder};
 
@@ -54,6 +56,10 @@ enum Change {
     Script(String),
     Drag,
     Mode(&'static str),
+    /// 화면이 다 떠서 지금 값을 처음 그릴 차례
+    Ready,
+    /// 메뉴 막대(트레이) 메뉴
+    Menu(MenuId),
     /// 시험이 화면에서 읽은 글자
     #[cfg(all(test, target_os = "windows"))]
     Read(String),
@@ -104,42 +110,64 @@ struct Parts {
     /// 화면이 사는 동안 살아 있어야 한다.
     _context: WebContext,
     window: Window,
+    board: &'static Board,
 }
 
-/// 설정 창을 띄운다. 창을 닫으면 프로세스를 끝낸다(연결 스레드를 기다리지 않는다).
+/// 창 닫기: 띄운 것(화면, 자료 폴더 설정, 창)을 버린다. 다시 열 길(메뉴 막대 아이콘)이 없으면 끝내야 하니 true.
+fn close<T>(shown: &mut Option<T>, can_reopen: bool) -> bool {
+    drop(shown.take());
+    !can_reopen
+}
+
+/// 메뉴 막대 아이콘: 둥근 네모(폰) 테두리
+fn tray_icon() -> Option<Icon> {
+    const SIDE: u32 = 32;
+    let mut rgba = vec![0u8; (SIDE * SIDE * 4) as usize];
+    for y in 0..SIDE {
+        for x in 0..SIDE {
+            let inside = (9..=22).contains(&x) && (3..=28).contains(&y);
+            let edge = inside && (x <= 11 || x >= 20 || y <= 5 || y >= 26);
+            let corner = (x == 9 || x == 22) && (y == 3 || y == 28);
+            let dot = (15..=16).contains(&x) && (23..=24).contains(&y);
+            if (edge && !corner) || dot {
+                let at = ((y * SIDE + x) * 4) as usize;
+                rgba[at..at + 4].copy_from_slice(&[0, 0, 0, 255]);
+            }
+        }
+    }
+    Icon::from_rgba(rgba, SIDE, SIDE).ok()
+}
+
+fn make_tray(open_item: &MenuItem, quit_item: &MenuItem) -> Option<TrayIcon> {
+    let menu = Menu::new();
+    let _ = menu.append(open_item);
+    let _ = menu.append(quit_item);
+    let mut builder = TrayIconBuilder::new()
+        .with_tooltip("SideDesk")
+        .with_menu(Box::new(menu));
+    if let Some(icon) = tray_icon() {
+        // 맥은 템플릿이라 메뉴 막대 밝기에 맞춰 색이 바뀐다.
+        #[cfg(target_os = "macos")]
+        {
+            builder = builder.with_icon_templated(icon);
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            builder = builder.with_icon(icon);
+        }
+    }
+    builder.build().ok()
+}
+
+/// 설정 창을 띄우고 메뉴 막대(윈도우는 시스템 트레이)에 상주한다. 창을 닫으면 창과 화면만 버리고
+/// 메뉴의 "설정 열기"로 같은 자료 폴더로 새로 만든다. "끝내기"로 프로세스를 끝낸다(연결 스레드를 기다리지 않는다).
 /// `mode_file` 에 고른 화면 모드를 저장한다. `data_folder` 는 윈도우 WebView2 가 자료를 두는 곳이다.
 pub fn open(board: &'static Board, mode_file: PathBuf, data_folder: PathBuf) -> Result<(), String> {
-    let saved = std::fs::read_to_string(&mode_file)
+    let mut saved = std::fs::read_to_string(&mode_file)
         .ok()
         .and_then(|text| mode(&text))
         .unwrap_or("auto");
     let event_loop = EventLoopBuilder::<Change>::with_user_event().build();
-    let parts = build(&event_loop, board, saved, &data_folder)?;
-    event_loop.run(move |event, _, flow| {
-        *flow = ControlFlow::Wait;
-        // Dock 의 종료, 로그아웃처럼 창 닫기를 거치지 않고 끝날 때
-        if matches!(event, Event::LoopDestroyed) {
-            if let Some(work) = ON_EXIT.get() {
-                work();
-            }
-            return;
-        }
-        if handle(&parts, event, &mode_file) {
-            if let Some(work) = ON_EXIT.get() {
-                work();
-            }
-            std::process::exit(0);
-        }
-    })
-}
-
-fn build(
-    event_loop: &EventLoop<Change>,
-    board: &'static Board,
-    saved: &'static str,
-    data_folder: &Path,
-) -> Result<Parts, String> {
-    let proxy = event_loop.create_proxy();
     if let Some(panel) = SHORTCUTS.get() {
         let proxy = event_loop.create_proxy();
         panel.on_change(move |snapshot| {
@@ -152,10 +180,95 @@ fn build(
             let _ = proxy.send_event(Change::Script(format!("renderMusic({snapshot})")));
         });
     }
-    board.on_change(move |snapshot| {
-        let _ = proxy.send_event(Change::Render(snapshot));
-    });
-    let ipc = event_loop.create_proxy();
+    {
+        let proxy = event_loop.create_proxy();
+        board.on_change(move |snapshot| {
+            let _ = proxy.send_event(Change::Render(snapshot));
+        });
+    }
+    {
+        let proxy = std::sync::Mutex::new(event_loop.create_proxy());
+        MenuEvent::set_event_handler(Some(std::sync::Arc::new(move |event: MenuEvent| {
+            if let Ok(proxy) = proxy.lock() {
+                let _ = proxy.send_event(Change::Menu(event.id));
+            }
+        })));
+    }
+    let proxy = event_loop.create_proxy();
+    let open_item = MenuItem::new("설정 열기", true, None);
+    let quit_item = MenuItem::new("끝내기", true, None);
+    let mut shown = Some(build(
+        &event_loop,
+        proxy.clone(),
+        board,
+        saved,
+        &data_folder,
+    )?);
+    let mut tray: Option<TrayIcon> = None;
+    let quit = || {
+        if let Some(work) = ON_EXIT.get() {
+            work();
+        }
+        std::process::exit(0)
+    };
+    event_loop.run(move |event, target, flow| {
+        *flow = ControlFlow::Wait;
+        match &event {
+            // Dock 의 종료, 로그아웃처럼 창 닫기를 거치지 않고 끝날 때
+            Event::LoopDestroyed => {
+                // 윈도우는 알림 영역 아이콘을 지우지 않으면 빈 자리가 남는다.
+                drop(tray.take());
+                if let Some(work) = ON_EXIT.get() {
+                    work();
+                }
+                return;
+            }
+            // 맥은 이벤트 루프가 돈 뒤에 메뉴 막대 아이콘을 만들어야 한다.
+            Event::NewEvents(StartCause::Init) => {
+                tray = make_tray(&open_item, &quit_item);
+                return;
+            }
+            Event::UserEvent(Change::Menu(id)) => {
+                if id == quit_item.id() {
+                    drop(tray.take());
+                    quit();
+                } else if id == open_item.id() {
+                    match &shown {
+                        Some(parts) => parts.window.set_focus(),
+                        None => {
+                            shown = build(target, proxy.clone(), board, saved, &data_folder).ok();
+                        }
+                    }
+                }
+                return;
+            }
+            // 맥 Dock 아이콘을 눌렀을 때
+            Event::Reopen { .. } => {
+                if shown.is_none() {
+                    shown = build(target, proxy.clone(), board, saved, &data_folder).ok();
+                }
+                return;
+            }
+            Event::UserEvent(Change::Mode(chosen)) => saved = chosen,
+            _ => {}
+        }
+        let Some(parts) = &shown else {
+            return;
+        };
+        if handle(parts, event, &mode_file) && close(&mut shown, tray.is_some()) {
+            quit();
+        }
+    })
+}
+
+/// 창과 화면을 만든다. 다시 열 때도 같은 `data_folder` 로 만든다.
+fn build(
+    target: &EventLoopWindowTarget<Change>,
+    ipc: EventLoopProxy<Change>,
+    board: &'static Board,
+    saved: &'static str,
+    data_folder: &Path,
+) -> Result<Parts, String> {
     let builder = WindowBuilder::new()
         .with_title("SideDesk 설정")
         .with_inner_size(LogicalSize::new(1120.0, 760.0))
@@ -168,7 +281,7 @@ fn build(
         .with_title_hidden(true)
         .with_fullsize_content_view(true);
     let window = builder
-        .build(event_loop)
+        .build(target)
         .map_err(|error| format!("창을 열지 못함: {error}"))?;
     // 윈도우 WebView2 는 자료 폴더를 기본으로 실행 파일 옆에 만든다. 쓰기 금지 폴더에서도 뜨게 설정 폴더에 둔다.
     // 맥은 이 값을 쓰지 않는다.
@@ -198,6 +311,8 @@ fn build(
                 let _ = ipc.send_event(Change::Drag);
             } else if let Some(chosen) = body.strip_prefix("mode:").and_then(mode) {
                 let _ = ipc.send_event(Change::Mode(chosen));
+            } else if body.trim() == r#"{"ready":true}"# {
+                let _ = ipc.send_event(Change::Ready);
             } else if !SHORTCUTS.get().is_some_and(|panel| panel.command(body))
                 && !MUSIC.get().is_some_and(|panel| panel.command(body))
             {
@@ -226,15 +341,29 @@ fn build(
         webview,
         _context: context,
         window,
+        board,
     })
 }
 
 /// 사건 하나를 처리한다. 창을 닫으라는 사건이면 true.
 fn handle(parts: &Parts, event: Event<'_, Change>, mode_file: &Path) -> bool {
     let Parts {
-        webview, window, ..
+        webview,
+        window,
+        board,
+        ..
     } = parts;
     match event {
+        // 창을 새로 열 때마다 지금 값을 처음 그린다.
+        Event::UserEvent(Change::Ready) => {
+            let _ = webview.evaluate_script(&format!("render({})", board.snapshot()));
+            if let Some(panel) = SHORTCUTS.get() {
+                let _ = webview.evaluate_script(&format!("renderShortcuts({})", panel.snapshot()));
+            }
+            if let Some(panel) = MUSIC.get() {
+                let _ = webview.evaluate_script(&format!("renderMusic({})", panel.snapshot()));
+            }
+        }
         Event::UserEvent(Change::Render(snapshot)) => {
             let _ = webview.evaluate_script(&format!("render({snapshot})"));
         }
@@ -322,7 +451,14 @@ mod tests {
         let mut event_loop = EventLoopBuilder::<Change>::with_user_event()
             .with_any_thread(true)
             .build();
-        let parts = build(&event_loop, board, "auto", &folder.join("WebView2")).unwrap();
+        let parts = build(
+            &event_loop,
+            event_loop.create_proxy(),
+            board,
+            "auto",
+            &folder.join("WebView2"),
+        )
+        .unwrap();
         let reader = event_loop.create_proxy();
         let read: Mutex<Option<String>> = Mutex::new(None);
         let started = Instant::now();
@@ -337,7 +473,8 @@ mod tests {
                     *read.lock().unwrap() = Some(text);
                     *flow = ControlFlow::Exit;
                 }
-                Event::UserEvent(Change::Render(_)) => {
+                // 화면이 다 뜨면 지금 값을 그리고(handle) 이어서 읽는다.
+                Event::UserEvent(Change::Ready) => {
                     handle(&parts, event, &mode_file);
                     let reader = reader.clone();
                     let _ = parts.webview.evaluate_script_with_callback(
@@ -360,5 +497,35 @@ mod tests {
             .unwrap()
             .expect("60초 안에 화면을 읽지 못함");
         assert_eq!(read, format!("\"{name}\""));
+    }
+}
+
+#[cfg(test)]
+mod close_tests {
+    use super::close;
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    struct Probe(Arc<AtomicUsize>);
+
+    impl Drop for Probe {
+        fn drop(&mut self) {
+            self.0.fetch_add(1, Ordering::SeqCst);
+        }
+    }
+
+    #[test]
+    fn closing_drops_what_was_shown_and_quits_only_without_a_tray() {
+        let dropped = Arc::new(AtomicUsize::new(0));
+        let mut shown = Some(Probe(Arc::clone(&dropped)));
+        assert!(!close(&mut shown, true));
+        assert!(shown.is_none());
+        assert_eq!(dropped.load(Ordering::SeqCst), 1);
+        // 이미 닫힌 뒤 다시 닫아도 아무것도 버리지 않는다.
+        assert!(!close(&mut shown, true));
+        assert_eq!(dropped.load(Ordering::SeqCst), 1);
+        let mut shown = Some(Probe(Arc::clone(&dropped)));
+        assert!(close(&mut shown, false));
+        assert_eq!(dropped.load(Ordering::SeqCst), 2);
     }
 }

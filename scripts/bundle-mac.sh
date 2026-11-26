@@ -13,6 +13,7 @@ app="target/SideDesk.app"
 rm -rf "$app"
 mkdir -p "$app/Contents/MacOS"
 cp "target/$profile/sidedesk" "$app/Contents/MacOS/SideDesk"
+[ "$profile" = release ] && strip -x "$app/Contents/MacOS/SideDesk"
 version=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
 cat > "$app/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
