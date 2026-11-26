@@ -41,7 +41,7 @@ class MainActivity : ComponentActivity() {
             val missing = BLUETOOTH.filter { checkSelfPermission(it) != PackageManager.PERMISSION_GRANTED }
             if (missing.isNotEmpty()) requestPermissions(missing.toTypedArray(), ASK_BLUETOOTH)
         }
-        if (BuildConfig.DEBUG) openForCheck()
+        if (BuildConfig.DEBUG && savedInstanceState == null) openForCheck()
         setContent {
             val state = home.state.collectAsStateWithLifecycle().value
             if (state.computerName != null && state.pairingCode == null && state.problem == null) {
