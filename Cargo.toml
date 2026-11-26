@@ -9,6 +9,8 @@ members = [
     "desktop/link",
     "desktop/window",
     "desktop/weather",
+    "desktop/agents",
+    "desktop/forge",
     "desktop/app",
 ]
 
