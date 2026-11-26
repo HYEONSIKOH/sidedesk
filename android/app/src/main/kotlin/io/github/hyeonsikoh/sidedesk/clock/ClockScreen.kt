@@ -38,6 +38,7 @@ import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.StrokeJoin
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.text.LinkAnnotation
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.TextStyle
@@ -145,6 +146,8 @@ private fun Digits(text: String, size: TextUnit) {
             style = base.copy(drawStyle = Stroke(stroke, join = StrokeJoin.Round, cap = StrokeCap.Round)),
             maxLines = 1,
             softWrap = false,
+            // 겹쳐 그린 테두리라 화면 읽기에는 한 번만 잡히게 뺀다.
+            modifier = Modifier.clearAndSetSemantics {},
         )
     }
 }
