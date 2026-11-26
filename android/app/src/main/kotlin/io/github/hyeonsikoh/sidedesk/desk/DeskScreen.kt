@@ -428,9 +428,11 @@ private fun NetGraph(received: List<Long>, sent: List<Long>, modifier: Modifier)
     val receivedColor = Palette.accent
     Canvas(modifier) {
         val top = maxOf(received.maxOrNull() ?: 0L, sent.maxOrNull() ?: 0L, 1L).toFloat()
+        // 모인 점이 적어도 받기와 보내기 사이를 넓게 채운다. 두 선은 같은 간격이라 오른쪽 끝(지금)이 맞는다.
+        val points = maxOf(received.size, sent.size)
         fun line(values: List<Long>, color: Color) {
             if (values.size < 2) return
-            val step = size.width / (DeskViewModel.HISTORY - 1)
+            val step = size.width / (points - 1)
             val start = size.width - step * (values.size - 1)
             val path = Path()
             values.forEachIndexed { i, v ->
