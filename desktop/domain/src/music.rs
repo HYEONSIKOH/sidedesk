@@ -626,9 +626,9 @@ impl Jukebox {
         let outcome = panic::catch_unwind(AssertUnwindSafe(|| self.player.command(action)))
             .unwrap_or_else(|_| Err(PortError::new("실행하지 못했습니다")))
             .map_err(|e| e.0);
-        let read = self.player.now();
+        let read = panic::catch_unwind(AssertUnwindSafe(|| self.player.now()));
         let mut inner = self.lock();
-        if let Ok((track, picture)) = read {
+        if let Ok(Ok((track, picture))) = read {
             inner.read_at = Some(Instant::now());
             self.publish_track(&mut inner, track, picture);
         }
@@ -945,10 +945,21 @@ mod tests {
         wait_until(|| fake.commands.load(Ordering::SeqCst) == 1);
         // 실행 중에 같은 번호가 다시 온다(다른 연결로 다시 보냄).
         jukebox.enqueue(2, &play);
-        wait_until(|| !jukebox.take(2).3.is_empty() || fake.commands.load(Ordering::SeqCst) > 1);
+        let late = std::sync::Mutex::new(Vec::new());
+        wait_until(|| {
+            let mut late = late.lock().unwrap();
+            late.extend(jukebox.take(2).3);
+            !late.is_empty() || fake.commands.load(Ordering::SeqCst) > 1
+        });
         thread::sleep(Duration::from_millis(100));
         assert_eq!(fake.commands.load(Ordering::SeqCst), 1);
-        assert_eq!(jukebox.take(1).3.len(), 1);
+        // 늦게 온 쪽도 같은 번호의 같은 결과를 받는다.
+        let late = late.into_inner().unwrap();
+        assert_eq!(late.len(), 1);
+        assert!(late[0].ok && late[0].request_id == 9);
+        let first = jukebox.take(1).3;
+        assert_eq!(first.len(), 1);
+        assert!(first[0].ok && first[0].request_id == 9);
         jukebox.stop();
         worker.join().unwrap();
     }

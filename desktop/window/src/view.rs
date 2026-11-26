@@ -216,6 +216,8 @@ pub fn open(board: &'static Board, mode_file: PathBuf, data_folder: PathBuf) -> 
         match &event {
             // Dock 의 종료, 로그아웃처럼 창 닫기를 거치지 않고 끝날 때
             Event::LoopDestroyed => {
+                // 윈도우는 알림 영역 아이콘을 지우지 않으면 빈 자리가 남는다.
+                drop(tray.take());
                 if let Some(work) = ON_EXIT.get() {
                     work();
                 }
