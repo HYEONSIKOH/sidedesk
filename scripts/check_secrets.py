@@ -118,7 +118,8 @@ class Scan:
                 wide = re.escape(word.decode("utf-8").encode("utf-16-le"))
                 rules.append(("금지어", re.compile(rb"(?i)" + wide if ascii_word else wide)))
         for value in self.forbid:
-            rules.append(("빌드한 곳 경로", re.compile(re.escape(value))))
+            # 윈도우, 맥(APFS 기본) 경로는 대소문자를 가리지 않는다.
+            rules.append(("빌드한 곳 경로", re.compile(rb"(?i)" + re.escape(value))))
         return rules
 
 

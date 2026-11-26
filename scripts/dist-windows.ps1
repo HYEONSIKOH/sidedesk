@@ -1,6 +1,7 @@
 # 윈도우 배포 파일: sidedesk.exe(설정 창)와 sidedesk-cli.exe(pair, run)를 zip 으로 묶고 비밀값 검사를 돌린다.
 # 결과: target\dist\SideDesk-<버전>-windows-x64.zip. PDB 는 넣지 않는다.
-# 사용: pwsh scripts/dist-windows.ps1
+# 사용: pwsh scripts/dist-windows.ps1  (PowerShell 7. 5.1 은 BOM 없는 한글 스크립트를 깨뜨린다)
+#Requires -Version 7
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 
@@ -55,7 +56,8 @@ Copy-Item (Join-Path $built 'sidedesk-cli.exe') $stage
 SideDesk $version (윈도우 x64)
 
 sidedesk.exe      설정 창. 창을 닫아도 알림 영역(시스템 트레이)의 아이콘으로 계속 돕니다.
-sidedesk-cli.exe  터미널용. "sidedesk-cli pair" 는 기기 등록, "sidedesk-cli run" 은 창 없이 연결 유지.
+sidedesk-cli.exe  터미널용. pair 는 기기 등록, run 은 창 없이 연결 유지.
+                  이 폴더에서 PowerShell 은 .\sidedesk-cli pair, 명령 프롬프트(cmd)는 sidedesk-cli pair
 
 처음 열 때 SmartScreen 창이 뜨면 "추가 정보 > 실행"을 누릅니다(코드 서명을 하지 않았습니다).
 설정 창은 WebView2 런타임을 씁니다. 윈도우 10, 11 에는 대개 깔려 있습니다.
