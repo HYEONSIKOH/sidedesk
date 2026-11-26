@@ -55,7 +55,6 @@ import androidx.compose.ui.unit.sp
 import io.github.hyeonsikoh.sidedesk.link.ProcessInfo
 import io.github.hyeonsikoh.sidedesk.clock.ClockState
 import io.github.hyeonsikoh.sidedesk.clock.HomeBig
-import io.github.hyeonsikoh.sidedesk.clock.HomeExtras
 import io.github.hyeonsikoh.sidedesk.clock.HomeTile
 import io.github.hyeonsikoh.sidedesk.clock.PickActions
 import io.github.hyeonsikoh.sidedesk.clock.Picker
@@ -191,13 +190,7 @@ private fun Big(state: DeskState, clock: ClockPart, now: Long, actions: DeskActi
             .padding(14.dp),
     ) {
         when (state.big) {
-            Screen.Home -> HomeBig(
-                clock.state,
-                now,
-                HomeExtras(state.perf?.cpu, state.rows.firstOrNull()?.name, state.rows.firstOrNull()?.cpu, state.dimmed) { m ->
-                    CpuTile(state.perf?.cpu, m.dim(state.dimmed), Palette.card)
-                },
-            )
+            Screen.Home -> HomeBig(clock.state, now)
             Screen.Perf -> PerfScreen(state, Modifier.dim(state.dimmed))
             Screen.Processes -> ProcessScreen(state, actions, Modifier.dim(state.dimmed))
         }
@@ -435,8 +428,8 @@ private fun ProcessRow(process: ProcessInfo, share: Float, onClick: () -> Unit) 
 }
 
 @Composable
-private fun CpuTile(cpu: Float?, modifier: Modifier, background: Color = Palette.side) {
-    Box(modifier.clip(RoundedCornerShape(20.dp)).background(background)) {
+private fun CpuTile(cpu: Float?, modifier: Modifier) {
+    Box(modifier.clip(RoundedCornerShape(20.dp)).background(Palette.side)) {
         Liquid(cpu, Modifier.fillMaxSize())
         Row(Modifier.fillMaxSize().padding(horizontal = 14.dp), verticalAlignment = Alignment.CenterVertically) {
             Text("CPU", color = Palette.ink, fontSize = 12.sp)

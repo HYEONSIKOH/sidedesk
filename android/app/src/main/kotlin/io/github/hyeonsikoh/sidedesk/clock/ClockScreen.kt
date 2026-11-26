@@ -35,6 +35,8 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.StrokeJoin
+import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.LinkAnnotation
 import androidx.compose.ui.text.SpanStyle
@@ -87,19 +89,9 @@ private fun dateText(millis: Long) = calendar(millis).let {
 
 private fun degrees(value: Float) = "${Math.round(value)}°"
 
-/** 홈 큰 화면에서 쓰는 CPU 와 많이 쓰는 프로그램(모아 보기 칸) */
-class HomeExtras(
-    val cpu: Float?,
-    val topName: String?,
-    val topCpu: Float?,
-    /** 끊겨서 흐리게 보일 값 */
-    val dimmed: Boolean,
-    val cpuCard: @Composable (Modifier) -> Unit,
-)
-
 /** 홈 큰 화면. 고른 모양 하나와 시각 따라 움직이는 동그라미 */
 @Composable
-fun HomeBig(clock: ClockState, now: Long, extras: HomeExtras, modifier: Modifier = Modifier) {
+fun HomeBig(clock: ClockState, now: Long, modifier: Modifier = Modifier) {
     BoxWithConstraints(modifier.fillMaxSize()) {
         val w = maxWidth
         val h = maxHeight
@@ -109,7 +101,7 @@ fun HomeBig(clock: ClockState, now: Long, extras: HomeExtras, modifier: Modifier
             Face.Dial -> DialFace(clock, now, w, h)
             Face.Weather -> WeatherFace(clock, now, w, h)
             Face.Calendar -> CalendarFace(now, w, h)
-            Face.Overview -> OverviewFace(clock, now, extras)
+            Face.Overview -> OverviewFace(clock, now)
         }
     }
 }
@@ -137,19 +129,24 @@ private fun DateLine(clock: ClockState, now: Long, size: TextUnit) {
     }
 }
 
+/**
+ * 시계 숫자. 시안의 둥근 숫자에 맞추려고 가는 글꼴 위에 끝이 둥근 테두리를 같은 색으로 한 번 더 그린다.
+ * 그러면 획 끝과 모서리가 둥글어진다. 색은 위에서 아래로 옅어진다.
+ */
 @Composable
 private fun Digits(text: String, size: TextUnit) {
-    Text(
-        text,
-        style = TextStyle(
-            brush = Brush.verticalGradient(listOf(Palette.digitTop, Palette.digitBottom)),
-            fontSize = size,
-            fontWeight = FontWeight.Normal,
-            letterSpacing = (-0.02).em(size),
-        ),
-        maxLines = 1,
-        softWrap = false,
-    )
+    val brush = Brush.verticalGradient(listOf(Palette.digitTop, Palette.digitBottom))
+    val stroke = with(LocalDensity.current) { size.toPx() * 0.05f }
+    val base = TextStyle(brush = brush, fontSize = size, fontWeight = FontWeight.Thin, letterSpacing = (0.04).em(size))
+    Box {
+        Text(text, style = base, maxLines = 1, softWrap = false)
+        Text(
+            text,
+            style = base.copy(drawStyle = Stroke(stroke, join = StrokeJoin.Round, cap = StrokeCap.Round)),
+            maxLines = 1,
+            softWrap = false,
+        )
+    }
 }
 
 private fun Double.em(size: TextUnit) = (size.value * this).sp
@@ -391,52 +388,64 @@ private fun Month(now: Long, size: TextUnit, modifier: Modifier) {
     }
 }
 
+/**
+ * 모아 보기: 홈의 것만 칸 넷(바늘, 날씨, 날짜, 숫자 시각)으로 모은다.
+ * 성능과 프로세스는 옆의 작은 칸에 늘 있으므로 넣지 않는다(같은 값을 한 화면에 두 번 두지 않음).
+ */
 @Composable
-private fun OverviewFace(clock: ClockState, now: Long, extras: HomeExtras) {
+private fun OverviewFace(clock: ClockState, now: Long) {
     BoxWithConstraints(Modifier.fillMaxSize().padding(4.dp)) {
-        val wide = maxWidth > maxHeight
+        val gap = 10.dp
+        val (cols, rows) = overviewGrid(maxWidth.value, maxHeight.value, gap.value)
+        val cellW = (maxWidth.value - gap.value * (cols - 1)) / cols
+        val cellH = (maxHeight.value - gap.value * (rows - 1)) / rows
+        val line = fit(min(cellW * 0.08f, cellH * 0.1f).coerceIn(11f, 20f).dp)
         val cell = Modifier.clip(RoundedCornerShape(22.dp)).background(Palette.card)
-        val line = fit(min(maxWidth.value * 0.035f, maxHeight.value * 0.05f).coerceIn(12f, 20f).dp)
+        val c = calendar(now)
         val cells: List<@Composable (Modifier) -> Unit> = listOf(
-            { m -> Box(m.then(cell).padding(12.dp), contentAlignment = Alignment.Center) { Dial(now, Modifier.fillMaxHeight().aspectRatio(1f)) } },
+            { m -> Box(m.then(cell).padding(12.dp), contentAlignment = Alignment.Center) { Dial(now, Modifier.fillMaxSize().aspectRatio(1f, matchHeightConstraintsFirst = cellH < cellW)) } },
             { m ->
-                Column(m.then(cell).padding(14.dp), verticalArrangement = Arrangement.Center) {
+                Column(m.then(cell).padding(14.dp), verticalArrangement = Arrangement.Center, horizontalAlignment = Alignment.CenterHorizontally) {
                     val weather = clock.weather
-                    Column(Modifier.alpha(if (clock.weatherDimmed) DIM else 1f)) {
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            if (weather != null) SkyIcon(weather.sky, weather.isDay, Palette.ink, Modifier.size(with(LocalDensity.current) { (line * 1.8f).toDp() }).padding(end = 6.dp))
-                            Text(weather?.let { degrees(it.temperature) } ?: "--°", color = Palette.ink, fontSize = line * 2.2f, fontWeight = FontWeight.Medium, maxLines = 1)
-                        }
+                    Column(Modifier.alpha(if (clock.weatherDimmed) DIM else 1f), horizontalAlignment = Alignment.CenterHorizontally) {
+                        if (weather != null) SkyIcon(weather.sky, weather.isDay, Palette.ink, Modifier.size(with(LocalDensity.current) { (line * 2f).toDp() }))
+                        Text(weather?.let { degrees(it.temperature) } ?: "--°", color = Palette.ink, fontSize = line * 2.4f, fontWeight = FontWeight.Medium, maxLines = 1)
                         if (weather != null) Text("최고 ${degrees(weather.high)} 최저 ${degrees(weather.low)}", color = Palette.muted, fontSize = line * 0.9f, maxLines = 1)
                     }
                     Credit(clock, size = line * 0.7f, modifier = Modifier.padding(top = 4.dp))
                 }
             },
-            { m -> extras.cpuCard(m) },
             { m ->
-                Column(m.then(cell).padding(14.dp).alpha(if (extras.dimmed) DIM else 1f), verticalArrangement = Arrangement.Center) {
-                    Text("많이 쓰는 프로그램", color = Palette.muted, fontSize = line * 0.8f, maxLines = 1)
-                    Text(extras.topName ?: "-", color = Palette.ink, fontSize = line * 1.2f, fontWeight = FontWeight.Medium, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                    Text(extras.topCpu?.let { "%.1f%%".format(it) } ?: "-", color = Palette.muted, fontSize = line, maxLines = 1)
+                Column(m.then(cell).padding(14.dp), verticalArrangement = Arrangement.Center, horizontalAlignment = Alignment.CenterHorizontally) {
+                    Text("${c.get(Calendar.MONTH) + 1}월", color = Palette.muted, fontSize = line, maxLines = 1)
+                    Text("${c.get(Calendar.DAY_OF_MONTH)}", color = Palette.ink, fontSize = line * 3.4f, fontWeight = FontWeight.Light, maxLines = 1)
+                    Text("${DAYS[c.get(Calendar.DAY_OF_WEEK) - 1]}요일", color = Palette.ink, fontSize = line, maxLines = 1)
+                }
+            },
+            { m ->
+                Column(m.then(cell).padding(14.dp), verticalArrangement = Arrangement.Center, horizontalAlignment = Alignment.CenterHorizontally) {
+                    Digits(timeText(now), fit(min(cellW * 0.22f, cellH * 0.35f).dp))
+                    clock.via?.let { ViaIcon(it, Palette.muted, Modifier.padding(top = 6.dp).size(with(LocalDensity.current) { line.toDp() })) }
                 }
             },
         )
-        val gap = 10.dp
-        if (wide) {
-            Row(Modifier.fillMaxSize(), horizontalArrangement = Arrangement.spacedBy(gap)) {
-                cells.forEach { it(Modifier.weight(1f).fillMaxHeight()) }
-            }
-        } else {
-            Column(Modifier.fillMaxSize(), verticalArrangement = Arrangement.spacedBy(gap)) {
-                cells.chunked(2).forEach { pair ->
-                    Row(Modifier.weight(1f).fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(gap)) {
-                        pair.forEach { it(Modifier.weight(1f).fillMaxHeight()) }
-                    }
+        Column(Modifier.fillMaxSize(), verticalArrangement = Arrangement.spacedBy(gap)) {
+            cells.chunked(cols).forEach { row ->
+                Row(Modifier.weight(1f).fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(gap)) {
+                    row.forEach { it(Modifier.weight(1f).fillMaxHeight()) }
                 }
             }
         }
     }
 }
+
+/** 칸 넷을 4x1, 2x2, 1x4 가운데 칸이 가장 덜 길쭉해지는 배치로 놓는다. */
+internal fun overviewGrid(width: Float, height: Float, gap: Float): Pair<Int, Int> =
+    listOf(4 to 1, 2 to 2, 1 to 4).minBy { (cols, rows) ->
+        val w = (width - gap * (cols - 1)) / cols
+        val h = (height - gap * (rows - 1)) / rows
+        kotlin.math.abs(kotlin.math.ln(w / h))
+    }
 
 /** 다른 화면을 볼 때의 홈 작은 칸. 시각, 하늘 아이콘, 기온, 받은 곳 */
 @Composable
