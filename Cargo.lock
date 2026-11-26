@@ -2328,6 +2328,7 @@ dependencies = [
  "sidedesk-weather",
  "sidedesk-window",
  "sidedesk-windows",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -2369,6 +2370,7 @@ dependencies = [
  "serde_json",
  "sidedesk-core",
  "thiserror 2.0.21",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -2378,6 +2380,7 @@ dependencies = [
  "serde_json",
  "sidedesk-core",
  "sidedesk-domain",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -2437,6 +2440,7 @@ dependencies = [
  "sidedesk-core",
  "sidedesk-domain",
  "sidedesk-weather",
+ "windows",
  "windows-sys 0.61.2",
 ]
 

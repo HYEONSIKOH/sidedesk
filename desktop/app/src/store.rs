@@ -39,7 +39,7 @@ pub fn lock(folder: &Path) -> Result<File, PortError> {
         .open(&path)
         .map_err(|error| failed(&path, error))?;
     file.try_lock()
-        .map_err(|_| PortError::new("SideDesk 가 이미 실행 중임. 먼저 끄고 다시 실행"))?;
+        .map_err(|_| PortError::new("SideDesk 가 이미 실행 중입니다. 메뉴 막대나 알림 영역의 SideDesk 아이콘에서 설정 창을 여세요"))?;
     Ok(file)
 }
 

@@ -3,6 +3,18 @@ name = "sidedesk"
 version.workspace = true
 edition.workspace = true
 
+[lib]
+name = "sidedesk_app"
+path = "src/lib.rs"
+
+[[bin]]
+name = "sidedesk"
+path = "src/main.rs"
+
+[[bin]]
+name = "sidedesk-cli"
+path = "src/cli.rs"
+
 [dependencies]
 sidedesk-core = { path = "../../core" }
 sidedesk-domain = { path = "../domain" }
@@ -17,4 +29,7 @@ sidedesk-forge = { path = "../forge" }
 sidedesk-mac = { path = "../mac" }
 
 [target.'cfg(target_os = "windows")'.dependencies]
+sidedesk-agents = { path = "../agents" }
+sidedesk-forge = { path = "../forge" }
 sidedesk-windows = { path = "../windows" }
+windows-sys = { version = "0.61", features = ["Win32_UI_WindowsAndMessaging"] }

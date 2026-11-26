@@ -46,6 +46,18 @@ func degrees(_ value: Float) -> String {
     return "\(Int(value.rounded()))°"
 }
 
+private struct RestingKey: EnvironmentKey {
+    static let defaultValue = false
+}
+
+extension EnvironmentValues {
+    /// 쉬는 화면에 그리는 중. 연결 아이콘을 지운다.
+    var resting: Bool {
+        get { self[RestingKey.self] }
+        set { self[RestingKey.self] = newValue }
+    }
+}
+
 /// 동그라미가 기준으로 삼을 묶음(숫자 시각, 큰 기온, 큰 날짜). 모양마다 하나만 붙인다.
 private struct SunAnchorKey: PreferenceKey {
     static let defaultValue: Anchor<CGRect>? = nil
@@ -64,6 +76,8 @@ extension View {
 struct HomeBig: View {
     let clock: ClockModel
     let now: Date
+    /// 쉬는 화면에서는 해 동그라미와 연결 아이콘을 그리지 않는다(검은 화면 위 밝은 원은 번인과 눈부심을 부른다).
+    var resting = false
     let openCredit: () -> Void
 
     var body: some View {
@@ -80,9 +94,10 @@ struct HomeBig: View {
                 }
             }
             .frame(width: w, height: h)
+            .environment(\.resting, resting)
             .backgroundPreferenceValue(SunAnchorKey.self) { anchor in
                 GeometryReader { inner in
-                    if let anchor {
+                    if let anchor, !resting {
                         SunCircle(now: now, anchor: inner[anchor])
                     }
                 }
@@ -115,6 +130,7 @@ private struct DateLine: View {
     let clock: ClockModel
     let now: Date
     let size: Double
+    @Environment(\.resting) private var resting
     @Environment(\.palette) private var palette
 
     var body: some View {
@@ -123,7 +139,7 @@ private struct DateLine: View {
                 .font(.system(size: size, weight: .semibold))
                 .foregroundStyle(palette.ink)
                 .lineLimit(1)
-            if let via = clock.via {
+            if let via = clock.via, !resting {
                 ViaIcon(via: via, color: palette.muted).frame(width: size, height: size)
             }
         }
@@ -443,6 +459,7 @@ private struct OverviewFace: View {
     let clock: ClockModel
     let now: Date
     let openCredit: () -> Void
+    @Environment(\.resting) private var resting
     @Environment(\.palette) private var palette
 
     var body: some View {
@@ -500,7 +517,7 @@ private struct OverviewFace: View {
         default:
             VStack(spacing: 6) {
                 Digits(text: time.timeText, size: min(cellW * 0.22, cellH * 0.35))
-                if let via = clock.via {
+                if let via = clock.via, !resting {
                     ViaIcon(via: via, color: palette.muted).frame(width: line, height: line)
                 }
             }
@@ -516,30 +533,34 @@ struct HomeTile: View {
     @Environment(\.palette) private var palette
 
     var body: some View {
-        ZStack {
-            HStack(spacing: 6) {
-                Text(ClockTime(now).timeText)
-                    .font(.system(size: 24, weight: .medium))
-                    .foregroundStyle(palette.ink)
-                VStack(spacing: 0) {
-                    if let weather = clock.weather {
-                        SkyIcon(sky: weather.sky, isDay: weather.isDay, color: palette.ink).frame(width: 14, height: 14)
-                    }
-                    Text(clock.temperature)
-                        .font(.system(size: 11))
+        GeometryReader { proxy in
+            ZStack {
+                HStack(spacing: 6) {
+                    // 좁은 세로에서 칸이 셋이면 칸이 100pt 남짓이라, 시각과 기온이 함께 들어가게 너비에 맞춘다.
+                    Text(ClockTime(now).timeText)
+                        .font(.system(size: min(24, proxy.size.width * 0.2), weight: .medium))
                         .foregroundStyle(palette.ink)
+                    VStack(spacing: 0) {
+                        if let weather = clock.weather {
+                            SkyIcon(sky: weather.sky, isDay: weather.isDay, color: palette.ink).frame(width: 14, height: 14)
+                        }
+                        Text(clock.temperature)
+                            .font(.system(size: 11))
+                            .foregroundStyle(palette.ink)
+                    }
+                    .dim(clock.weatherDimmed)
                 }
-                .dim(clock.weatherDimmed)
-            }
-            .lineLimit(1)
-            if let credit = clock.shortCredit {
-                VStack {
-                    Spacer()
-                    Text(credit).font(.system(size: 7)).foregroundStyle(palette.muted).dim(clock.weatherDimmed)
+                .lineLimit(1)
+                if let credit = clock.shortCredit {
+                    VStack {
+                        Spacer()
+                        Text(credit).font(.system(size: 7)).foregroundStyle(palette.muted).dim(clock.weatherDimmed)
+                    }
                 }
             }
+            .frame(width: proxy.size.width, height: proxy.size.height)
         }
-        .padding(.horizontal, 12)
+        .padding(.horizontal, 8)
         .padding(.vertical, 6)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(RoundedRectangle(cornerRadius: 20).fill(palette.side))
@@ -549,20 +570,38 @@ struct HomeTile: View {
 /// 길게 누르면 뜨는 고르기 줄. 모양 다섯, 테마 둘, 완료
 struct FacePicker: View {
     let clock: ClockModel
+    /// 고르기 판의 쉬기 설정
+    var rest: RestModel?
     @Environment(\.palette) private var palette
+    @State private var restOpen: Bool
+
+    init(clock: ClockModel, rest: RestModel? = nil, restOpen: Bool = false) {
+        self.clock = clock
+        self.rest = rest
+        _restOpen = State(initialValue: restOpen)
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            ScrollView(.horizontal, showsIndicators: false) {
-                HStack(spacing: 6) {
-                    ForEach(Face.allCases, id: \.self) { face in
-                        chip(face.label, face == clock.face) { clock.setFace(face) }
+            if restOpen, let rest {
+                RestSettings(rest: rest)
+            } else {
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 6) {
+                        ForEach(Face.allCases, id: \.self) { face in
+                            chip(face.label, face == clock.face) { clock.setFace(face) }
+                        }
                     }
                 }
             }
             HStack(spacing: 6) {
-                chip("라이트", clock.theme == .light) { clock.setTheme(.light) }
-                chip("다크", clock.theme == .dark) { clock.setTheme(.dark) }
+                if !restOpen {
+                    chip("라이트", clock.theme == .light) { clock.setTheme(.light) }
+                    chip("다크", clock.theme == .dark) { clock.setTheme(.dark) }
+                }
+                if rest != nil {
+                    chip(restOpen ? "모양" : "쉬기", false) { restOpen.toggle() }
+                }
                 Spacer()
                 Button(action: clock.done) {
                     Text("완료")

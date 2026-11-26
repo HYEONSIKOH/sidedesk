@@ -94,6 +94,22 @@ final class BridgeSession: CoreSession {
         try CoreErrors.wrap { try session.sendLocation(place: nil) }
     }
 
+    func runShortcut(requestId: UInt64, shortcutId: UInt32, book: UInt64) throws {
+        try CoreErrors.wrap { try session.runShortcut(requestId: requestId, shortcutId: shortcutId, book: book) }
+    }
+
+    func musicCommand(requestId: UInt64, action: MusicAction, level: Int) throws {
+        let core: SideDeskBridge.MusicAction = switch action {
+        case .playPause: .playPause
+        case .next: .next
+        case .previous: .previous
+        case .setVolume: .setVolume
+        }
+        try CoreErrors.wrap {
+            try session.musicCommand(requestId: requestId, action: core, level: UInt32(clamping: max(0, min(100, level))))
+        }
+    }
+
     func killProcess(requestId: UInt64, pid: Int32, startedAt: Int64) throws {
         try CoreErrors.wrap {
             try session.killProcess(requestId: requestId, pid: UInt32(bitPattern: pid), startedAt: UInt64(max(0, startedAt)))
@@ -103,8 +119,11 @@ final class BridgeSession: CoreSession {
     private static func view(_ topic: Topic) -> SideDeskBridge.View {
         switch topic {
         case .weather: .weather
+        case .ai: .ai
         case .perf: .performance
         case .processes: .processes
+        case .shortcuts: .shortcuts
+        case .music: .music
         }
     }
 
@@ -156,10 +175,88 @@ final class BridgeSession: CoreSession {
                     source: source(value.source)
                 )
             )
+        case .aiSessions(let items):
+            return .aiSessions(items.map(session))
+        case .aiAlert(let value):
+            let kind: AlertKind = switch value.kind {
+            case .done: .done
+            case .waiting: .waiting
+            default: .unknown
+            }
+            return .aiAlert(AiAlert(id: value.id, sessionId: value.sessionId, title: value.title, kind: kind, at: Int64(clamping: value.at)))
+        case .forge(let github, let gitlab):
+            return .forge(Forge(github: forge(github), gitlab: forge(gitlab)))
+        case .shortcuts(let book, let items):
+            return .shortcuts(book: book, items: items.map(shortcut))
+        case .nowPlaying(let value):
+            return .nowPlaying(nowPlaying(value))
+        case .artwork(let hash, let jpeg):
+            return .artwork(hash: hash, jpeg: jpeg)
+        case .volume(let value):
+            return .volume(Volume(available: value.available, level: Int(value.level), muted: value.muted, settable: value.settable))
         default:
-            // AI 세션, 알림, GitHub 처럼 iOS 화면이 아직 없는 일은 버린다(SD-7 은 안드로이드만).
+            // 다음 티켓이 core 에 더하는 일처럼 iOS 화면이 아직 없는 일은 버린다.
             return nil
         }
+    }
+
+    private static func session(_ it: AiSessionInfo) -> AiSession {
+        let tool: AiTool = switch it.tool {
+        case .claudeCode: .claudeCode
+        case .codex: .codex
+        default: .unknown
+        }
+        let state: AiState = switch it.state {
+        case .working: .working
+        case .waiting: .waiting
+        case .done: .done
+        default: .unknown
+        }
+        return AiSession(id: it.id, tool: tool, title: it.title, project: it.project, state: state, since: Int64(clamping: it.since), open: it.open)
+    }
+
+    /// 받은 적 없는 쪽은 모름으로 둔다.
+    private static func forge(_ it: ForgeInfo?) -> ForgeCounts {
+        guard let it else { return .unknown }
+        let state: ForgeState = switch it.state {
+        case .ok: .ok
+        case .missing: .missing
+        case .signedOut: .signedOut
+        case .failed: .failed
+        default: .unknown
+        }
+        return ForgeCounts(state: state, reviews: Int(it.reviews), mine: Int(it.mine), notices: Int(it.notices))
+    }
+
+    private static func shortcut(_ it: ShortcutInfo) -> Shortcut {
+        let toggle: Toggle = switch it.toggle {
+        case .on: .on
+        case .off: .off
+        default: .none
+        }
+        return Shortcut(id: it.id, name: it.name, icon: it.icon, color: it.color, toggle: toggle, system: it.system)
+    }
+
+    private static func nowPlaying(_ it: NowPlayingInfo) -> NowPlaying {
+        let player: SideDesk.MusicPlayer = switch it.player {
+        case .music: .music
+        case .spotify: .spotify
+        case .system: .system
+        default: .none
+        }
+        return NowPlaying(
+            player: player,
+            title: it.title,
+            artist: it.artist,
+            album: it.album,
+            durationMs: Int64(clamping: it.durationMs),
+            artwork: it.artwork,
+            playing: it.playing,
+            positionMs: Int64(clamping: it.positionMs),
+            canPlay: it.canPlay,
+            canNext: it.canNext,
+            canPrevious: it.canPrevious
+        )
     }
 
     private static func sky(_ sky: SideDeskBridge.Sky) -> Sky {

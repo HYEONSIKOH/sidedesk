@@ -176,12 +176,22 @@ function chip(icon, color) {
 
 function comboText(combo) {
   if (!combo) return '';
-  const marks = (combo.control ? '⌃' : '') + (combo.option ? '⌥' : '') + (combo.shift ? '⇧' : '') + (combo.command ? '⌘' : '');
-  return marks + combo.code.replace(/^Key|^Digit/, '');
+  const key = combo.code.replace(/^Key|^Digit/, '');
+  if (document.documentElement.classList.contains('mac')) {
+    const marks = (combo.control ? '⌃' : '') + (combo.option ? '⌥' : '') + (combo.shift ? '⇧' : '') + (combo.command ? '⌘' : '');
+    return marks + key;
+  }
+  // 윈도우는 글자로(command 는 Win 키)
+  const names = [combo.control && 'Ctrl', combo.option && 'Alt', combo.shift && 'Shift', combo.command && 'Win'].filter(Boolean);
+  return [...names, key].join('+');
 }
 
 function renderShortcuts(next) {
   shortcutState = next;
+  // 윈도우: 방해 금지는 고를 수 없고, 폴더는 따로 고른다.
+  const focusOption = $('sb-system').querySelector('option[value="focus"]');
+  focusOption.hidden = focusOption.disabled = next.focusSupported === false;
+  $('sb-pick-folder').hidden = !next.folderPick;
   const rows = next.items.map((item, index) => {
     const remove = el('button', { class: 'button danger', on: () => {
       if (shortcutConfirm === item.id) { shortcutConfirm = null; send({ 'shortcut-remove': item.id }); }
@@ -332,6 +342,7 @@ $('sb-app').addEventListener('change', () => {
   swatches();
 });
 $('sb-pick').addEventListener('click', () => send({ 'shortcut-pick': true }));
+$('sb-pick-folder').addEventListener('click', () => send({ 'shortcut-pick-folder': true }));
 $('sb-keys').addEventListener('keydown', (event) => {
   event.preventDefault();
   if (['ShiftLeft', 'ShiftRight', 'ControlLeft', 'ControlRight', 'AltLeft', 'AltRight', 'MetaLeft', 'MetaRight'].includes(event.code)) return;

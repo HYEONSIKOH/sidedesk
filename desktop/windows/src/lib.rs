@@ -1,7 +1,9 @@
 #![cfg(target_os = "windows")]
 
+mod com;
 mod handle;
 mod http;
+mod image;
 mod meter;
 mod music;
 mod name;

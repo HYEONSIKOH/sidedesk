@@ -86,7 +86,12 @@ fn step(deadline: Instant) -> Option<i32> {
 impl Get for WinGet {
     fn get(&self, url: &Secret) -> Result<Response, PortError> {
         // 오류 문장에 주소(키, 좌표)나 시스템 오류 번호를 넣지 않는다.
-        let failed = || PortError::new("인터넷에서 받지 못했습니다");
+        let failed = || {
+            // 시험에서만 원인 번호를 남긴다(오류 문장에는 넣지 않는다).
+            #[cfg(test)]
+            tests::remember_error();
+            PortError::new("인터넷에서 받지 못했습니다")
+        };
         let deadline = Instant::now() + WAIT;
         let session = self.session.as_ref().ok_or_else(failed)?;
         let address = Wiped(wide(url.expose()));
@@ -219,16 +224,39 @@ impl Get for WinGet {
 mod tests {
     use super::*;
 
+    thread_local! {
+        static LAST: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
+    }
+
+    pub(super) fn remember_error() {
+        // SAFETY: 이 스레드의 마지막 오류 번호를 읽기만 한다.
+        let code = unsafe { windows_sys::Win32::Foundation::GetLastError() };
+        LAST.with(|last| last.set(code));
+    }
+
+    /// 실패하면 WinHTTP 오류 번호를 찍고, 일시적인 망 문제를 생각해 한 번 더 시도한다.
+    fn get_twice(url: &str) -> Response {
+        let get = WinGet::default();
+        match get.get(&Secret::new(url)) {
+            Ok(response) => response,
+            Err(_) => {
+                eprintln!("첫 시도 실패, WinHTTP 오류 {}", LAST.with(|l| l.get()));
+                std::thread::sleep(Duration::from_secs(3));
+                get.get(&Secret::new(url)).unwrap_or_else(|_| {
+                    panic!("두 번 실패, WinHTTP 오류 {}", LAST.with(|l| l.get()))
+                })
+            }
+        }
+    }
+
     #[test]
     #[ignore = "인터넷에 나간다. CI 윈도우 작업에서 돌린다"]
     fn windows_only_open_meteo_seoul() {
-        let response = WinGet::default()
-            .get(&Secret::new(
-                "https://api.open-meteo.com/v1/forecast?latitude=37.6&longitude=127.0\
-                 &current=temperature_2m,weather_code,is_day\
-                 &daily=temperature_2m_max,temperature_2m_min&timezone=auto&forecast_days=1",
-            ))
-            .unwrap();
+        let response = get_twice(
+            "https://api.open-meteo.com/v1/forecast?latitude=37.6&longitude=127.0\
+             &current=temperature_2m,weather_code,is_day\
+             &daily=temperature_2m_max,temperature_2m_min&timezone=auto&forecast_days=1",
+        );
         assert_eq!(response.status, 200);
         let text = String::from_utf8_lossy(&response.body);
         assert!(text.contains("temperature_2m"), "{text}");
@@ -237,9 +265,7 @@ mod tests {
     #[test]
     #[ignore = "인터넷에 나간다. CI 윈도우 작업에서 돌린다"]
     fn windows_only_a_missing_page_is_a_status_not_an_error() {
-        let response = WinGet::default()
-            .get(&Secret::new("https://api.open-meteo.com/v1/nothing-here"))
-            .unwrap();
+        let response = get_twice("https://api.open-meteo.com/v1/nothing-here");
         assert_eq!(response.status, 404);
     }
 
