@@ -2268,6 +2268,7 @@ dependencies = [
 name = "sidedesk-mac"
 version = "0.1.0"
 dependencies = [
+ "block2",
  "core-foundation 0.9.4",
  "dispatch2",
  "libc",
@@ -2276,6 +2277,7 @@ dependencies = [
  "objc2-foundation",
  "sidedesk-core",
  "sidedesk-domain",
+ "sidedesk-weather",
  "system-configuration-sys",
 ]
 
