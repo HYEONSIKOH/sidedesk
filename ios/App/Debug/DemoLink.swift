@@ -57,10 +57,10 @@
             feed.bluetoothDecided = true
             let now = Int64(Date().timeIntervalSince1970 * 1000)
             feed.sessions = [
-                AiSession(id: "1", tool: .claudeCode, title: "SideDesk iOS 화면", project: "sidedesk", state: .working, since: now - 12 * 60_000, open: true),
-                AiSession(id: "2", tool: .codex, title: "검증 2차", project: "sidedesk", state: .waiting, since: now - 3 * 60_000, open: true),
-                AiSession(id: "3", tool: .claudeCode, title: "주간보고", project: "notes", state: .done, since: now - 64 * 60_000, open: true),
-                AiSession(id: "4", tool: .codex, title: "빌드 고치기", project: "vtm", state: .done, since: now - 26 * 3_600_000, open: false),
+                AiSession(id: "1", tool: .claudeCode, title: "로그인 화면", project: "app", state: .working, since: now - 12 * 60_000, open: true),
+                AiSession(id: "2", tool: .codex, title: "테스트 실행", project: "web", state: .waiting, since: now - 3 * 60_000, open: true),
+                AiSession(id: "3", tool: .claudeCode, title: "문서 정리", project: "docs", state: .done, since: now - 64 * 60_000, open: true),
+                AiSession(id: "4", tool: .codex, title: "검색 개선", project: "search", state: .done, since: now - 26 * 3_600_000, open: false),
             ]
             feed.forge = Forge(
                 github: ForgeCounts(state: .ok, reviews: 2, mine: 3, notices: 57),
@@ -160,7 +160,7 @@
 
         /// 보기용 알림 하나(작은 칸이 커지고 4초 보임)
         func sendAlert() {
-            feed.emit(AiAlert(id: 1, sessionId: "2", title: "검증 2차", kind: .waiting, at: Int64(Date().timeIntervalSince1970 * 1000)))
+            feed.emit(AiAlert(id: 1, sessionId: "2", title: "테스트 실행", kind: .waiting, at: Int64(Date().timeIntervalSince1970 * 1000)))
         }
 
         func giveUp(_ commandId: UInt64) {}
