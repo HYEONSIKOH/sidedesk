@@ -2,14 +2,16 @@
 
 use std::collections::{HashMap, VecDeque};
 use std::panic::{self, AssertUnwindSafe};
-use std::sync::{Condvar, Mutex, MutexGuard};
+use std::sync::{Arc, Condvar, Mutex, MutexGuard};
 use std::time::{Duration, Instant, SystemTime};
 
 use sidedesk_core::{
-    Body, CommandResult, KillProcess, Location, Performance, Process, Processes, Subscribe, View,
+    Body, CommandResult, KillProcess, Location, Performance, Process, Processes, RunShortcut,
+    Subscribe, View,
 };
 
 use crate::ai::{AiBook, AiCadence};
+use crate::deck::{Deck, TOGGLE_EVERY};
 use crate::port::{Forges, Meter, Place, PortError, ProcessTable, SessionLog, WeatherSource};
 use crate::weather::{Book, WeatherCadence};
 
@@ -48,7 +50,7 @@ impl Cadence {
         let (main, tile) = match view {
             View::Performance => (self.performance_main, self.performance_tile),
             View::Processes => (self.processes_main, self.processes_tile),
-            View::Nothing | View::Weather | View::Ai => return None,
+            View::Nothing | View::Weather | View::Ai | View::Shortcuts => return None,
         };
         if subscribe.main == view as i32 {
             Some(main)
@@ -189,6 +191,7 @@ pub struct Hub {
     sessions: Option<Box<dyn SessionLog>>,
     forges: Option<Box<dyn Forges>>,
     ai_cadence: AiCadence,
+    deck: Option<Arc<Deck>>,
     state: Mutex<State>,
     changed: Condvar,
     /// 날씨 스레드만 깨운다. 성능 수집 주기를 흔들지 않게 따로 둔다.
@@ -210,6 +213,7 @@ impl Hub {
             sessions: None,
             forges: None,
             ai_cadence: AiCadence::default(),
+            deck: None,
             state: Mutex::default(),
             changed: Condvar::new(),
             weather_changed: Condvar::new(),
@@ -312,6 +316,23 @@ impl Hub {
         }
     }
 
+    /// 단축키 장부. 없으면 단축키 목록을 보내지 않고 실행은 "없는 단축키"다.
+    pub fn with_shortcuts(mut self, deck: Arc<Deck>) -> Self {
+        self.deck = Some(deck);
+        self
+    }
+
+    pub fn shortcuts(&self) -> Option<&Arc<Deck>> {
+        self.deck.as_ref()
+    }
+
+    /// 소리 끄기 같은 켜짐 상태를 따라간다. `stop` 을 부를 때까지 돌아오지 않는다.
+    pub fn run_shortcuts(&self) {
+        if let Some(deck) = &self.deck {
+            deck.watch_toggles(TOGGLE_EVERY);
+        }
+    }
+
     /// 시험에서 벽시계를 바꾼다.
     pub fn with_wall(mut self, wall: impl Fn() -> SystemTime + Send + Sync + 'static) -> Self {
         self.wall = Box::new(wall);
@@ -357,9 +378,15 @@ impl Hub {
     pub fn join(&self) -> Subscriber<'_> {
         let mut state = self.lock();
         state.next_id += 1;
+        let id = state.next_id;
+        drop(state);
+        if let Some(deck) = &self.deck {
+            deck.join(id);
+        }
         Subscriber {
             hub: self,
-            id: state.next_id,
+            id,
+            unanswered: Mutex::default(),
         }
     }
 
@@ -416,6 +443,9 @@ impl Hub {
         if let Some(forges) = &self.forges {
             forges.stop();
         }
+        if let Some(deck) = &self.deck {
+            deck.stop();
+        }
     }
 
     /// 같은 번호는 한 번만 실행하고, 다시 오면 그때 결과를 그대로 돌려준다.
@@ -454,6 +484,8 @@ impl Hub {
 pub struct Subscriber<'a> {
     hub: &'a Hub,
     id: u64,
+    /// 단축키 장부가 없을 때의 거절
+    unanswered: Mutex<Vec<CommandResult>>,
 }
 
 impl Subscriber<'_> {
@@ -480,9 +512,32 @@ impl Subscriber<'_> {
             subscribe.main == ai,
         );
         drop(state);
+        if let Some(deck) = &self.hub.deck {
+            let shortcuts = View::Shortcuts as i32;
+            deck.set_wants(
+                self.id,
+                subscribe.main == shortcuts || subscribe.tiles.contains(&shortcuts),
+            );
+        }
         self.hub.changed.notify_all();
         self.hub.weather_changed.notify_all();
         self.hub.ai_changed.notify_all();
+    }
+
+    /// 폰이 누른 단축키. 결과는 `take` 로 나간다.
+    pub fn run_shortcut(&self, command: &RunShortcut) {
+        match &self.hub.deck {
+            Some(deck) => deck.run(self.id, command),
+            None => self
+                .unanswered
+                .lock()
+                .unwrap_or_else(|l| l.into_inner())
+                .push(CommandResult {
+                    request_id: command.request_id,
+                    ok: false,
+                    reason: "없는 단축키입니다".to_owned(),
+                }),
+        }
     }
 
     /// 폰의 위치. 범위 밖이거나 한쪽만 오면 위치 없음.
@@ -501,6 +556,13 @@ impl Subscriber<'_> {
         let processes = state.processes.take(self.id).map(Body::Processes);
         let weather = state.weather.take(self.id).map(Body::Weather);
         let (sessions, alerts, forge) = state.ai.take(self.id);
+        drop(state);
+        let (shortcuts, results) = match &self.hub.deck {
+            Some(deck) => deck.take(self.id),
+            None => (None, Vec::new()),
+        };
+        let unanswered: Vec<CommandResult> =
+            std::mem::take(&mut *self.unanswered.lock().unwrap_or_else(|l| l.into_inner()));
         performance
             .into_iter()
             .chain(processes)
@@ -508,6 +570,13 @@ impl Subscriber<'_> {
             .chain(sessions.map(Body::AiSessions))
             .chain(alerts.into_iter().map(Body::AiAlert))
             .chain(forge.map(Body::Forge))
+            .chain(shortcuts.map(Body::Shortcuts))
+            .chain(
+                results
+                    .into_iter()
+                    .chain(unanswered)
+                    .map(Body::CommandResult),
+            )
             .collect()
     }
 }
@@ -520,6 +589,9 @@ impl Drop for Subscriber<'_> {
         state.weather.remove(self.id);
         state.ai.remove(self.id);
         drop(state);
+        if let Some(deck) = &self.hub.deck {
+            deck.leave(self.id);
+        }
         self.hub.changed.notify_all();
         self.hub.weather_changed.notify_all();
         self.hub.ai_changed.notify_all();

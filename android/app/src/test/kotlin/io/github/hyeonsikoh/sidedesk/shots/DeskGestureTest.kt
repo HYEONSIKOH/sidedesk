@@ -16,6 +16,8 @@ import androidx.compose.ui.test.swipeRight
 import io.github.hyeonsikoh.sidedesk.ai.AiScreenState
 import io.github.hyeonsikoh.sidedesk.clock.ClockState
 import io.github.hyeonsikoh.sidedesk.desk.AiPart
+import io.github.hyeonsikoh.sidedesk.desk.ShortcutPart
+import io.github.hyeonsikoh.sidedesk.shortcut.ShortcutState
 import io.github.hyeonsikoh.sidedesk.clock.Face
 import io.github.hyeonsikoh.sidedesk.clock.PickActions
 import io.github.hyeonsikoh.sidedesk.desk.BIG
@@ -63,13 +65,14 @@ class DeskGestureTest {
         big: Screen = Screen.Home,
         dimmed: Boolean = false,
         ai: AiScreenState = AiScreenState(),
+        keys: ShortcutState = DeskShots.KEYS,
         desk: DeskState = DeskState(big = big, dimmed = dimmed),
     ) {
         val actions = DeskActions(
             show = { calls += "show $it" },
             next = { calls += "next" },
             previous = { calls += "previous" },
-            sortBy = {}, ask = {}, cancel = {}, confirmKill = {}, dismissNotice = {},
+            sortBy = {}, ask = {}, cancel = { calls += "cancel" }, confirmKill = {}, dismissNotice = {},
         )
         val part = ClockPart(
             clock,
@@ -86,7 +89,7 @@ class DeskGestureTest {
         }
         compose.setContent {
             CompositionLocalProvider(LocalUriHandler provides links) {
-                SideDeskTheme(Theme.Dark) { DeskScreen(desk, part, actions, AiPart(ai) {}) }
+                SideDeskTheme(Theme.Dark) { DeskScreen(desk, part, actions, AiPart(ai) {}, ShortcutPart(keys) { calls += "press $it" }) }
             }
         }
         compose.mainClock.advanceTimeBy(100)
@@ -182,6 +185,32 @@ class DeskGestureTest {
         )
         compose.onNodeWithText("빌드를 끝낼까요?").assertExists()
         compose.onNodeWithText("작업 끝남").assertExists()
+    }
+
+    @Test
+    fun pressingAKeySendsItsNumber() {
+        show(ClockState(), big = Screen.Shortcuts, keys = DeskShots.KEYS.copy(items = DeskShots.KEYS.items!!.map { it.copy(name = "키 ${it.id}") }))
+        compose.onNodeWithText("키 3").performClick()
+        settle()
+        assertEquals(listOf("press 3"), calls)
+    }
+
+    @Test
+    fun tappingTheShortcutTileOpensTheShortcuts() {
+        show(ClockState(), keys = ShortcutState(items = emptyList()))
+        compose.onNodeWithText("단축키").performClick()
+        settle()
+        assertEquals(listOf("done", "show Shortcuts"), calls)
+    }
+
+    @Test
+    fun theKillConfirmBlocksKeys() {
+        val named = DeskShots.KEYS.copy(items = DeskShots.KEYS.items!!.map { it.copy(name = "키 ${it.id}") })
+        show(ClockState(), keys = named, desk = DeskState(big = Screen.Shortcuts, rows = DeskShots.ROWS, asking = DeskShots.ROWS.first()))
+        compose.onNodeWithText("키 3").performClick()
+        settle()
+        // 확인 창(판이나 뒤 배경)이 누르기를 받아 단축키는 눌리지 않는다.
+        assertEquals(false, calls.contains("press 3"))
     }
 
     @Test

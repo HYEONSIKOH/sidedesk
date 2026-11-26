@@ -423,7 +423,9 @@ impl Session {
                 | Body::Weather(_)
                 | Body::AiSessions(_)
                 | Body::AiAlert(_)
-                | Body::Forge(_)),
+                | Body::Forge(_)
+                | Body::Shortcuts(_)
+                | Body::RunShortcut(_)),
             ) => {
                 self.events.push_back(Event::Message(body));
                 Ok(())

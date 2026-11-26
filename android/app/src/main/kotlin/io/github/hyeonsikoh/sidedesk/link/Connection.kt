@@ -72,7 +72,7 @@ class Connection(
             var computer = ByteArray(0)
             var subscribed: Subscription? = null
             val location = LocationGate()
-            val sentKills = HashSet<Long>()
+            val sentCommands = HashSet<Long>()
             fun flush() = session.takeOutput().takeIf { it.isNotEmpty() }?.let(pipe::send)
 
             // 새 연결마다 마지막 구독과 결과를 못 받은 종료 명령을 같은 번호로 다시 보낸다.
@@ -86,9 +86,13 @@ class Connection(
                 location.take(owner.location.get())?.let { place ->
                     session.sendLocation((place as? LocationState.At)?.let { Place(it.latitude, it.longitude) })
                 }
-                for (kill in owner.pendingKills(computer)) {
-                    if (!sentKills.add(kill.commandId)) continue
-                    session.killProcess(kill.commandId.toULong(), kill.pid.toUInt(), kill.startedAt.toULong())
+                for (command in owner.pendingCommands(computer)) {
+                    if (!sentCommands.add(command.commandId)) continue
+                    when (command) {
+                        is KillCommand ->
+                            session.killProcess(command.commandId.toULong(), command.pid.toUInt(), command.startedAt.toULong())
+                        is RunShortcut -> runShortcut(session, command)
+                    }
                 }
                 flush()
             }
@@ -123,9 +127,10 @@ class Connection(
                         is PhoneEvent.Weather -> mine?.let { owner.receivedWeather(it, weather(event)) }
                         is PhoneEvent.AiSessions -> mine?.let { owner.receivedSessions(it, event.items.map(::session)) }
                         is PhoneEvent.AiAlert -> mine?.let { owner.receivedAlert(it, alert(event.value)) }
+                        is PhoneEvent.Shortcuts -> mine?.let { owner.receivedShortcuts(it, event.book.toLong(), event.items.map(::shortcut)) }
                         is PhoneEvent.Forge -> mine?.let { owner.receivedForge(it, Forge(forge(event.github), forge(event.gitlab))) }
                         is PhoneEvent.CommandResult ->
-                            owner.receivedKill(KillResult(event.requestId.toLong(), event.ok, event.reason))
+                            owner.receivedResult(CommandResult(event.requestId.toLong(), event.ok, event.reason))
                     }
                 }
                 return true
@@ -174,6 +179,7 @@ class Connection(
         private fun view(topic: Topic) = when (topic) {
             Topic.Weather -> View.WEATHER
             Topic.Ai -> View.AI
+            Topic.Shortcuts -> View.SHORTCUTS
             Topic.Perf -> View.PERFORMANCE
             Topic.Processes -> View.PROCESSES
         }
@@ -246,6 +252,22 @@ class Connection(
                 notices = it.notices.toInt(),
             )
         }
+
+        private fun runShortcut(session: PhoneSession, command: RunShortcut) =
+            session.runShortcut(command.commandId.toULong(), command.shortcutId.toUInt(), command.book.toULong())
+
+        private fun shortcut(it: uniffi.sidedesk_core.ShortcutInfo) = Shortcut(
+            id = it.id.toInt(),
+            name = it.name,
+            icon = it.icon,
+            color = it.color,
+            toggle = when (it.toggle) {
+                uniffi.sidedesk_core.ShortcutToggle.ON -> Toggle.On
+                uniffi.sidedesk_core.ShortcutToggle.OFF -> Toggle.Off
+                uniffi.sidedesk_core.ShortcutToggle.NONE -> Toggle.None
+            },
+            system = it.system,
+        )
 
         private fun sky(sky: uniffi.sidedesk_core.Sky) = when (sky) {
             uniffi.sidedesk_core.Sky.UNKNOWN -> Sky.Unknown

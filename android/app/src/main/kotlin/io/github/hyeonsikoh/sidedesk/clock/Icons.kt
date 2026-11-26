@@ -146,12 +146,7 @@ private fun DrawScope.sun(color: Color, line: Stroke, cx: Float, cy: Float, r: F
 private fun DrawScope.moon(color: Color, line: Stroke, cx: Float, cy: Float, r: Float) {
     val radius = size.minDimension * r
     val center = Offset(size.width * cx, size.height * cy)
-    val path = Path().apply {
-        arcTo(androidx.compose.ui.geometry.Rect(center, radius), 300f, 280f, true)
-        val inner = androidx.compose.ui.geometry.Rect(Offset(center.x + radius * 0.45f, center.y - radius * 0.3f), radius * 0.85f)
-        arcTo(inner, 200f, -200f, false)
-    }
-    drawPath(path, color, style = line)
+    drawPath(io.github.hyeonsikoh.sidedesk.shortcut.crescent(center, radius), color, style = line)
 }
 
 private fun DrawScope.cloud(color: Color, line: Stroke, cx: Float, cy: Float, width: Float) {

@@ -2222,6 +2222,7 @@ checksum = "f8fadd59c855ef2080decdef8ff161eb6661b86933c9d82e5ba29dc602a55aba"
 name = "sidedesk"
 version = "0.1.0"
 dependencies = [
+ "serde_json",
  "sidedesk-agents",
  "sidedesk-core",
  "sidedesk-domain",
@@ -2268,6 +2269,8 @@ dependencies = [
 name = "sidedesk-domain"
 version = "0.1.0"
 dependencies = [
+ "serde",
+ "serde_json",
  "sidedesk-core",
  "thiserror 2.0.21",
 ]
@@ -2297,6 +2300,7 @@ dependencies = [
  "dispatch2",
  "libc",
  "objc2",
+ "objc2-app-kit",
  "objc2-core-bluetooth",
  "objc2-foundation",
  "sidedesk-core",
@@ -2320,6 +2324,8 @@ version = "0.1.0"
 dependencies = [
  "objc2",
  "objc2-app-kit",
+ "serde",
+ "serde_json",
  "sidedesk-core",
  "sidedesk-domain",
  "tao",

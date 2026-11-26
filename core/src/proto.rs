@@ -4,7 +4,7 @@
 pub struct Envelope {
     #[prost(
         oneof = "envelope::Body",
-        tags = "1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18"
+        tags = "1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20"
     )]
     pub body: Option<envelope::Body>,
 }
@@ -58,6 +58,12 @@ pub mod envelope {
         /// 컴퓨터 → 폰
         #[prost(message, tag = "18")]
         Forge(super::Forge),
+        /// 컴퓨터 → 폰
+        #[prost(message, tag = "19")]
+        Shortcuts(super::Shortcuts),
+        /// 폰 → 컴퓨터. 결과는 CommandResult
+        #[prost(message, tag = "20")]
+        RunShortcut(super::RunShortcut),
     }
 }
 
@@ -100,6 +106,8 @@ pub enum View {
     Weather = 3,
     /// main 이면 세션과 GitHub/GitLab, tiles 에만 있으면 세션만
     Ai = 4,
+    /// main 이면 단축키 큰 화면, tiles 면 작은 칸. 같은 목록을 받는다.
+    Shortcuts = 5,
 }
 
 /// 지금 보이는 것 전체. 받을 때마다 앞의 구독을 바꾼다. 둘 다 비면 아무것도 안 본다.
@@ -345,4 +353,56 @@ pub struct Forge {
     pub github: Option<ForgeCounts>,
     #[prost(message, optional, tag = "2")]
     pub gitlab: Option<ForgeCounts>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, prost::Enumeration)]
+#[repr(i32)]
+pub enum ShortcutToggle {
+    /// 누르면 한 번 하는 것
+    None = 0,
+    /// 켜짐(소리 끄기는 소리가 꺼진 상태)
+    On = 1,
+    Off = 2,
+}
+
+/// 폰에 보이는 단축키 하나. 등록 내용(앱, 경로, 주소, 키)은 담지 않는다.
+#[derive(Clone, PartialEq, prost::Message)]
+pub struct ShortcutItem {
+    /// 등록 때 정한 바뀌지 않는 번호
+    #[prost(uint32, tag = "1")]
+    pub id: u32,
+    #[prost(string, tag = "2")]
+    pub name: String,
+    /// 그림 이름표
+    #[prost(string, tag = "3")]
+    pub icon: String,
+    /// 색 이름표
+    #[prost(string, tag = "4")]
+    pub color: String,
+    #[prost(enumeration = "ShortcutToggle", tag = "5")]
+    pub toggle: i32,
+    /// 시스템 동작(소리, 방해 금지, 잠금)이면 true
+    #[prost(bool, tag = "6")]
+    pub system: bool,
+}
+
+/// 바뀔 때마다 통째로
+#[derive(Clone, PartialEq, prost::Message)]
+pub struct Shortcuts {
+    /// 이 컴퓨터의 단축키 장부 번호. 실행 명령에 그대로 돌려준다.
+    #[prost(uint64, tag = "1")]
+    pub book: u64,
+    #[prost(message, repeated, tag = "2")]
+    pub items: Vec<ShortcutItem>,
+}
+
+/// 같은 request_id 는 한 번만 실행한다. book 이 다르면 실행하지 않는다.
+#[derive(Clone, PartialEq, prost::Message)]
+pub struct RunShortcut {
+    #[prost(uint64, tag = "1")]
+    pub request_id: u64,
+    #[prost(uint32, tag = "2")]
+    pub shortcut_id: u32,
+    #[prost(uint64, tag = "3")]
+    pub book: u64,
 }

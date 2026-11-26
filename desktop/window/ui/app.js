@@ -154,3 +154,199 @@ systemDark.addEventListener('change', showMode);
 showMode();
 show('phones');
 send({ ready: true });
+
+// 단축키 칸. 화면에 넣는 글자는 모두 textContent 로만.
+const ICON_GLYPH = {
+  terminal: '>_', folder: '▤', code: '</>', browser: '◎', calculator: '±', settings: '⚙',
+  activity: '∿', music: '♪', volume: '◁)', dnd: '☾', lock: '▣', file: '▯', star: '★', bolt: 'ϟ',
+};
+const COLOR_VALUE = {
+  slate: '#4F7090', green: '#6C8A6E', purple: '#8A7AA8', orange: '#A8805A', teal: '#5E8A94',
+  gray: '#747C88', olive: '#7A8F5E', rose: '#A86A7C', sand: '#E0B95C', sky: '#7FA2D9',
+};
+let shortcutState = null;
+let shortcutConfirm = null;
+const box = { saving: false, id: null, kind: 'app', icon: 'star', color: 'gray', combo: null, path: '', bundle: '', label: '' };
+
+function chip(icon, color) {
+  const node = el('span', { class: 'chip' }, ICON_GLYPH[icon] || '★');
+  node.style.background = COLOR_VALUE[color] || COLOR_VALUE.gray;
+  return node;
+}
+
+function comboText(combo) {
+  if (!combo) return '';
+  const marks = (combo.control ? '⌃' : '') + (combo.option ? '⌥' : '') + (combo.shift ? '⇧' : '') + (combo.command ? '⌘' : '');
+  return marks + combo.code.replace(/^Key|^Digit/, '');
+}
+
+function renderShortcuts(next) {
+  shortcutState = next;
+  const rows = next.items.map((item, index) => {
+    const remove = el('button', { class: 'button danger', on: () => {
+      if (shortcutConfirm === item.id) { shortcutConfirm = null; send({ 'shortcut-remove': item.id }); }
+      else { shortcutConfirm = item.id; renderShortcuts(shortcutState); }
+    } }, shortcutConfirm === item.id ? '한 번 더 누르면 지움' : '지우기');
+    const up = el('button', { class: 'button outline', on: () => send({ 'shortcut-move': { id: item.id, step: -1 } }) }, '위로');
+    const down = el('button', { class: 'button outline', on: () => send({ 'shortcut-move': { id: item.id, step: 1 } }) }, '아래로');
+    up.disabled = index === 0;
+    down.disabled = index === next.items.length - 1;
+    const edit = el('button', { class: 'button outline', on: () => send({ 'shortcut-detail': item.id }) }, '고치기');
+    const summary = el('td', {}, item.summary || '-');
+    if (item.problem) summary.append(el('span', { class: 'problem' }, item.problem));
+    return el('tr', {},
+      el('td', {}, chip(item.icon, item.color)),
+      el('td', {}, item.name || '이름 없음'),
+      summary,
+      el('td', { class: 'end' }, up, down, edit, remove));
+  });
+  $('shortcut-rows').replaceChildren(...rows);
+  $('shortcut-empty').hidden = rows.length > 0;
+  $('shortcut-notice').hidden = !next.notice;
+  $('shortcut-notice').textContent = next.notice || '';
+  $('shortcut-keys').hidden = !next.needsKeys || next.keysAllowed;
+  const message = $('shortcut-message');
+  message.hidden = !next.message;
+  message.textContent = next.message ? next.message.text : '';
+  message.classList.toggle('calm', Boolean(next.message && next.message.good));
+  // 저장을 누른 뒤 온 답일 때만 상자를 닫거나 까닭을 보인다.
+  if (box.saving && next.message) {
+    box.saving = false;
+    if (next.message.good) closeBox(); else showError(next.message.text);
+  }
+  fillChoices();
+  if (next.picked) {
+    box.path = next.picked;
+    $('sb-path').textContent = next.picked;
+    $('sb-path-name').textContent = next.picked.split('/').pop();
+  }
+  if (next.detail) openBox(next.detail);
+}
+
+function fillChoices() {
+  const state = shortcutState || {};
+  $('sb-app-loading').hidden = Boolean(state.apps);
+  const find = $('sb-app-find').value.trim().toLowerCase();
+  const apps = (state.apps || []).filter((app) => !find || app.name.toLowerCase().includes(find));
+  const app = $('sb-app');
+  app.replaceChildren(...apps.map((a) => { const o = el('option', { value: a.bundle }, a.name); o.selected = a.bundle === box.bundle; return o; }));
+  for (const id of ['sb-focus-on', 'sb-focus-off']) {
+    const keep = $(id).value;
+    $(id).replaceChildren(...(state.focus || []).map((name) => el('option', { value: name }, name)));
+    if (keep) $(id).value = keep;
+  }
+}
+
+function showKind() {
+  box.kind = $('sb-kind').value;
+  document.querySelectorAll('#shortcut-box .kind').forEach((k) => { k.hidden = k.dataset.kind !== box.kind; });
+  $('sb-focus').hidden = !(box.kind === 'system' && $('sb-system').value === 'focus');
+}
+
+function swatches() {
+  $('sb-icons').replaceChildren(...Object.keys(ICON_GLYPH).map((icon) => {
+    const b = el('button', { class: 'swatch' + (box.icon === icon ? ' on' : ''), title: icon, on: () => { box.icon = icon; swatches(); } }, ICON_GLYPH[icon]);
+    b.style.background = COLOR_VALUE[box.color];
+    return b;
+  }));
+  $('sb-colors').replaceChildren(...Object.keys(COLOR_VALUE).map((color) => {
+    const b = el('button', { class: 'swatch' + (box.color === color ? ' on' : ''), title: color, on: () => { box.color = color; swatches(); } });
+    b.style.background = COLOR_VALUE[color];
+    return b;
+  }));
+}
+
+function showError(text) {
+  $('sb-error').hidden = !text;
+  $('sb-error').textContent = text || '';
+}
+
+function openBox(detail) {
+  Object.assign(box, { saving: false, id: null, kind: 'app', icon: 'star', color: 'gray', combo: null, path: '', bundle: '', label: '' });
+  $('sb-name').value = '';
+  $('sb-url').value = '';
+  $('sb-keys').value = '';
+  $('sb-path').textContent = '';
+  $('sb-path-name').textContent = '';
+  $('sb-system').value = 'mute';
+  if (detail) {
+    const a = detail.action;
+    Object.assign(box, { id: detail.id, kind: a.kind, icon: detail.icon, color: detail.color });
+    $('sb-name').value = detail.name;
+    if (a.kind === 'app') { box.bundle = a.bundle; box.label = a.label; }
+    if (a.kind === 'open') { box.path = a.path; $('sb-path').textContent = a.path; $('sb-path-name').textContent = a.path.split('/').pop(); }
+    if (a.kind === 'url') $('sb-url').value = a.url;
+    if (a.kind === 'keys') { box.combo = a.combo; $('sb-keys').value = comboText(a.combo); }
+    if (a.kind === 'system') {
+      $('sb-system').value = a.action.kind;
+      if (a.action.kind === 'focus') { $('sb-focus-on').value = a.action.on; $('sb-focus-off').value = a.action.off; }
+    }
+  }
+  $('sb-kind').value = box.kind;
+  showError('');
+  showKind();
+  swatches();
+  fillChoices();
+  $('shortcut-box').hidden = false;
+}
+
+function closeBox() {
+  $('shortcut-box').hidden = true;
+}
+
+function draftAction() {
+  switch (box.kind) {
+    case 'app': {
+      const option = $('sb-app').selectedOptions[0];
+      return option ? { kind: 'app', bundle: option.value, label: option.textContent } : (box.bundle ? { kind: 'app', bundle: box.bundle, label: box.label } : null);
+    }
+    case 'open': return box.path ? { kind: 'open', path: box.path } : null;
+    case 'url': return { kind: 'url', url: $('sb-url').value.trim() };
+    case 'keys': return box.combo ? { kind: 'keys', combo: box.combo } : null;
+    case 'system': {
+      const kind = $('sb-system').value;
+      return kind === 'focus' ? { kind: 'system', action: { kind, on: $('sb-focus-on').value, off: $('sb-focus-off').value } } : { kind: 'system', action: { kind } };
+    }
+  }
+  return null;
+}
+
+$('shortcut-add').addEventListener('click', () => openBox(null));
+$('sb-cancel').addEventListener('click', closeBox);
+$('sb-kind').addEventListener('change', showKind);
+$('sb-system').addEventListener('change', () => {
+  showKind();
+  const icon = { mute: 'volume', lock: 'lock', focus: 'dnd' }[$('sb-system').value];
+  box.icon = icon;
+  swatches();
+});
+$('sb-app-find').addEventListener('input', fillChoices);
+$('sb-app').addEventListener('change', () => {
+  const chosen = ((shortcutState && shortcutState.apps) || []).find((a) => a.bundle === $('sb-app').value);
+  if (!chosen) return;
+  box.bundle = chosen.bundle;
+  box.label = chosen.name;
+  if (!$('sb-name').value) $('sb-name').value = chosen.name;
+  box.icon = chosen.icon;
+  box.color = chosen.color;
+  swatches();
+});
+$('sb-pick').addEventListener('click', () => send({ 'shortcut-pick': true }));
+$('sb-keys').addEventListener('keydown', (event) => {
+  event.preventDefault();
+  if (['ShiftLeft', 'ShiftRight', 'ControlLeft', 'ControlRight', 'AltLeft', 'AltRight', 'MetaLeft', 'MetaRight'].includes(event.code)) return;
+  box.combo = { code: event.code, command: event.metaKey, control: event.ctrlKey, option: event.altKey, shift: event.shiftKey };
+  $('sb-keys').value = comboText(box.combo);
+});
+$('sb-save').addEventListener('click', () => {
+  const action = draftAction();
+  if (!action) { showError('할 일을 고르세요'); return; }
+  if (action.kind === 'url' && !/^https?:\/\/[^\s/?#]+/i.test(action.url)) { showError('http 나 https 로 시작하는 주소만 열 수 있습니다'); return; }
+  const draft = { name: $('sb-name').value.trim(), icon: box.icon, color: box.color, action };
+  if (box.id !== null) draft.id = box.id;
+  showError('');
+  box.saving = true;
+  send({ 'shortcut-save': draft });
+});
+$('shortcut-key-settings').addEventListener('click', () => send({ 'shortcut-key-settings': true }));
+document.querySelector('[data-page="shortcuts"]').addEventListener('click', () => send({ 'shortcut-open': true }));

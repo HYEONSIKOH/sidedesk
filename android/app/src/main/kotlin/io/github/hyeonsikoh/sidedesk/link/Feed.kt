@@ -1,7 +1,7 @@
 package io.github.hyeonsikoh.sidedesk.link
 
 /** 컴퓨터가 모아 보낼 수 있는 것. 시계는 폰 시각을 써서 없다. */
-enum class Topic { Weather, Ai, Perf, Processes }
+enum class Topic { Weather, Ai, Perf, Processes, Shortcuts }
 
 enum class Sky { Unknown, Clear, PartlyCloudy, Cloudy, Fog, Drizzle, Rain, Snow, Shower, Thunderstorm }
 
@@ -87,6 +87,28 @@ data class ProcessInfo(
 data class Processes(val list: List<ProcessInfo>)
 
 /** 실패면 컴퓨터가 보낸 이유 한 문장 */
-data class KillResult(val commandId: Long, val ok: Boolean, val reason: String = "")
+data class CommandResult(val commandId: Long, val ok: Boolean, val reason: String = "")
 
-data class KillCommand(val commandId: Long, val pid: Int, val startedAt: Long)
+/** 컴퓨터에 보내는 명령. 번호마다 한 번만 실행되고 결과가 하나 온다. */
+sealed interface Command {
+    val commandId: Long
+}
+
+data class KillCommand(override val commandId: Long, val pid: Int, val startedAt: Long) : Command
+
+/** book 은 목록을 받을 때 온 그 컴퓨터의 장부 번호다. LinkOwner 가 채운다. */
+data class RunShortcut(override val commandId: Long, val shortcutId: Int, val book: Long = 0) : Command
+
+/** 소리 끄기, 방해 금지처럼 켜짐 상태가 있는 버튼. None 은 누르면 한 번 하는 것 */
+enum class Toggle { None, On, Off }
+
+/** 등록 내용(앱, 경로, 주소, 키)은 오지 않는다. 폰은 이름, 그림, 색만 안다. */
+data class Shortcut(
+    val id: Int,
+    val name: String,
+    val icon: String,
+    val color: String,
+    val toggle: Toggle,
+    /** 시스템 동작(소리, 방해 금지, 잠금)이면 칸에 색 그림만 그린다. */
+    val system: Boolean,
+)

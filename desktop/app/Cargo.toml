@@ -7,6 +7,7 @@ edition.workspace = true
 sidedesk-core = { path = "../../core" }
 sidedesk-domain = { path = "../domain" }
 sidedesk-link = { path = "../link" }
+serde_json = "1"
 sidedesk-weather = { path = "../weather" }
 sidedesk-window = { path = "../window" }
 

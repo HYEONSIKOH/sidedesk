@@ -262,7 +262,7 @@ fun AiTile(state: AiScreenState, modifier: Modifier) {
         }
     }
     val busy = state.busy ?: 0
-    Box(
+    BoxWithConstraints(
         modifier
             .scale(pulse.value)
             .clip(RoundedCornerShape(20.dp))
@@ -280,11 +280,20 @@ fun AiTile(state: AiScreenState, modifier: Modifier) {
                 )
             }
         } else {
-            Row(Modifier.align(Alignment.Center).alpha(if (state.dimmed) DIM else 1f), verticalAlignment = Alignment.CenterVertically) {
-                Text("AI", color = Palette.ink, fontSize = fit(20.dp), fontWeight = FontWeight.Bold, maxLines = 1)
-                Spacer(Modifier.weight(1f))
-                Text(state.busy?.toString() ?: "-", color = Palette.ink, fontSize = fit(26.dp), fontWeight = FontWeight.Medium, maxLines = 1)
-                Text(" 작업 중", color = Palette.muted, fontSize = fit(10.dp), maxLines = 1)
+            val count = state.busy?.toString() ?: "-"
+            if (maxWidth < 72.dp) {
+                // 좁은 세로에서 칸이 넷이면 "작업 중"은 빼고 위아래로 쌓는다.
+                Column(Modifier.align(Alignment.Center).alpha(if (state.dimmed) DIM else 1f), horizontalAlignment = Alignment.CenterHorizontally) {
+                    Text("AI", color = Palette.ink, fontSize = fit(12.dp), fontWeight = FontWeight.Bold, maxLines = 1)
+                    Text(count, color = Palette.ink, fontSize = fit(22.dp), fontWeight = FontWeight.Medium, maxLines = 1)
+                }
+            } else {
+                Row(Modifier.align(Alignment.Center).alpha(if (state.dimmed) DIM else 1f), verticalAlignment = Alignment.CenterVertically) {
+                    Text("AI", color = Palette.ink, fontSize = fit(20.dp), fontWeight = FontWeight.Bold, maxLines = 1)
+                    Spacer(Modifier.weight(1f))
+                    Text(count, color = Palette.ink, fontSize = fit(26.dp), fontWeight = FontWeight.Medium, maxLines = 1)
+                    Text(" 작업 중", color = Palette.muted, fontSize = fit(10.dp), maxLines = 1)
+                }
             }
             if (state.waiting) {
                 Box(Modifier.align(Alignment.TopEnd).padding(top = 10.dp).size(7.dp).clip(CircleShape).background(Palette.waiting))

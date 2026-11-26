@@ -39,7 +39,13 @@ interface ComputerLink {
     /** 세션 알림. 버리지 않는다. 한 연결 안의 같은 id 는 한 번만 온다. */
     val alerts: SharedFlow<AiAlert>
 
-    val killResults: SharedFlow<KillResult>
+    /** 지금 붙은 컴퓨터의 단축키 목록. 다른 컴퓨터가 붙으면 지운다. */
+    val shortcuts: StateFlow<List<Shortcut>?>
+
+    /** 지금 컴퓨터의 목록에 있는 단축키면 명령으로 두고 true, 아니면 보내지 않고 false */
+    fun runShortcut(command: RunShortcut): Boolean
+
+    val results: SharedFlow<CommandResult>
 
     fun start()
 
@@ -50,7 +56,7 @@ interface ComputerLink {
     fun setLocation(location: LocationState)
 
     /** 결과가 올 때까지 다시 이어질 때마다 같은 번호로 보낸다. */
-    fun kill(command: KillCommand)
+    fun send(command: Command)
 
     /** 기한 안에 결과가 없으면 부른다. 아직 남아 있으면 지우고 실패로 알린다. */
     fun giveUp(commandId: Long)

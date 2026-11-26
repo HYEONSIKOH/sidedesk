@@ -50,6 +50,8 @@ fn unified_title(window: &tao::window::Window) {
 
 enum Change {
     Render(String),
+    /// 화면에서 그대로 돌릴 글(단축키 칸 그리기)
+    Script(String),
     Drag,
     Mode(&'static str),
     /// 시험이 화면에서 읽은 글자
@@ -80,6 +82,13 @@ static ON_EXIT: std::sync::OnceLock<Box<dyn Fn() + Send + Sync>> = std::sync::On
 
 pub fn on_exit(work: impl Fn() + Send + Sync + 'static) {
     let _ = ON_EXIT.set(Box::new(work));
+}
+
+/// 단축키 칸. 기기 칸(Board)과 따로 그린다.
+static SHORTCUTS: std::sync::OnceLock<&'static crate::ShortcutsPanel> = std::sync::OnceLock::new();
+
+pub fn with_shortcuts(panel: &'static crate::ShortcutsPanel) {
+    let _ = SHORTCUTS.set(panel);
 }
 
 /// 창과 화면. 필드 순서대로 놓이므로 화면이 자료 폴더 설정과 창보다 먼저 사라진다.
@@ -124,6 +133,12 @@ fn build(
     data_folder: &Path,
 ) -> Result<Parts, String> {
     let proxy = event_loop.create_proxy();
+    if let Some(panel) = SHORTCUTS.get() {
+        let proxy = event_loop.create_proxy();
+        panel.on_change(move |snapshot| {
+            let _ = proxy.send_event(Change::Script(format!("renderShortcuts({snapshot})")));
+        });
+    }
     board.on_change(move |snapshot| {
         let _ = proxy.send_event(Change::Render(snapshot));
     });
@@ -170,7 +185,7 @@ fn build(
                 let _ = ipc.send_event(Change::Drag);
             } else if let Some(chosen) = body.strip_prefix("mode:").and_then(mode) {
                 let _ = ipc.send_event(Change::Mode(chosen));
-            } else {
+            } else if !SHORTCUTS.get().is_some_and(|panel| panel.command(body)) {
                 board.command(body);
             }
         })
@@ -207,6 +222,9 @@ fn handle(parts: &Parts, event: Event<'_, Change>, mode_file: &Path) -> bool {
     match event {
         Event::UserEvent(Change::Render(snapshot)) => {
             let _ = webview.evaluate_script(&format!("render({snapshot})"));
+        }
+        Event::UserEvent(Change::Script(script)) => {
+            let _ = webview.evaluate_script(&script);
         }
         Event::UserEvent(Change::Drag) => {
             let _ = window.drag_window();

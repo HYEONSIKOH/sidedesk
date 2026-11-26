@@ -20,6 +20,8 @@ import io.github.hyeonsikoh.sidedesk.ai.AiViewModel
 import io.github.hyeonsikoh.sidedesk.ai.PhoneBuzzer
 import io.github.hyeonsikoh.sidedesk.clock.ClockViewModel
 import io.github.hyeonsikoh.sidedesk.desk.AiPart
+import io.github.hyeonsikoh.sidedesk.desk.ShortcutPart
+import io.github.hyeonsikoh.sidedesk.shortcut.ShortcutViewModel
 import io.github.hyeonsikoh.sidedesk.clock.PickActions
 import io.github.hyeonsikoh.sidedesk.clock.PrefsSettings
 import io.github.hyeonsikoh.sidedesk.desk.ClockPart
@@ -52,6 +54,9 @@ class MainActivity : ComponentActivity() {
     }
     private val ai: AiViewModel by viewModels {
         viewModelFactory { initializer { AiViewModel(app.link, PhoneBuzzer(app)) } }
+    }
+    private val shortcuts: ShortcutViewModel by viewModels {
+        viewModelFactory { initializer { ShortcutViewModel(app.link, PhoneBuzzer(app)) { newRequestId().toLong() } } }
     }
     private val clock: ClockViewModel by viewModels {
         viewModelFactory { initializer { ClockViewModel(app.link, settings) } }
@@ -98,6 +103,7 @@ class MainActivity : ComponentActivity() {
                         part,
                         actions,
                         aiPart,
+                        ShortcutPart(shortcuts.state.collectAsStateWithLifecycle().value, shortcuts::press),
                         modal = if (askLocation.value) LOCATION_NOTICE else null,
                         onModal = ::answerLocation,
                     )

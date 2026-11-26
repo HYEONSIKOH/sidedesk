@@ -16,9 +16,9 @@ class LinkOwnerTest {
     private val mac = byteArrayOf(1)
     private val other = byteArrayOf(2)
     private val build = KillCommand(7, 10, 100)
-    private val results = mutableListOf<KillResult>()
+    private val results = mutableListOf<CommandResult>()
     private val scope = CoroutineScope(Dispatchers.Unconfined).also {
-        it.launch(start = CoroutineStart.UNDISPATCHED) { owner.killResults.collect { result -> results += result } }
+        it.launch(start = CoroutineStart.UNDISPATCHED) { owner.results.collect { result -> results += result } }
     }
 
     @After
@@ -33,65 +33,65 @@ class LinkOwnerTest {
     @Test
     fun keepsACommandUntilItsResultComes() {
         connect(mac)
-        owner.kill(build)
-        assertEquals(listOf(build), owner.pendingKills(mac))
-        owner.receivedKill(KillResult(7, true))
-        assertEquals(listOf(KillResult(7, true)), results)
-        assertTrue(owner.pendingKills(mac).isEmpty())
+        owner.send(build)
+        assertEquals(listOf(build), owner.pendingCommands(mac))
+        owner.receivedResult(CommandResult(7, true))
+        assertEquals(listOf(CommandResult(7, true)), results)
+        assertTrue(owner.pendingCommands(mac).isEmpty())
     }
 
     @Test
     fun dropsResultsOfUnknownCommands() {
         connect(mac)
-        owner.receivedKill(KillResult(99, true))
-        owner.kill(build)
-        owner.receivedKill(KillResult(7, true))
-        owner.receivedKill(KillResult(7, true))
-        assertEquals(listOf(KillResult(7, true)), results)
+        owner.receivedResult(CommandResult(99, true))
+        owner.send(build)
+        owner.receivedResult(CommandResult(7, true))
+        owner.receivedResult(CommandResult(7, true))
+        assertEquals(listOf(CommandResult(7, true)), results)
     }
 
     @Test
     fun sendsOnlyToTheComputerItWasChosenFor() {
         val mine = connect(mac)
-        owner.kill(build)
+        owner.send(build)
         owner.release(mine)
         connect(other)
-        assertTrue(owner.pendingKills(other).isEmpty())
-        assertEquals(listOf(build), owner.pendingKills(mac))
+        assertTrue(owner.pendingCommands(other).isEmpty())
+        assertEquals(listOf(build), owner.pendingCommands(mac))
     }
 
     @Test
     fun keepsTheComputerAfterTheConnectionEnds() {
         owner.release(connect(mac))
-        owner.kill(build)
-        assertEquals(listOf(build), owner.pendingKills(mac))
+        owner.send(build)
+        assertEquals(listOf(build), owner.pendingCommands(mac))
         assertTrue(results.isEmpty())
     }
 
     @Test
     fun stopsSendingAfterTheLimit() {
         connect(mac)
-        owner.kill(build)
+        owner.send(build)
         now = LinkOwner.KILL_LIMIT_NANOS + 1
-        assertTrue(owner.pendingKills(mac).isEmpty())
+        assertTrue(owner.pendingCommands(mac).isEmpty())
     }
 
     @Test
     fun givingUpRemovesAndReportsOnce() {
         connect(mac)
-        owner.kill(build)
+        owner.send(build)
         owner.giveUp(7)
         owner.giveUp(7)
-        owner.receivedKill(KillResult(7, true))
-        assertEquals(listOf(KillResult(7, false, LinkOwner.NOT_CONNECTED)), results)
-        assertTrue(owner.pendingKills(mac).isEmpty())
+        owner.receivedResult(CommandResult(7, true))
+        assertEquals(listOf(CommandResult(7, false, LinkOwner.NOT_CONNECTED)), results)
+        assertTrue(owner.pendingCommands(mac).isEmpty())
     }
 
     @Test
     fun failsAtOnceWithoutAnyComputer() {
-        owner.kill(build)
-        assertEquals(listOf(KillResult(7, false, LinkOwner.NOT_CONNECTED)), results)
-        assertTrue(owner.pendingKills(mac).isEmpty())
+        owner.send(build)
+        assertEquals(listOf(CommandResult(7, false, LinkOwner.NOT_CONNECTED)), results)
+        assertTrue(owner.pendingCommands(mac).isEmpty())
     }
 
     private val sunny = Weather(12f, Sky.Clear, 15f, 6f, true, 1, WeatherSource.OpenMeteo)
@@ -166,5 +166,43 @@ class LinkOwnerTest {
         owner.receivedAlert(second, alert(1))
         assertEquals(listOf(1L, 1L), received.map { it.id })
         alertScope.cancel()
+    }
+
+    private val terminal = Shortcut(3, "터미널", "terminal", "slate", Toggle.None, false)
+
+    @Test
+    fun runsOnlyShortcutsFromTheConnectedComputer() {
+        val mine = connect(mac)
+        owner.receivedShortcuts(mine, 42, listOf(terminal))
+        assertTrue(owner.runShortcut(RunShortcut(1, 3)))
+        assertEquals(listOf<Command>(RunShortcut(1, 3, 42)), owner.pendingCommands(mac))
+        assertEquals(false, owner.runShortcut(RunShortcut(2, 99)))
+    }
+
+    @Test
+    fun forgetsTheListWhenAnotherComputerConnects() {
+        owner.receivedShortcuts(connect(mac), 42, listOf(terminal))
+        val mine = owner.takeUsb {}
+        assertEquals(listOf(terminal), owner.shortcuts.value)
+        owner.ready(mine, other)
+        assertEquals(null, owner.shortcuts.value)
+        assertEquals(false, owner.runShortcut(RunShortcut(1, 3)))
+        assertTrue(owner.pendingCommands(other).isEmpty())
+    }
+
+    @Test
+    fun keepsTheListWhenTheSameComputerComesBack() {
+        owner.receivedShortcuts(connect(mac), 42, listOf(terminal))
+        connect(mac)
+        assertEquals(listOf(terminal), owner.shortcuts.value)
+        assertTrue(owner.runShortcut(RunShortcut(1, 3)))
+    }
+
+    @Test
+    fun doesNotRunWhileNotConnected() {
+        val mine = connect(mac)
+        owner.receivedShortcuts(mine, 42, listOf(terminal))
+        owner.release(mine)
+        assertEquals(false, owner.runShortcut(RunShortcut(1, 3)))
     }
 }

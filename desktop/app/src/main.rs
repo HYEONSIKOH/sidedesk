@@ -1,4 +1,5 @@
 mod prefs;
+mod shortcuts_file;
 mod store;
 
 use std::io::BufRead;
@@ -15,14 +16,15 @@ use sidedesk_domain::{
 };
 use sidedesk_link::{AdbLinks, UsbmuxLinks};
 #[cfg(target_os = "macos")]
-use sidedesk_mac::{MacGet, MacKeychain, MacMeter, MacName as Name, MacProcesses};
+use sidedesk_mac::{MacGet, MacKeychain, MacLauncher, MacMeter, MacName as Name, MacProcesses};
 use sidedesk_window::{Board, Computer};
 #[cfg(target_os = "windows")]
 use sidedesk_windows::{
-    WinGet, WindowsMeter, WindowsName as Name, WindowsProcesses, WindowsSecrets,
+    WinGet, WindowsLauncher, WindowsMeter, WindowsName as Name, WindowsProcesses, WindowsSecrets,
 };
 
 use crate::prefs::WeatherPrefs;
+use crate::shortcuts_file::ShortcutsFile;
 use crate::store::FileKeys;
 
 const USAGE: &str = "사용: sidedesk (설정 창) | sidedesk pair (터미널에서 기기 등록) | sidedesk run (창 없이 연결 유지)";
@@ -90,9 +92,12 @@ fn collectors() -> Hub {
     )
 }
 
+/// 단축키 설정 창 도우미
+type Help = Arc<dyn sidedesk_domain::ShortcutHelp>;
+
 /// 날씨는 운영체제의 HTTP(맥 NSURLSession, 윈도우 WinHTTP)로 받고 키는 운영체제 보관소에 둔다.
 #[cfg(target_os = "macos")]
-fn hub(folder: &Path) -> (Hub, Arc<WeatherPrefs>) {
+fn hub(folder: &Path) -> (Hub, Arc<WeatherPrefs>, Help) {
     let get: Arc<dyn sidedesk_weather::Get> = Arc::new(MacGet::default());
     let prefs = Arc::new(WeatherPrefs::new(
         folder.join("weather.txt"),
@@ -114,11 +119,17 @@ fn hub(folder: &Path) -> (Hub, Arc<WeatherPrefs>) {
         ),
         None => hub,
     };
-    (hub, prefs)
+    let launcher = Arc::new(MacLauncher::new(
+        std::env::var_os("HOME")
+            .map(std::path::PathBuf::from)
+            .unwrap_or_default(),
+    ));
+    let deck = sidedesk_domain::Deck::new(Box::new(ShortcutsFile::new(folder)), launcher.clone());
+    (hub.with_shortcuts(deck), prefs, launcher)
 }
 
 #[cfg(target_os = "windows")]
-fn hub(folder: &Path) -> (Hub, Arc<WeatherPrefs>) {
+fn hub(folder: &Path) -> (Hub, Arc<WeatherPrefs>, Help) {
     let get: Arc<dyn sidedesk_weather::Get> = Arc::new(WinGet::default());
     let prefs = Arc::new(WeatherPrefs::new(
         folder.join("weather.txt"),
@@ -130,7 +141,9 @@ fn hub(folder: &Path) -> (Hub, Arc<WeatherPrefs>) {
         Box::new(weather),
         sidedesk_domain::WeatherCadence::default(),
     );
-    (hub, prefs)
+    let launcher = Arc::new(WindowsLauncher);
+    let deck = sidedesk_domain::Deck::new(Box::new(ShortcutsFile::new(folder)), launcher.clone());
+    (hub.with_shortcuts(deck), prefs, launcher)
 }
 
 /// 아이폰 USB. 맥은 usbmuxd 유닉스 소켓, 윈도우는 애플 장치 서비스(127.0.0.1:27015)에 접속만 한다.
@@ -145,7 +158,7 @@ fn iphones() -> UsbmuxLinks {
 fn run() -> Result<(), String> {
     let folder = store::folder().map_err(|e| e.0)?;
     let _lock = store::lock(&folder).map_err(|e| e.0)?;
-    let (hub, _) = hub(&folder);
+    let (hub, _, _) = hub(&folder);
     let keys = FileKeys::new(folder);
     let context = Context {
         name: &Name,
@@ -163,6 +176,7 @@ fn run() -> Result<(), String> {
         scope.spawn(|| hub.run_weather());
         scope.spawn(|| hub.run_ai());
         scope.spawn(|| hub.run_forge());
+        scope.spawn(|| hub.run_shortcuts());
         keep_connected(
             &[&AdbLinks::default(), &iphones()],
             &context,
@@ -244,7 +258,7 @@ fn window() -> Result<(), String> {
     let lock = store::lock(&folder).map_err(|e| e.0)?;
     let mode_file = folder.join("mode.txt");
     let data_folder = folder.join("WebView2");
-    let (hub, prefs) = hub(&folder);
+    let (hub, prefs, help) = hub(&folder);
     let prefs: &'static WeatherPrefs = Box::leak(Box::new(prefs));
     let keys: &'static FileKeys = Box::leak(Box::new(FileKeys::new(folder)));
     let identity = keys.identity().map_err(|e| e.0)?;
@@ -271,6 +285,11 @@ fn window() -> Result<(), String> {
     thread::spawn(|| context.hub.run_weather());
     thread::spawn(|| context.hub.run_ai());
     thread::spawn(|| context.hub.run_forge());
+    thread::spawn(|| context.hub.run_shortcuts());
+    if let Some(deck) = context.hub.shortcuts() {
+        let panel = sidedesk_window::ShortcutsPanel::new(Arc::clone(deck), help);
+        sidedesk_window::with_shortcuts(Box::leak(Box::new(panel)));
+    }
     // 창을 닫으면 돌고 있는 gh, glab 을 끝내고 나간다.
     sidedesk_window::on_exit(|| context.hub.stop());
     thread::spawn(move || {

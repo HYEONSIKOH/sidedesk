@@ -60,6 +60,11 @@ pub enum PhoneEvent {
         github: Option<ForgeInfo>,
         gitlab: Option<ForgeInfo>,
     },
+    /// book 은 이 컴퓨터의 단축키 장부 번호. 실행할 때 그대로 돌려준다.
+    Shortcuts {
+        book: u64,
+        items: Vec<ShortcutInfo>,
+    },
 }
 
 /// 폰에 보이는 자료. 시계는 폰이 혼자 그리므로 없다.
@@ -70,6 +75,7 @@ pub enum View {
     Weather,
     /// 큰 화면이면 세션과 GitHub/GitLab, 작은 칸이면 세션만
     Ai,
+    Shortcuts,
 }
 
 impl From<View> for crate::View {
@@ -79,6 +85,7 @@ impl From<View> for crate::View {
             View::Processes => Self::Processes,
             View::Weather => Self::Weather,
             View::Ai => Self::Ai,
+            View::Shortcuts => Self::Shortcuts,
         }
     }
 }
@@ -250,6 +257,42 @@ mirror!(
     SignedOut,
     Failed
 );
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, uniffi::Enum)]
+pub enum ShortcutToggle {
+    /// 상태 없는 버튼
+    None,
+    On,
+    Off,
+}
+
+/// icon, color 는 이름표. system 이면 시스템 동작(그림만 그리는 칸).
+#[derive(Clone, Debug, PartialEq, uniffi::Record)]
+pub struct ShortcutInfo {
+    pub id: u32,
+    pub name: String,
+    pub icon: String,
+    pub color: String,
+    pub toggle: ShortcutToggle,
+    pub system: bool,
+}
+
+impl From<crate::ShortcutItem> for ShortcutInfo {
+    fn from(s: crate::ShortcutItem) -> Self {
+        Self {
+            id: s.id,
+            name: s.name,
+            icon: s.icon,
+            color: s.color,
+            toggle: match crate::ShortcutToggle::try_from(s.toggle) {
+                Ok(crate::ShortcutToggle::On) => ShortcutToggle::On,
+                Ok(crate::ShortcutToggle::Off) => ShortcutToggle::Off,
+                _ => ShortcutToggle::None,
+            },
+            system: s.system,
+        }
+    }
+}
 
 /// since 는 지금 상태가 된 때(유닉스 밀리초)
 #[derive(Clone, Debug, PartialEq, uniffi::Record)]
@@ -466,6 +509,10 @@ impl PhoneSession {
                 Event::Message(Body::AiAlert(alert)) => Some(PhoneEvent::AiAlert {
                     value: alert.into(),
                 }),
+                Event::Message(Body::Shortcuts(shortcuts)) => Some(PhoneEvent::Shortcuts {
+                    book: shortcuts.book,
+                    items: shortcuts.items.into_iter().map(Into::into).collect(),
+                }),
                 Event::Message(Body::Forge(forge)) => Some(PhoneEvent::Forge {
                     github: forge.github.map(Into::into),
                     gitlab: forge.gitlab.map(Into::into),
@@ -513,6 +560,20 @@ impl PhoneSession {
         self.lock().send(Body::Location(location))?;
         *sent = next;
         Ok(())
+    }
+
+    /// 단축키를 실행한다. book 은 그 목록을 받을 때 온 값. 결과는 `CommandResult` 로 온다.
+    pub fn run_shortcut(
+        &self,
+        request_id: u64,
+        shortcut_id: u32,
+        book: u64,
+    ) -> Result<(), LinkError> {
+        Ok(self.lock().send(Body::RunShortcut(crate::RunShortcut {
+            request_id,
+            shortcut_id,
+            book,
+        }))?)
     }
 
     /// 사람이 한 번 더 확인한 뒤에 부른다. 결과는 `CommandResult` 로 온다.
@@ -807,6 +868,38 @@ mod tests {
                 gitlab: None,
             })
         );
+    }
+
+    #[test]
+    fn shortcuts_come_up_and_runs_go_out() {
+        let (session, mut c) = ready();
+        session.run_shortcut(3, 7, 99).unwrap();
+        c.feed(&session.take_output()).unwrap();
+        assert!(std::iter::from_fn(|| c.next_event()).any(|e| e
+            == Event::Message(Body::RunShortcut(crate::RunShortcut {
+                request_id: 3,
+                shortcut_id: 7,
+                book: 99,
+            }))));
+        c.send(Body::Shortcuts(crate::Shortcuts {
+            book: 99,
+            items: vec![crate::ShortcutItem {
+                id: 7,
+                name: "터미널".into(),
+                icon: "terminal".into(),
+                color: "slate".into(),
+                toggle: 42,
+                system: false,
+            }],
+        }))
+        .unwrap();
+        session.feed(c.take_output()).unwrap();
+        let Some(PhoneEvent::Shortcuts { book, items }) = session.next_event() else {
+            panic!("단축키 목록이 와야 함");
+        };
+        assert_eq!(book, 99);
+        assert_eq!(items[0].id, 7);
+        assert_eq!(items[0].toggle, ShortcutToggle::None);
     }
 
     #[test]
