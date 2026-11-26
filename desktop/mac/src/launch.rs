@@ -294,7 +294,11 @@ mod tests {
         let file = Action::Open {
             path: "/nonexistent/sidedesk/file.txt".into(),
         };
-        assert_eq!(launcher.run(&file).unwrap_err().0, "파일을 찾지 못했습니다");
+        // 없는 파일은 실행 직전 경로 검사에서 먼저 걸린다.
+        assert_eq!(
+            launcher.run(&file).unwrap_err().0,
+            "파일이나 폴더를 찾지 못했습니다"
+        );
         let url = Action::Url {
             url: "file:///etc/hosts".into(),
         };

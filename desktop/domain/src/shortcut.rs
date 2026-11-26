@@ -402,7 +402,11 @@ pub fn check_path(path: &str) -> Result<(), &'static str> {
     if let Some(problem) = windows_path_problem(path, &pathext) {
         return Err(problem);
     }
-    let real = std::fs::canonicalize(path).unwrap_or_else(|_| path.into());
+    // 실제 경로를 못 풀면 받지 않는다. 원래 글자로 되돌아가 검사하면 길이 생긴다:
+    // 윈도우의 풀지 못한 짧은 8.3 이름(`A237D~1.SET`)은 확장자가 달라 글자 검사를 피하고,
+    // 대상이 아직 없는 링크(`notes.txt` → 나중에 생길 `run.command`)는 링크 이름으로만 검사된다.
+    // 없는 파일은 어차피 열 수 없다(실행 직전에도 다시 검사한다).
+    let real = std::fs::canonicalize(path).map_err(|_| "파일이나 폴더를 찾지 못했습니다")?;
     #[cfg(windows)]
     {
         // canonicalize 는 `\\?\C:\..` 모양을 돌려준다. 링크가 가리키는 실제 파일이 네트워크 공유이거나
@@ -612,6 +616,17 @@ mod tests {
             let link = dir.join("innocent.txt");
             std::os::unix::fs::symlink(&script, &link).unwrap();
             assert!(check_path(link.to_str().unwrap()).is_err());
+            // 대상이 없는 링크는 실제 경로를 못 풀어 받지 않는다(나중에 대상이 생겨도 등록된 채 남지 않게).
+            let dangling = dir.join("later.txt");
+            std::os::unix::fs::symlink(dir.join("not-yet.command"), &dangling).unwrap();
+            assert_eq!(
+                check_path(dangling.to_str().unwrap()),
+                Err("파일이나 폴더를 찾지 못했습니다")
+            );
+            assert_eq!(
+                check_path(dir.join("missing.txt").to_str().unwrap()),
+                Err("파일이나 폴더를 찾지 못했습니다")
+            );
             // 확장자가 있는 문서는 실행 비트가 있어도 받는다(USB 저장 장치).
             let document = dir.join("report.pdf");
             std::fs::write(&document, b"x").unwrap();
@@ -721,8 +736,9 @@ mod tests {
             );
         }
         // 짧은 8.3 이름도 실제 이름으로 풀어 거른다(그 드라이브가 짧은 이름을 만들 때만).
-        // 짧은 이름에서 확장자가 바뀌는 파일(`ASETTI~1.SET`)이라 실제 경로 검사를 탄다.
-        let long = file("a.settingcontent-ms");
+        // 짧은 이름에서 확장자가 바뀌는 파일(`AAPPRE~1.APP`)이라 실제 경로 검사를 탄다.
+        // .settingcontent-ms 는 백신이 만들자마자 지울 수 있어(CI 에서 한 번 그렇게 보임) 쓰지 않는다.
+        let long = file("a.appref-ms");
         let wide: Vec<u16> = long.to_str().unwrap().encode_utf16().chain([0]).collect();
         let mut short = vec![0u16; 1024];
         // SAFETY: 널 끝 경로와 그 길이의 버퍼
@@ -736,15 +752,41 @@ mod tests {
         let short = String::from_utf16_lossy(&short[..length.min(short.len())]);
         eprintln!("짧은 이름: {short}");
         if length > 0 && short != long.to_str().unwrap() {
-            assert_eq!(check_path(&short), Err("실행 파일은 앱 열기로 등록하세요"));
+            eprintln!(
+                "긴 이름 파일 있음: {}, 실제 경로: {:?}",
+                long.exists(),
+                std::fs::canonicalize(&short)
+            );
+            // 서버 백신이 실행 꼴 파일을 만든 직후 지우는 일이 있다(CI 에서 바로 앞 줄은 있었고
+            // 다음 줄에서 사라진 것을 봄). 그러면 실제 경로를 못 풀어 "찾지 못함"으로 거절된다.
+            // 어느 쪽이든 짧은 이름이 통과하지 않는 것이 이 시험의 뜻이다.
+            let result = check_path(&short);
+            eprintln!(
+                "짧은 이름 결과: {result:?}, 그 뒤 파일 있음: {}",
+                long.exists()
+            );
+            match result {
+                Err("실행 파일은 앱 열기로 등록하세요") => {}
+                Err("파일이나 폴더를 찾지 못했습니다") => assert!(!long.exists()),
+                other => panic!("짧은 이름이 거절되지 않음: {other:?}"),
+            }
         }
+        // 없는 파일(실제 경로를 못 푸는 것)은 짧은 이름 꼴이어도 받지 않는다.
+        let missing = folder.join("GONE~1.SET");
+        assert_eq!(
+            check_path(missing.to_str().unwrap()),
+            Err("파일이나 폴더를 찾지 못했습니다")
+        );
         // 심볼릭 링크는 가리키는 실제 파일로 본다(개발자 모드나 관리자 권한이 없으면 건너뜀).
         let link = folder.join("notes.txt");
-        if std::os::windows::fs::symlink_file(folder.join("run.bat"), &link).is_ok() {
-            assert_eq!(
-                check_path(link.to_str().unwrap()),
-                Err("실행 파일은 앱 열기로 등록하세요")
-            );
+        // 대상(run.bat)은 서버 백신이 이미 지웠을 수 있다. 그러면 실제 경로를 못 풀어 "찾지 못함"으로 거절된다.
+        let target = folder.join("run.bat");
+        if std::os::windows::fs::symlink_file(&target, &link).is_ok() {
+            match check_path(link.to_str().unwrap()) {
+                Err("실행 파일은 앱 열기로 등록하세요") => {}
+                Err("파일이나 폴더를 찾지 못했습니다") => assert!(!target.exists()),
+                other => panic!("실행 파일을 가리키는 링크가 거절되지 않음: {other:?}"),
+            }
         } else {
             eprintln!("심볼릭 링크를 만들 수 없어 건너뜀");
         }
