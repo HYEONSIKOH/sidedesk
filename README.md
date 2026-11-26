@@ -88,7 +88,13 @@ AI 코딩 작업을 여러 개 돌리면 무엇이 끝났고 무엇이 답을 �
 
 ### Windows
 
-준비 중입니다. 설정 창 실행 파일(`sidedesk.exe`)과 터미널용 실행 파일(`sidedesk-cli.exe`)을 zip 으로 묶습니다. 코드 서명을 하지 않아 처음 열 때 SmartScreen 창이 뜨면 "추가 정보 > 실행"을 누릅니다.
+1. Actions 산출물 zip 을 풀면 나오는 `SideDesk-<버전>-windows-x64.zip` 을 다시 풀어 원하는 폴더에 둡니다. 윈도우 10, 11(64비트)에서 돕니다.
+2. `sidedesk.exe` 가 설정 창입니다. 창을 닫아도 알림 영역(시스템 트레이) 아이콘으로 계속 돌고, 아이콘 메뉴의 "설정 열기"와 "끝내기"로 다룹니다.
+3. 코드 서명을 하지 않아 처음 열 때 SmartScreen 창이 뜨면 "추가 정보 > 실행"을 누릅니다.
+4. 터미널에서는 `sidedesk-cli.exe` 를 씁니다. `sidedesk-cli pair` 는 기기 등록, `sidedesk-cli run` 은 창 없이 연결 유지입니다.
+5. 설정 창은 WebView2 런타임을 씁니다. 윈도우 10, 11 에는 대개 깔려 있고, 없으면 Microsoft 에서 받아 깝니다.
+
+직접 빌드: `pwsh scripts/dist-windows.ps1` 이 `target\dist\` 에 zip 을 만들고, 비밀값과 개인 경로가 들어 있지 않은지 검사합니다.
 
 ### Android
 
