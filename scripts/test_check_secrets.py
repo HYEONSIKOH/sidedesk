@@ -78,6 +78,11 @@ class Rules(unittest.TestCase):
         cs.scan_bytes(scan, "x", j("a ", "SECRETNAME", " b"), scan.rules())
         self.assertEqual([(f.kind, f.shown) for f in scan.found], [("금지어", "(가림)")])
 
+    def test_short_english_deny_words_in_utf16(self):
+        # 넷 이상 이어지지 않아 좁혀지지 않는 짧은 UTF-16 문자열
+        scan = cs.Scan(words=[b"abc"])
+        self.assertEqual(kinds(b"\x01\x00" + "ABC".encode("utf-16-le") + b"\x00\x00", scan), ["금지어"])
+
     def test_short_deny_words_match_whole_words_only(self):
         scan = cs.Scan(words=[b"ab"])
         self.assertEqual(kinds(b"tab cab", scan), [])
@@ -204,6 +209,28 @@ class Tree(unittest.TestCase):
             scan = cs.Scan()
             cs.scan_artifact(scan, "top.zip", inner, scan.rules())
             self.assertIn("너무 깊은 압축(안을 못 봄)", [f.kind for f in scan.found])
+
+
+class Raw(unittest.TestCase):
+    def test_short_words_do_not_hit_random_compressed_bytes(self):
+        import random
+
+        noise = random.Random(7).randbytes(4 << 20)
+        scan = cs.Scan(words=[b"acm"])
+        cs.scan_bytes(scan, "x", noise, scan.rules(raw=True))
+        self.assertEqual(scan.found, [])
+        # 같은 바이트를 보통 규칙으로 보면 3글자는 우연히 맞는다(그래서 압축 바이트엔 안 씀).
+        scan = cs.Scan(words=[b"acm"])
+        cs.scan_bytes(scan, "x", noise, scan.rules())
+        self.assertTrue(scan.found)
+
+    def test_longer_words_still_hit_compressed_bytes_on_boundaries(self):
+        scan = cs.Scan(words=[b"acmecorp"])
+        cs.scan_bytes(scan, "x", b"\x00\x93ACMECORP\x01", scan.rules(raw=True))
+        self.assertEqual([f.kind for f in scan.found], ["금지어"])
+        scan = cs.Scan(words=[b"acmecorp"])
+        cs.scan_bytes(scan, "x", b"zacmecorpz", scan.rules(raw=True))
+        self.assertEqual(scan.found, [])
 
 
 class Command(unittest.TestCase):

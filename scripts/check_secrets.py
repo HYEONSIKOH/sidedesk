@@ -93,24 +93,30 @@ class Scan:
     found: list[Found] = field(default_factory=list)
     notes: list[str] = field(default_factory=list)
 
-    def rules(self) -> list[tuple[str, re.Pattern[bytes]]]:
+    def rules(self, raw: bool = False) -> list[tuple[str, re.Pattern[bytes]]]:
+        """`raw` 는 압축된 바이트(APK, dmg 파일 자체)용. 거의 무작위라 짧은 영문 금지어가 우연히 맞는다."""
         rules = [(kind, re.compile(pattern)) for kind, pattern in RULES]
         homes = ARTIFACT_HOMES if self.strict else REPO_HOMES
         rules += [("홈 경로", re.compile(pattern)) for pattern in homes]
         if self.strict:
             rules += [(kind, re.compile(pattern)) for kind, pattern in ARTIFACT_ONLY]
         for word in self.words:
+            ascii_word = word.isascii()
+            # 압축 바이트에서 영문 3글자 이하는 무작위로도 자주 맞아(30MB 에 열 번 남짓) 뺀다.
+            if raw and ascii_word and len(word) < 4:
+                continue
             escaped = re.escape(word)
-            # 짧은 영숫자 낱말은 낱말 경계로만. 한글은 \b 가 듣지 않아 그대로 맞춘다.
-            if len(word) < 3 and word.isascii():
+            # 짧은 영문 낱말과 압축 바이트에서는 앞뒤 경계로만. 한글은 그대로 맞춘다.
+            if ascii_word and (raw or len(word) < 3):
                 pattern = rb"(?i)(?<![A-Za-z0-9])" + escaped + rb"(?![A-Za-z0-9])"
             else:
                 pattern = rb"(?i)" + escaped
             rules.append(("금지어", re.compile(pattern)))
-            # 한글 등은 UTF-16 꼴(바이너리 XML, 윈도우 자원)로도 찾는다.
-            if not word.isascii():
+            # UTF-16 꼴(바이너리 XML, 윈도우 자원, 문자열 풀)로도 찾는다. 영문은 좁히기가
+            # 넷 이상 이어질 때만이라 짧은 낱말을 놓치므로 영문도 따로 넣는다.
+            if not raw:
                 wide = re.escape(word.decode("utf-8").encode("utf-16-le"))
-                rules.append(("금지어", re.compile(wide)))
+                rules.append(("금지어", re.compile(rb"(?i)" + wide if ascii_word else wide)))
         for value in self.forbid:
             rules.append(("빌드한 곳 경로", re.compile(re.escape(value))))
         return rules
@@ -249,7 +255,7 @@ def scan_file(scan: Scan, where: str, path: Path, rules) -> None:
 
 def scan_zip(scan: Scan, where: str, path: Path, rules, depth: int = 0) -> None:
     # 파일 자체도 훑는다(APK 서명 블록의 인증서, 항목 이름, 주석은 항목 내용이 아니다).
-    scan_file(scan, f"{where}(묶음)", path, rules)
+    scan_file(scan, f"{where}(묶음)", path, scan.rules(raw=True))
     with zipfile.ZipFile(path) as archive:
         names = "\n".join(info.filename for info in archive.infolist()).encode("utf-8")
         scan_bytes(scan, f"{where}(이름)", names, rules)
@@ -319,7 +325,7 @@ def scan_artifact(scan: Scan, where: str, path: Path, rules) -> None:
         scan_tree(scan, where, path, rules)
     elif name.endswith(".dmg"):
         # 파일 자체(볼륨 이름 등 압축 밖 머리)도 훑는다.
-        scan_file(scan, f"{where}(묶음)", path, rules)
+        scan_file(scan, f"{where}(묶음)", path, scan.rules(raw=True))
         scan_dmg(scan, where, path, rules)
     elif name.endswith((".zip", ".apk", ".aab", ".jar", ".aar")) and zipfile.is_zipfile(path):
         scan_zip(scan, where, path, rules)
