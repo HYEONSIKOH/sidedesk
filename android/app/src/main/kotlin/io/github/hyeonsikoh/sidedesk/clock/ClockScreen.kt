@@ -23,6 +23,12 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.layout.LayoutCoordinates
+import androidx.compose.ui.geometry.Rect
+import androidx.compose.runtime.staticCompositionLocalOf
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableLongStateOf
@@ -90,37 +96,61 @@ private fun dateText(millis: Long) = calendar(millis).let {
 
 private fun degrees(value: Float) = "${Math.round(value)}°"
 
-/** 홈 큰 화면. 고른 모양 하나와 시각 따라 움직이는 동그라미 */
+/** 동그라미가 기준으로 삼을 묶음(숫자 시각, 큰 기온, 큰 날짜 등)을 알려 주는 곳 */
+private val LocalSunAnchor = staticCompositionLocalOf<(LayoutCoordinates) -> Unit> { {} }
+
+/** 이 묶음 뒤에 시각 따라 움직이는 동그라미를 둔다. 모양마다 하나만 붙인다. */
+@Composable
+private fun Modifier.sunAnchor(): Modifier {
+    val report = LocalSunAnchor.current
+    return onGloballyPositioned(report)
+}
+
+/** 홈 큰 화면. 고른 모양 하나와, 그 모양의 기준 묶음 뒤에서 시각 따라 움직이는 동그라미 */
 @Composable
 fun HomeBig(clock: ClockState, now: Long, modifier: Modifier = Modifier) {
-    BoxWithConstraints(modifier.fillMaxSize()) {
+    var frame by remember { mutableStateOf<LayoutCoordinates?>(null) }
+    var anchor by remember(clock.face) { mutableStateOf<Rect?>(null) }
+    BoxWithConstraints(modifier.fillMaxSize().onGloballyPositioned { frame = it }) {
         val w = maxWidth
         val h = maxHeight
-        if (clock.face != Face.Overview) SunCircle(now, Modifier.fillMaxSize())
-        when (clock.face) {
-            Face.Digits -> DigitsFace(clock, now, w, h)
-            Face.Dial -> DialFace(clock, now, w, h)
-            Face.Weather -> WeatherFace(clock, now, w, h)
-            Face.Calendar -> CalendarFace(now, w, h)
-            Face.Overview -> OverviewFace(clock, now)
+        anchor?.let { SunCircle(now, it, Modifier.fillMaxSize()) }
+        val report: (LayoutCoordinates) -> Unit = { coords ->
+            val box = frame
+            if (box != null && box.isAttached && coords.isAttached) {
+                val rect = box.localBoundingBoxOf(coords, clipBounds = false)
+                if (rect != anchor) anchor = rect
+            }
+        }
+        CompositionLocalProvider(LocalSunAnchor provides report) {
+            when (clock.face) {
+                Face.Digits -> DigitsFace(clock, now, w, h)
+                Face.Dial -> DialFace(clock, now, w, h)
+                Face.Weather -> WeatherFace(clock, now, w, h)
+                Face.Calendar -> CalendarFace(now, w, h)
+                Face.Overview -> OverviewFace(clock, now)
+            }
         }
     }
 }
 
-/** 0시에 왼쪽 아래, 12시에 위, 24시에 오른쪽 아래로 가는 동그라미 */
+/**
+ * 기준 묶음(anchor) 안에서 움직이는 동그라미. 시안 목업과 같은 식이다.
+ * 낮(6시~19시)과 밤(19시~6시)을 각각 왼쪽에서 오른쪽으로 반원을 그리며 지나고, 크기는 묶음 높이에 맞춘다.
+ */
 @Composable
-private fun SunCircle(now: Long, modifier: Modifier) {
+private fun SunCircle(now: Long, anchor: Rect, modifier: Modifier) {
     val color = Palette.card
     val c = calendar(now)
-    val day = (c.get(Calendar.HOUR_OF_DAY) * 60 + c.get(Calendar.MINUTE)) / 1440f
+    val hour = c.get(Calendar.HOUR_OF_DAY) + c.get(Calendar.MINUTE) / 60f
+    val u = if (hour >= 6 && hour < 19) (hour - 6) / 13f else ((hour - 19 + 24) % 24) / 11f
     Canvas(modifier) {
-        val r = size.minDimension * 0.22f
-        val x = size.width / 2 - size.width * 0.32f * cos(PI * day).toFloat()
-        val y = size.height * 0.8f - size.height * 0.45f * sin(PI * day).toFloat()
+        val r = anchor.height * 0.62f
+        val x = anchor.left + anchor.width * (0.08f + 0.84f * u)
+        val y = anchor.top + anchor.height * (0.86f - 0.6f * sin(PI * u).toFloat())
         drawCircle(color, r, Offset(x, y))
     }
 }
-
 
 @Composable
 private fun DateLine(clock: ClockState, now: Long, size: TextUnit) {
@@ -203,7 +233,7 @@ private fun DigitsFace(clock: ClockState, now: Long, w: Dp, h: Dp) {
     val line = fit(min(w.value * 0.045f, h.value * 0.06f).coerceIn(13f, 26f).dp)
     Column(Modifier.fillMaxSize().padding(16.dp), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.Center) {
         DateLine(clock, now, line)
-        Digits(timeText(now), digit)
+        Box(Modifier.sunAnchor()) { Digits(timeText(now), digit) }
         WeatherLine(clock, line)
         Credit(clock, modifier = Modifier.padding(top = 6.dp))
     }
@@ -223,7 +253,7 @@ private fun DialFace(clock: ClockState, now: Long, w: Dp, h: Dp) {
             DateLine(clock, now, line)
             val weather = clock.weather
             Column(Modifier.alpha(if (clock.weatherDimmed) DIM else 1f), horizontalAlignment = if (wide) Alignment.Start else Alignment.CenterHorizontally) {
-                Text(weather?.let { degrees(it.temperature) } ?: "--°", color = Palette.ink, fontSize = line * 2.4f, fontWeight = FontWeight.Medium, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                Text(weather?.let { degrees(it.temperature) } ?: "--°", color = Palette.ink, fontSize = line * 2.4f, fontWeight = FontWeight.Medium, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.sunAnchor())
                 if (weather != null) {
                     Text(skyName(weather.sky), color = Palette.muted, fontSize = line, maxLines = 1, overflow = TextOverflow.Ellipsis)
                     Text("최고 ${degrees(weather.high)} 최저 ${degrees(weather.low)}", color = Palette.muted, fontSize = line, maxLines = 1, overflow = TextOverflow.Ellipsis)
@@ -313,7 +343,7 @@ private fun WeatherFace(clock: ClockState, now: Long, w: Dp, h: Dp) {
     val weather = clock.weather
     Column(Modifier.fillMaxSize().padding(16.dp), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.Center) {
         Row(Modifier.alpha(if (clock.weatherDimmed) DIM else 1f), verticalAlignment = Alignment.CenterVertically) {
-            Text(weather?.let { degrees(it.temperature) } ?: "--°", color = Palette.ink, fontSize = big, fontWeight = FontWeight.Light, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            Text(weather?.let { degrees(it.temperature) } ?: "--°", color = Palette.ink, fontSize = big, fontWeight = FontWeight.Light, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.sunAnchor())
             if (weather != null) {
                 Column(Modifier.padding(start = 16.dp)) {
                     SkyIcon(weather.sky, weather.isDay, Palette.ink, Modifier.size(with(LocalDensity.current) { (line * 2.6f).toDp() }))
@@ -337,7 +367,7 @@ private fun CalendarFace(now: Long, w: Dp, h: Dp) {
     val left = @Composable {
         Column(horizontalAlignment = if (wide) Alignment.Start else Alignment.CenterHorizontally) {
             Text("${c.get(Calendar.MONTH) + 1}월 ${DAYS[c.get(Calendar.DAY_OF_WEEK) - 1]}요일", color = Palette.muted, fontSize = line, maxLines = 1, overflow = TextOverflow.Ellipsis)
-            Text("${c.get(Calendar.DAY_OF_MONTH)}", color = Palette.ink, fontSize = line * 5f, fontWeight = FontWeight.Light, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            Text("${c.get(Calendar.DAY_OF_MONTH)}", color = Palette.ink, fontSize = line * 5f, fontWeight = FontWeight.Light, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.sunAnchor())
             Digits(timeText(now), line * 2.2f)
         }
     }
