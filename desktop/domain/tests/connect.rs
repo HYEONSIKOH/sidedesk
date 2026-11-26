@@ -641,7 +641,11 @@ fn a_pair_request_waits_for_the_app_to_open() {
     let stop = AtomicBool::new(false);
     thread::scope(|scope| {
         scope.spawn(|| keep_connected(&[&links], &world.context(), &stop));
-        thread::sleep(Duration::from_millis(3000));
+        // 다시 시도 간격(0.5초, 1초)에 짝 맺기까지 더해지므로 느린 CI 서버를 생각해 넉넉히 기다린다.
+        let deadline = std::time::Instant::now() + Duration::from_secs(20);
+        while world.computer.keys().is_empty() && std::time::Instant::now() < deadline {
+            thread::sleep(Duration::from_millis(100));
+        }
         stop.store(true, Ordering::Relaxed);
     });
     assert_eq!(world.computer.keys(), [links.inner.identity.public]);
