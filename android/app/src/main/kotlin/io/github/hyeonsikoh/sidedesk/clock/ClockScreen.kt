@@ -62,6 +62,10 @@ import io.github.hyeonsikoh.sidedesk.link.WeatherSource
 import io.github.hyeonsikoh.sidedesk.ui.Palette
 import io.github.hyeonsikoh.sidedesk.ui.Theme
 import io.github.hyeonsikoh.sidedesk.ui.fit
+import io.github.hyeonsikoh.sidedesk.rest.RestPanel
+import io.github.hyeonsikoh.sidedesk.rest.RestSettings
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.runtime.mutableStateOf
 import kotlinx.coroutines.delay
 import java.util.Calendar
 import java.util.Locale
@@ -108,13 +112,14 @@ private fun Modifier.sunAnchor(): Modifier {
 
 /** 홈 큰 화면. 고른 모양 하나와, 그 모양의 기준 묶음 뒤에서 시각 따라 움직이는 동그라미 */
 @Composable
-fun HomeBig(clock: ClockState, now: Long, modifier: Modifier = Modifier) {
+fun HomeBig(clock: ClockState, now: Long, modifier: Modifier = Modifier, resting: Boolean = false) {
     var frame by remember { mutableStateOf<LayoutCoordinates?>(null) }
     var anchor by remember(clock.face) { mutableStateOf<Rect?>(null) }
     BoxWithConstraints(modifier.fillMaxSize().onGloballyPositioned { frame = it }) {
         val w = maxWidth
         val h = maxHeight
-        anchor?.let { SunCircle(now, it, Modifier.fillMaxSize()) }
+        // 쉬는 화면에서는 해 동그라미를 그리지 않는다(검은 화면 위 밝은 원은 번인과 눈부심을 부른다).
+        if (!resting) anchor?.let { SunCircle(now, it, Modifier.fillMaxSize()) }
         val report: (LayoutCoordinates) -> Unit = { coords ->
             val box = frame
             if (box != null && box.isAttached && coords.isAttached) {
@@ -512,9 +517,10 @@ class PickActions(
     val done: () -> Unit,
 )
 
-/** 길게 누르면 뜨는 고르기 줄. 모양 다섯, 테마 둘, 완료 */
+/** 길게 누르면 뜨는 고르기 줄. 모양 다섯, 테마 둘, 쉬기 설정, 완료 */
 @Composable
-fun Picker(clock: ClockState, actions: PickActions, modifier: Modifier) {
+fun Picker(clock: ClockState, actions: PickActions, modifier: Modifier, rest: RestPanel? = null, restOpen: Boolean = false) {
+    var resting by remember { mutableStateOf(restOpen) }
     Column(
         modifier
             .clip(RoundedCornerShape(22.dp))
@@ -522,13 +528,21 @@ fun Picker(clock: ClockState, actions: PickActions, modifier: Modifier) {
             .padding(10.dp),
         verticalArrangement = Arrangement.spacedBy(8.dp),
     ) {
-        Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-            Face.entries.forEach { face -> Chip(face.label, face == clock.face) { actions.setFace(face) } }
+        if (resting && rest != null) {
+            RestSettings(rest, Modifier.heightIn(max = 180.dp))
+        } else {
+            Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                Face.entries.forEach { face -> Chip(face.label, face == clock.face) { actions.setFace(face) } }
+            }
         }
         Row(verticalAlignment = Alignment.CenterVertically) {
-            Chip("라이트", clock.theme == Theme.Light) { actions.setTheme(Theme.Light) }
-            Spacer(Modifier.width(6.dp))
-            Chip("다크", clock.theme == Theme.Dark) { actions.setTheme(Theme.Dark) }
+            if (!resting) {
+                Chip("라이트", clock.theme == Theme.Light) { actions.setTheme(Theme.Light) }
+                Spacer(Modifier.width(6.dp))
+                Chip("다크", clock.theme == Theme.Dark) { actions.setTheme(Theme.Dark) }
+                Spacer(Modifier.width(6.dp))
+            }
+            if (rest != null) Chip(if (resting) "모양" else "쉬기", false) { resting = !resting }
             Spacer(Modifier.weight(1f))
             Text(
                 "완료",

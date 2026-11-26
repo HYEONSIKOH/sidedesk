@@ -23,6 +23,11 @@ import io.github.hyeonsikoh.sidedesk.ai.ForgeTab
 import io.github.hyeonsikoh.sidedesk.clock.ClockState
 import io.github.hyeonsikoh.sidedesk.desk.AiPart
 import io.github.hyeonsikoh.sidedesk.desk.ShortcutPart
+import io.github.hyeonsikoh.sidedesk.rest.RestPanel
+import io.github.hyeonsikoh.sidedesk.rest.RestScreen
+import io.github.hyeonsikoh.sidedesk.rest.RestState
+import io.github.hyeonsikoh.sidedesk.rest.shiftAt
+import androidx.compose.foundation.layout.fillMaxSize
 import io.github.hyeonsikoh.sidedesk.desk.MusicPart
 import io.github.hyeonsikoh.sidedesk.link.MusicPlayer
 import io.github.hyeonsikoh.sidedesk.link.NowPlaying
@@ -121,6 +126,9 @@ class DeskShots(private val device: String, private val width: Int, private val 
         )
         val ALERT = AiAlert(7, "3", "문서 정리", AlertKind.Done, NOW)
 
+        /** 시계 옮김이 가장 끝(+12, +12)인 시각. NOW 에서 몇 분 뒤 */
+        val EDGE: Long = (0L until 9L).map { NOW + it * 60_000 }.first { shiftAt(it / 60_000) == (12 to 12) }
+
         /** 진행 바용 단조 시각. 곡을 받은 때보다 6초 뒤 */
         const val NOW_MS = 1_006_000L
 
@@ -196,12 +204,28 @@ class DeskShots(private val device: String, private val width: Int, private val 
         ai: AiScreenState = AI,
         keys: ShortcutState = KEYS,
         music: MusicState = SONG,
+        rest: RestState? = null,
+        restOpen: Boolean = false,
+        now: Long = NOW,
     ) {
         current = {
             val density = LocalDensity.current
             CompositionLocalProvider(LocalDensity provides Density(density.density, scale)) {
                 Box(Modifier.requiredSize(width.dp, height.dp).testTag(SHOT)) {
-                    SideDeskTheme(theme) { DeskScreen(desk, ClockPart(clock, { NOW }, {}, {}, {}, PICK), NONE, AiPart(ai) {}, ShortcutPart(keys) {}, MusicPart(music, { NOW_MS }, MusicActions({}, {}, {}, {}, {}))) }
+                    SideDeskTheme(theme) {
+                        Box(Modifier.fillMaxSize()) {
+                            val panel = RestPanel(rest ?: RestState(), canSetStrength = !restOpen || theme == Theme.Dark, {}, {}, {}, {})
+                            DeskScreen(
+                                desk,
+                                ClockPart(clock, { now }, {}, {}, {}, PICK, rest = panel, restOpen = restOpen),
+                                NONE,
+                                AiPart(ai) {},
+                                ShortcutPart(keys) {},
+                                MusicPart(music, { NOW_MS }, MusicActions({}, {}, {}, {}, {})),
+                            )
+                            RestScreen(rest?.resting == true, rest ?: RestState(), clock, { now }) {}
+                        }
+                    }
                 }
             }
         }
@@ -245,6 +269,14 @@ class DeskShots(private val device: String, private val width: Int, private val 
             shot("music-failed", theme, desk(Screen.Music), clock(theme = theme), music = SONG.copy(notice = "음악 앱 제어를 허용해 주세요. 설정 창의 안내를 보세요"))
             shot("music-lost", theme, desk(Screen.Music, dimmed = true), clock(theme = theme, dimmed = true), music = SONG.copy(dimmed = true, lostAt = NOW_MS))
             shot("music-long", theme, desk(Screen.Music), clock(theme = theme), music = SONG.copy(now = SONG.now!!.copy(title = "아주 긴 곡 제목이 두 줄을 넘어가면 줄임표로 잘려야 하는 경우의 예시", artist = "아주 긴 가수 이름 아주 긴 가수 이름")))
+            Face.entries.forEach { face ->
+                shot("rest-${face.name.lowercase()}", theme, desk(), clock(face, theme), rest = RestState(resting = true))
+            }
+            shot("rest-alert", theme, desk(), clock(Face.Digits, theme), rest = RestState(resting = true, alert = ALERT))
+            shot("rest-edge", theme, desk(), clock(Face.Digits, theme), rest = RestState(resting = true), now = EDGE)
+            shot("rest-edge-overview", theme, desk(), clock(Face.Overview, theme), rest = RestState(resting = true), now = EDGE)
+            shot("rest-edge-calendar", theme, desk(), clock(Face.Calendar, theme), rest = RestState(resting = true), now = EDGE)
+            shot("home-picking-rest", theme, desk(), clock(Face.Digits, theme, picking = true), restOpen = true)
             shot("home-ai-idle", theme, desk(), clock(theme = theme), ai = AiScreenState(sessions = emptyList(), busy = 0))
             shot("processes", theme, desk(Screen.Processes), clock(theme = theme))
         }
@@ -252,6 +284,13 @@ class DeskShots(private val device: String, private val width: Int, private val 
 
     @Test
     fun largeText() {
+        // 쉬는 화면과 쉬기 설정 판은 가장 낮은 접은 가로에서도 본다(검증 1차 5).
+        if (device == "folded-landscape") {
+            for (scale in listOf(1.3f, 2.0f)) {
+                shot("font$scale-rest-edge", Theme.Dark, desk(), clock(Face.Overview, Theme.Dark), scale, rest = RestState(resting = true), now = EDGE)
+                shot("font$scale-home-picking-rest", Theme.Dark, desk(), clock(Face.Digits, Theme.Dark, picking = true), scale, restOpen = true)
+            }
+        }
         if (!device.endsWith("portrait") || device.startsWith("unfolded")) return
         for (scale in listOf(1.3f, 2.0f)) {
             Face.entries.forEach { face ->
@@ -259,6 +298,8 @@ class DeskShots(private val device: String, private val width: Int, private val 
             }
             shot("font$scale-perf", Theme.Dark, desk(Screen.Perf), clock(theme = Theme.Dark), scale)
             shot("font$scale-ai", Theme.Dark, desk(Screen.Ai), clock(theme = Theme.Dark), scale)
+            shot("font$scale-rest-edge", Theme.Dark, desk(), clock(Face.Weather, Theme.Dark), scale, rest = RestState(resting = true), now = EDGE)
+            shot("font$scale-home-picking-rest", Theme.Dark, desk(), clock(Face.Digits, Theme.Dark, picking = true), scale, restOpen = true)
             shot("font$scale-music", Theme.Dark, desk(Screen.Music), clock(theme = Theme.Dark), scale)
             shot("font$scale-keys-named", Theme.Dark, desk(Screen.Shortcuts), clock(theme = Theme.Dark), scale, keys = KEYS.copy(items = KEYS.items!!.map { it.copy(name = it.name.ifEmpty { "이름" }) }))
             shot("font$scale-home-ai-alert", Theme.Dark, desk(), clock(theme = Theme.Dark), scale, AI.copy(alert = ALERT))

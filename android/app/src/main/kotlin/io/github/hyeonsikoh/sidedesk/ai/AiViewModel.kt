@@ -29,6 +29,8 @@ data class AiScreenState(
     val tab: ForgeTab = ForgeTab.GitHub,
     /** 지금 띄운 알림. 4초 뒤 사라진다 */
     val alert: AiAlert? = null,
+    /** 지금 알림이 30초 넘게 늦게 왔는지. 늦은 알림은 울리지도 깨우지도 않는다. */
+    val alertLate: Boolean = false,
     val dimmed: Boolean = false,
 ) {
     val counts: ForgeCounts? get() = forge?.let { if (tab == ForgeTab.GitHub) it.github else it.gitlab }
@@ -79,7 +81,7 @@ class AiViewModel(
             buzzer.buzz(alert.kind)
             lastBuzz = time
         }
-        _state.update { it.copy(alert = alert) }
+        _state.update { it.copy(alert = alert, alertLate = late) }
         clearing?.cancel()
         clearing = viewModelScope.launch {
             delay(SHOW_MILLIS)

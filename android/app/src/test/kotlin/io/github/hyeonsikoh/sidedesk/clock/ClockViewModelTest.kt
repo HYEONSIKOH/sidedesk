@@ -22,11 +22,6 @@ import org.junit.Test
 
 @OptIn(ExperimentalCoroutinesApi::class)
 class ClockViewModelTest {
-    private class FakeSettings(
-        override var face: String? = null,
-        override var theme: String? = null,
-        override var askedLocation: Boolean = false,
-    ) : Settings
 
     private val main = UnconfinedTestDispatcher()
     private val link = FakeLink()
