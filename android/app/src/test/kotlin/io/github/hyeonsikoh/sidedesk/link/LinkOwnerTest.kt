@@ -93,4 +93,34 @@ class LinkOwnerTest {
         assertEquals(listOf(KillResult(7, false, LinkOwner.NOT_CONNECTED)), results)
         assertTrue(owner.pendingKills(mac).isEmpty())
     }
+
+    private val sunny = Weather(12f, Sky.Clear, 15f, 6f, true, 1, WeatherSource.OpenMeteo)
+
+    @Test
+    fun takesWeatherOnlyFromTheCurrentConnection() {
+        val old = connect(mac)
+        val mine = connect(mac)
+        owner.receivedWeather(old, sunny)
+        assertEquals(null, owner.weather.value)
+        owner.receivedWeather(mine, sunny)
+        assertEquals(sunny, owner.weather.value)
+    }
+
+    @Test
+    fun forgetsTheWeatherWhenLocationIsTurnedOff() {
+        val mine = connect(mac)
+        owner.receivedWeather(mine, sunny)
+        owner.setLocation(LocationState.Off)
+        assertEquals(null, owner.weather.value)
+        owner.receivedWeather(mine, sunny)
+        assertEquals(null, owner.weather.value)
+        owner.setLocation(LocationState.At(37.5, 127.0))
+        owner.receivedWeather(mine, sunny)
+        assertEquals(sunny, owner.weather.value)
+    }
+
+    @Test
+    fun startsWithUnknownLocation() {
+        assertEquals(LocationState.Unknown, owner.location.get())
+    }
 }

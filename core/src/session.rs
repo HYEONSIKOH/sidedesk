@@ -418,7 +418,9 @@ impl Session {
                 | Body::KillProcess(_)
                 | Body::Performance(_)
                 | Body::Processes(_)
-                | Body::CommandResult(_)),
+                | Body::CommandResult(_)
+                | Body::Location(_)
+                | Body::Weather(_)),
             ) => {
                 self.events.push_back(Event::Message(body));
                 Ok(())

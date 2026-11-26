@@ -17,6 +17,8 @@ class LinkOwner(private val nanos: () -> Long = System::nanoTime) {
     @Volatile var lastName: String? = null
     val perf = MutableStateFlow<Perf?>(null)
     val processes = MutableStateFlow<Processes?>(null)
+    val weather = MutableStateFlow<Weather?>(null)
+    val location = AtomicReference<LocationState>(LocationState.Unknown)
     val killResults = MutableSharedFlow<KillResult>(extraBufferCapacity = 64)
     val subscription = AtomicReference(Subscription.NONE)
     private class Pending(val command: KillCommand, val computer: ByteArray, val at: Long)
@@ -119,6 +121,16 @@ class LinkOwner(private val nanos: () -> Long = System::nanoTime) {
 
     fun receivedProcesses(mine: Int, value: Processes) = synchronized(this) {
         if (generation == mine) processes.value = value
+    }
+
+    fun receivedWeather(mine: Int, value: Weather) = synchronized(this) {
+        if (generation == mine && location.get() != LocationState.Off) weather.value = value
+    }
+
+    /** 권한을 거두면 다른 곳의 날씨를 흐리게 남기지 않도록 지운다. */
+    fun setLocation(value: LocationState) = synchronized(this) {
+        location.set(value)
+        if (value == LocationState.Off) weather.value = null
     }
 
     /** 명령 결과는 어느 연결로 왔든 버리지 않는다. */

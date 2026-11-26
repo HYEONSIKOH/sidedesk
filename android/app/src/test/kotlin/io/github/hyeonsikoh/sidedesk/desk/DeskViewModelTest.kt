@@ -74,12 +74,14 @@ class DeskViewModelTest {
     fun subscribesToWhatIsVisibleAndClearsWhenHidden() {
         val desk = DeskViewModel(link) { 1L }
         desk.setVisible(true)
-        desk.show(Topic.Processes)
+        desk.show(Screen.Perf)
+        desk.show(Screen.Processes)
         desk.setVisible(false)
         assertEquals(
             listOf(
-                Subscription(Topic.Perf, setOf(Topic.Processes)),
-                Subscription(Topic.Processes, setOf(Topic.Perf)),
+                Subscription(Topic.Weather, setOf(Topic.Perf, Topic.Processes)),
+                Subscription(Topic.Perf, setOf(Topic.Weather, Topic.Processes)),
+                Subscription(Topic.Processes, setOf(Topic.Weather, Topic.Perf)),
                 Subscription.NONE,
             ),
             link.subscriptions,
@@ -87,9 +89,41 @@ class DeskViewModelTest {
     }
 
     @Test
+    fun startsAtHome() {
+        val desk = DeskViewModel(link) { 1L }
+        assertEquals(Screen.Home, desk.state.value.big)
+        assertEquals(listOf(Screen.Perf, Screen.Processes), desk.state.value.small)
+    }
+
+    @Test
+    fun swipingGoesAroundTheScreens() {
+        val desk = DeskViewModel(link) { 1L }
+        desk.next()
+        assertEquals(Screen.Perf, desk.state.value.big)
+        desk.next()
+        desk.next()
+        assertEquals(Screen.Home, desk.state.value.big)
+        desk.previous()
+        assertEquals(Screen.Processes, desk.state.value.big)
+    }
+
+    @Test
+    fun staysPutWhileAskingToKill() {
+        val desk = DeskViewModel(link) { 1L }
+        desk.show(Screen.Processes)
+        desk.ask(build)
+        desk.next()
+        desk.show(Screen.Home)
+        assertEquals(Screen.Processes, desk.state.value.big)
+        desk.cancel()
+        desk.show(Screen.Home)
+        assertEquals(Screen.Home, desk.state.value.big)
+    }
+
+    @Test
     fun doesNotSubscribeWhileHidden() {
         val desk = DeskViewModel(link) { 1L }
-        desk.show(Topic.Processes)
+        desk.show(Screen.Processes)
         assertEquals(listOf(Subscription.NONE), link.subscriptions)
     }
 
@@ -169,5 +203,14 @@ class DeskViewModelTest {
         assertEquals(31f, desk.state.value.perf!!.cpu)
         link.state.value = LinkState.Connected("맥")
         assertEquals(false, desk.state.value.dimmed)
+    }
+
+    @Test
+    fun dimsLikeTheWeatherWhileNotConnected() {
+        val desk = DeskViewModel(link) { 1L }
+        link.state.value = LinkState.Connected("맥")
+        assertEquals(false, desk.state.value.dimmed)
+        link.state.value = LinkState.Waiting
+        assertTrue(desk.state.value.dimmed)
     }
 }

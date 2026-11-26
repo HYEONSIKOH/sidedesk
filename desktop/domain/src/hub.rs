@@ -3,13 +3,14 @@
 use std::collections::{HashMap, VecDeque};
 use std::panic::{self, AssertUnwindSafe};
 use std::sync::{Condvar, Mutex, MutexGuard};
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime};
 
 use sidedesk_core::{
-    Body, CommandResult, KillProcess, Performance, Process, Processes, Subscribe, View,
+    Body, CommandResult, KillProcess, Location, Performance, Process, Processes, Subscribe, View,
 };
 
-use crate::port::{Meter, PortError, ProcessTable};
+use crate::port::{Meter, Place, PortError, ProcessTable, WeatherSource};
+use crate::weather::{Book, WeatherCadence};
 
 /// CPU 상위와 메모리 상위를 이만큼씩 골라 합친다.
 const TOP: usize = 30;
@@ -46,7 +47,7 @@ impl Cadence {
         let (main, tile) = match view {
             View::Performance => (self.performance_main, self.performance_tile),
             View::Processes => (self.processes_main, self.processes_tile),
-            View::Nothing => return None,
+            View::Nothing | View::Weather => return None,
         };
         if subscribe.main == view as i32 {
             Some(main)
@@ -155,6 +156,7 @@ struct State {
     next_id: u64,
     performance: Feed<Performance>,
     processes: Feed<Processes>,
+    weather: Book,
     stopped: bool,
 }
 
@@ -173,12 +175,19 @@ struct Done {
     results: HashMap<u64, CommandResult>,
 }
 
+type Wall = Box<dyn Fn() -> SystemTime + Send + Sync>;
+
 pub struct Hub {
     meter: Box<dyn Meter>,
     table: Box<dyn ProcessTable>,
     cadence: Cadence,
+    weather: Option<Box<dyn WeatherSource>>,
+    weather_cadence: WeatherCadence,
+    wall: Wall,
     state: Mutex<State>,
     changed: Condvar,
+    /// 날씨 스레드만 깨운다. 성능 수집 주기를 흔들지 않게 따로 둔다.
+    weather_changed: Condvar,
     done: Mutex<Done>,
 }
 
@@ -188,9 +197,61 @@ impl Hub {
             meter,
             table,
             cadence,
+            weather: None,
+            weather_cadence: WeatherCadence::default(),
+            wall: Box::new(SystemTime::now),
             state: Mutex::default(),
             changed: Condvar::new(),
+            weather_changed: Condvar::new(),
             done: Mutex::default(),
+        }
+    }
+
+    /// 날씨를 받는다. 없으면 날씨 스레드는 바로 끝나고 기기에는 날씨가 가지 않는다.
+    pub fn with_weather(mut self, source: Box<dyn WeatherSource>, cadence: WeatherCadence) -> Self {
+        self.weather = Some(source);
+        self.weather_cadence = cadence;
+        self
+    }
+
+    /// 시험에서 벽시계를 바꾼다.
+    pub fn with_wall(mut self, wall: impl Fn() -> SystemTime + Send + Sync + 'static) -> Self {
+        self.wall = Box::new(wall);
+        self
+    }
+
+    /// 날씨를 원하는 기기가 있는 동안 좌표마다 받는다. `stop` 을 부를 때까지 돌아오지 않는다.
+    pub fn run_weather(&self) {
+        let Some(source) = &self.weather else {
+            return;
+        };
+        let cadence = &self.weather_cadence;
+        let mut state = self.lock();
+        loop {
+            if state.stopped {
+                return;
+            }
+            let now = (self.wall)();
+            state.weather.tidy(now, cadence);
+            if let Some(place) = state.weather.due(now) {
+                drop(state);
+                let result = guarded(|| source.fetch(place));
+                state = self.lock();
+                state.weather.finish(place, result, (self.wall)(), cadence);
+                continue;
+            }
+            state = match state.weather.wait(now, cadence) {
+                None => self
+                    .weather_changed
+                    .wait(state)
+                    .unwrap_or_else(|lock| lock.into_inner()),
+                Some(wait) => {
+                    self.weather_changed
+                        .wait_timeout(state, wait)
+                        .unwrap_or_else(|lock| lock.into_inner())
+                        .0
+                }
+            };
         }
     }
 
@@ -252,6 +313,7 @@ impl Hub {
     pub fn stop(&self) {
         self.lock().stopped = true;
         self.changed.notify_all();
+        self.weather_changed.notify_all();
     }
 
     /// 같은 번호는 한 번만 실행하고, 다시 오면 그때 결과를 그대로 돌려준다.
@@ -304,8 +366,23 @@ impl Subscriber<'_> {
         state
             .processes
             .set(self.id, cadence.every(subscribe, View::Processes), now);
+        let weather = View::Weather as i32;
+        state.weather.set_wants(
+            self.id,
+            subscribe.main == weather || subscribe.tiles.contains(&weather),
+        );
         drop(state);
         self.hub.changed.notify_all();
+        self.hub.weather_changed.notify_all();
+    }
+
+    /// 폰의 위치. 범위 밖이거나 한쪽만 오면 위치 없음.
+    pub fn place(&self, location: &Location) {
+        self.hub
+            .lock()
+            .weather
+            .set_place(self.id, Place::from_location(location));
+        self.hub.weather_changed.notify_all();
     }
 
     /// 보낼 값. 쌓지 않고 가장 새 값만 준다.
@@ -313,7 +390,12 @@ impl Subscriber<'_> {
         let mut state = self.hub.lock();
         let performance = state.performance.take(self.id).map(Body::Performance);
         let processes = state.processes.take(self.id).map(Body::Processes);
-        performance.into_iter().chain(processes).collect()
+        let weather = state.weather.take(self.id).map(Body::Weather);
+        performance
+            .into_iter()
+            .chain(processes)
+            .chain(weather)
+            .collect()
     }
 }
 
@@ -322,8 +404,10 @@ impl Drop for Subscriber<'_> {
         let mut state = self.hub.lock();
         state.performance.remove(self.id);
         state.processes.remove(self.id);
+        state.weather.remove(self.id);
         drop(state);
         self.hub.changed.notify_all();
+        self.hub.weather_changed.notify_all();
     }
 }
 

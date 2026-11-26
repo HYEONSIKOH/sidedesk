@@ -3,7 +3,7 @@ use std::fmt;
 use std::sync::Mutex;
 use std::sync::mpsc::Receiver;
 
-use sidedesk_core::{BEACON_LEN, Identity, KEY_LEN, Performance, Process};
+use sidedesk_core::{BEACON_LEN, Identity, KEY_LEN, Performance, Process, Weather};
 
 #[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
 #[error("{0}")]
@@ -198,4 +198,89 @@ pub trait ProcessTable: Send + Sync {
     fn processes(&self) -> Result<Vec<Process>, PortError>;
     /// 번호와 시작 시각이 둘 다 맞을 때만 끝낸다. 실패하면 사람이 읽을 까닭을 돌려준다.
     fn kill(&self, pid: u32, started_at: u64) -> Result<(), PortError>;
+}
+
+/// 대략적인 위치. 위도, 경도 x10.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct Place {
+    pub latitude: i16,
+    pub longitude: i16,
+}
+
+/// 날씨 받는 곳. 오류 문장에 좌표, 주소, 키를 넣지 않는다.
+pub trait WeatherSource: Send + Sync {
+    fn fetch(&self, place: Place) -> Result<Weather, PortError>;
+}
+
+/// 인증키 같은 비밀 값. 찍어도 보이지 않고, 놓을 때 지운다.
+pub struct Secret(String);
+
+impl Secret {
+    pub fn new(value: impl Into<String>) -> Self {
+        Self(value.into())
+    }
+
+    pub fn expose(&self) -> &str {
+        &self.0
+    }
+}
+
+impl Clone for Secret {
+    fn clone(&self) -> Self {
+        Self(self.0.clone())
+    }
+}
+
+impl fmt::Debug for Secret {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("Secret(..)")
+    }
+}
+
+impl Drop for Secret {
+    fn drop(&mut self) {
+        // SAFETY: 0 바이트는 올바른 UTF-8 이다.
+        unsafe { self.0.as_bytes_mut() }.fill(0);
+    }
+}
+
+/// 운영체제의 비밀 보관소(맥 키체인, 윈도우 자격 증명 관리자)
+pub trait Secrets: Send + Sync {
+    fn kma_key(&self) -> Result<Option<Secret>, PortError>;
+    /// 값을 꺼내지 않고 있는지만 본다.
+    fn has_kma_key(&self) -> Result<bool, PortError>;
+    fn set_kma_key(&self, key: &Secret) -> Result<(), PortError>;
+    fn clear_kma_key(&self) -> Result<(), PortError>;
+}
+
+/// 사람이 고른 날씨 제공처
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Choice {
+    #[default]
+    OpenMeteo,
+    Kma,
+}
+
+/// 기상청 인증키를 한 번 불러 본 결과
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum KeyCheck {
+    Good,
+    /// 키는 맞지만 오늘 한도를 넘음
+    Limit,
+    Wrong,
+    Offline,
+    Unknown,
+}
+
+/// 설정 창이 쓰는 날씨 설정
+pub trait WeatherSetup: Send + Sync {
+    /// 이 운영체제에서 날씨를 받는지
+    fn supported(&self) -> bool;
+    fn choice(&self) -> Choice;
+    fn set_choice(&self, choice: Choice) -> Result<(), PortError>;
+    /// 시작 때 한 번 보고 들고 있는 값
+    fn has_key(&self) -> bool;
+    fn check_key(&self, key: &Secret) -> KeyCheck;
+    fn save_key(&self, key: &Secret) -> Result<(), PortError>;
+    fn clear_key(&self) -> Result<(), PortError>;
 }

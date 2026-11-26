@@ -63,9 +63,12 @@ fun Modifier.behindModal(open: Boolean): Modifier {
     return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S && radius > 0.dp) blur(radius) else this
 }
 
-/** 화면 맨 위에 겹쳐 그린다. 판 밖을 누르거나 뒤로 가면 취소다. */
+/**
+ * 화면 맨 위에 겹쳐 그린다. 판 밖을 누르거나 뒤로 가면 onDismiss, 취소 버튼은 onCancel 이다.
+ * 둘을 나누지 않으면 onCancel 은 onDismiss 와 같다.
+ */
 @Composable
-fun BoxScope.ConfirmModal(confirm: Confirm?, onConfirm: () -> Unit, onDismiss: () -> Unit) {
+fun BoxScope.ConfirmModal(confirm: Confirm?, onConfirm: () -> Unit, onDismiss: () -> Unit, onCancel: () -> Unit = onDismiss) {
     // 사라지는 동안에도 마지막 내용을 보인다.
     val last = remember { arrayOfNulls<Confirm>(1) }
     if (confirm != null) last[0] = confirm
@@ -87,7 +90,7 @@ fun BoxScope.ConfirmModal(confirm: Confirm?, onConfirm: () -> Unit, onDismiss: (
             Panel(
                 shown,
                 onConfirm,
-                onDismiss,
+                onCancel,
                 Modifier.animateEnterExit(
                     enter = scaleIn(tween(MILLIS), initialScale = 0.92f),
                     exit = scaleOut(tween(MILLIS), targetScale = 0.92f),

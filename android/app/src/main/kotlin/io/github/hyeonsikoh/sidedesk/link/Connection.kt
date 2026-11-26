@@ -4,6 +4,7 @@ import android.util.Log
 import uniffi.sidedesk_core.LinkException
 import uniffi.sidedesk_core.PhoneEvent
 import uniffi.sidedesk_core.PhoneSession
+import uniffi.sidedesk_core.Place
 import uniffi.sidedesk_core.View
 import java.io.IOException
 
@@ -70,6 +71,7 @@ class Connection(
             var ready = false
             var computer = ByteArray(0)
             var subscribed: Subscription? = null
+            val location = LocationGate()
             val sentKills = HashSet<Long>()
             fun flush() = session.takeOutput().takeIf { it.isNotEmpty() }?.let(pipe::send)
 
@@ -79,6 +81,10 @@ class Connection(
                 if (now != subscribed) {
                     session.subscribe(now.big?.let(::view), now.small.map(::view))
                     subscribed = now
+                }
+                // 위치는 Ready 뒤 이 안에서만 보낸다. 모르면 보내지 않는다.
+                location.take(owner.location.get())?.let { place ->
+                    session.sendLocation((place as? LocationState.At)?.let { Place(it.latitude, it.longitude) })
                 }
                 for (kill in owner.pendingKills(computer)) {
                     if (!sentKills.add(kill.commandId)) continue
@@ -114,6 +120,7 @@ class Connection(
                         }
                         is PhoneEvent.Performance -> mine?.let { owner.receivedPerf(it, perf(event)) }
                         is PhoneEvent.Processes -> mine?.let { owner.receivedProcesses(it, processes(event)) }
+                        is PhoneEvent.Weather -> mine?.let { owner.receivedWeather(it, weather(event)) }
                         is PhoneEvent.CommandResult ->
                             owner.receivedKill(KillResult(event.requestId.toLong(), event.ok, event.reason))
                     }
@@ -162,12 +169,42 @@ class Connection(
         const val SILENCE_NANOS = 15_000_000_000L
 
         private fun view(topic: Topic) = when (topic) {
+            Topic.Weather -> View.WEATHER
             Topic.Perf -> View.PERFORMANCE
             Topic.Processes -> View.PROCESSES
         }
 
+        private fun weather(event: PhoneEvent.Weather) = event.value.let {
+            Weather(
+                temperature = it.temperature,
+                sky = sky(it.sky),
+                high = it.high,
+                low = it.low,
+                isDay = it.isDay,
+                fetchedAt = it.fetchedAt.toLong(),
+                source = when (it.source) {
+                    uniffi.sidedesk_core.WeatherSource.KMA -> WeatherSource.Kma
+                    uniffi.sidedesk_core.WeatherSource.OPEN_METEO -> WeatherSource.OpenMeteo
+                    uniffi.sidedesk_core.WeatherSource.UNKNOWN -> WeatherSource.Unknown
+                },
+            )
+        }
+
         private fun perf(event: PhoneEvent.Performance) = event.value.let {
             Perf(it.cpu, it.gpu, it.memory, it.disk, it.netDown.toLong(), it.netUp.toLong())
+        }
+
+        private fun sky(sky: uniffi.sidedesk_core.Sky) = when (sky) {
+            uniffi.sidedesk_core.Sky.UNKNOWN -> Sky.Unknown
+            uniffi.sidedesk_core.Sky.CLEAR -> Sky.Clear
+            uniffi.sidedesk_core.Sky.PARTLY_CLOUDY -> Sky.PartlyCloudy
+            uniffi.sidedesk_core.Sky.CLOUDY -> Sky.Cloudy
+            uniffi.sidedesk_core.Sky.FOG -> Sky.Fog
+            uniffi.sidedesk_core.Sky.DRIZZLE -> Sky.Drizzle
+            uniffi.sidedesk_core.Sky.RAIN -> Sky.Rain
+            uniffi.sidedesk_core.Sky.SNOW -> Sky.Snow
+            uniffi.sidedesk_core.Sky.SHOWER -> Sky.Shower
+            uniffi.sidedesk_core.Sky.THUNDERSTORM -> Sky.Thunderstorm
         }
 
         private fun processes(event: PhoneEvent.Processes) = Processes(

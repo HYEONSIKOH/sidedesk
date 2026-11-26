@@ -2226,6 +2226,7 @@ dependencies = [
  "sidedesk-domain",
  "sidedesk-link",
  "sidedesk-mac",
+ "sidedesk-weather",
  "sidedesk-window",
  "sidedesk-windows",
 ]
@@ -2268,6 +2269,7 @@ dependencies = [
 name = "sidedesk-mac"
 version = "0.1.0"
 dependencies = [
+ "block2",
  "core-foundation 0.9.4",
  "dispatch2",
  "libc",
@@ -2276,7 +2278,17 @@ dependencies = [
  "objc2-foundation",
  "sidedesk-core",
  "sidedesk-domain",
+ "sidedesk-weather",
  "system-configuration-sys",
+]
+
+[[package]]
+name = "sidedesk-weather"
+version = "0.1.0"
+dependencies = [
+ "serde_json",
+ "sidedesk-core",
+ "sidedesk-domain",
 ]
 
 [[package]]

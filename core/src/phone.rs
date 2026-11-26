@@ -3,8 +3,8 @@
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use crate::{
-    Body, CommandResult, Event, Identity, KEY_LEN, KillProcess, Performance, Process, Processes,
-    Role, Session, SessionError, Subscribe,
+    Body, CommandResult, Event, Identity, KEY_LEN, KillProcess, Location, Performance, Process,
+    Processes, Role, Session, SessionError, Subscribe, place_tenths,
 };
 
 #[derive(uniffi::Record)]
@@ -47,6 +47,9 @@ pub enum PhoneEvent {
         ok: bool,
         reason: String,
     },
+    Weather {
+        value: WeatherInfo,
+    },
 }
 
 /// 폰에 보이는 자료. 시계는 폰이 혼자 그리므로 없다.
@@ -54,6 +57,7 @@ pub enum PhoneEvent {
 pub enum View {
     Performance,
     Processes,
+    Weather,
 }
 
 impl From<View> for crate::View {
@@ -61,6 +65,7 @@ impl From<View> for crate::View {
         match view {
             View::Performance => Self::Performance,
             View::Processes => Self::Processes,
+            View::Weather => Self::Weather,
         }
     }
 }
@@ -115,6 +120,100 @@ impl From<Process> for ProcessInfo {
     }
 }
 
+/// 기기의 위치. 반올림은 core 가 한다.
+#[derive(Clone, Copy, Debug, PartialEq, uniffi::Record)]
+pub struct Place {
+    pub latitude: f64,
+    pub longitude: f64,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, uniffi::Enum)]
+pub enum Sky {
+    Unknown,
+    Clear,
+    PartlyCloudy,
+    Cloudy,
+    Fog,
+    Drizzle,
+    Rain,
+    Snow,
+    Shower,
+    Thunderstorm,
+}
+
+impl From<crate::Sky> for Sky {
+    fn from(sky: crate::Sky) -> Self {
+        match sky {
+            crate::Sky::Unknown => Self::Unknown,
+            crate::Sky::Clear => Self::Clear,
+            crate::Sky::PartlyCloudy => Self::PartlyCloudy,
+            crate::Sky::Cloudy => Self::Cloudy,
+            crate::Sky::Fog => Self::Fog,
+            crate::Sky::Drizzle => Self::Drizzle,
+            crate::Sky::Rain => Self::Rain,
+            crate::Sky::Snow => Self::Snow,
+            crate::Sky::Shower => Self::Shower,
+            crate::Sky::Thunderstorm => Self::Thunderstorm,
+        }
+    }
+}
+
+/// 날씨를 실제로 받은 곳. Unknown 이면 출처를 숨긴다.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, uniffi::Enum)]
+pub enum WeatherSource {
+    Unknown,
+    Kma,
+    OpenMeteo,
+}
+
+impl From<crate::Provider> for WeatherSource {
+    fn from(provider: crate::Provider) -> Self {
+        match provider {
+            crate::Provider::Unknown => Self::Unknown,
+            crate::Provider::Kma => Self::Kma,
+            crate::Provider::OpenMeteo => Self::OpenMeteo,
+        }
+    }
+}
+
+/// 기온은 °C, fetched_at 은 받은 시각(유닉스 밀리초).
+#[derive(Clone, Debug, PartialEq, uniffi::Record)]
+pub struct WeatherInfo {
+    pub temperature: f32,
+    pub sky: Sky,
+    pub high: f32,
+    pub low: f32,
+    pub is_day: bool,
+    pub fetched_at: u64,
+    pub source: WeatherSource,
+}
+
+impl From<crate::Weather> for WeatherInfo {
+    fn from(w: crate::Weather) -> Self {
+        Self {
+            temperature: w.temperature,
+            sky: crate::Sky::try_from(w.sky)
+                .unwrap_or(crate::Sky::Unknown)
+                .into(),
+            high: w.high,
+            low: w.low,
+            is_day: w.is_day,
+            fetched_at: w.fetched_at,
+            source: crate::Provider::try_from(w.provider)
+                .unwrap_or(crate::Provider::Unknown)
+                .into(),
+        }
+    }
+}
+
+/// 이 접속에서 마지막으로 보낸 위치
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Sent {
+    Never,
+    Nowhere,
+    At(i32, i32),
+}
+
 /// 명령 번호. 같은 명령을 다시 보낼 때는 같은 번호를 쓴다.
 #[uniffi::export]
 pub fn new_request_id() -> u64 {
@@ -156,7 +255,10 @@ fn key(bytes: &[u8]) -> Result<[u8; KEY_LEN], LinkError> {
 
 /// 접속 하나를 맡는다. 새로 접속되면 새로 만든다.
 #[derive(uniffi::Object)]
-pub struct PhoneSession(Mutex<Session>);
+pub struct PhoneSession {
+    session: Mutex<Session>,
+    sent: Mutex<Sent>,
+}
 
 /// 블루투스 알림 신호의 서비스 데이터(PSM + 알림 신호 지문).
 #[uniffi::export]
@@ -192,7 +294,10 @@ impl PhoneSession {
         } else {
             session.refusing_pairing()
         };
-        Ok(Arc::new(Self(Mutex::new(session))))
+        Ok(Arc::new(Self {
+            session: Mutex::new(session),
+            sent: Mutex::new(Sent::Never),
+        }))
     }
 
     pub fn feed(&self, bytes: Vec<u8>) -> Result<(), LinkError> {
@@ -204,6 +309,7 @@ impl PhoneSession {
     }
 
     pub fn next_event(&self) -> Option<PhoneEvent> {
+        let sent = *lock(&self.sent);
         let mut session = self.lock();
         loop {
             return match session.next_event()? {
@@ -234,6 +340,14 @@ impl PhoneSession {
                     ok,
                     reason,
                 }),
+                // 지금 보낸 위치의 값만 올린다.
+                Event::Message(Body::Weather(weather))
+                    if sent == Sent::At(weather.latitude_tenths, weather.longitude_tenths) =>
+                {
+                    Some(PhoneEvent::Weather {
+                        value: weather.into(),
+                    })
+                }
                 Event::Message(_) => continue,
             };
         }
@@ -256,6 +370,29 @@ impl PhoneSession {
             .send(Body::Subscribe(Subscribe { main, tiles }))?)
     }
 
+    /// 위치를 알린다. null 은 위치 없음(권한 없음). 반올림은 여기서 한다.
+    /// 이 접속에서 마지막으로 보낸 것과 같으면 보내지 않는다.
+    pub fn send_location(&self, place: Option<Place>) -> Result<(), LinkError> {
+        let next = match place.and_then(|p| place_tenths(p.latitude, p.longitude)) {
+            Some((latitude, longitude)) => Sent::At(latitude, longitude),
+            None => Sent::Nowhere,
+        };
+        let mut sent = lock(&self.sent);
+        if *sent == next {
+            return Ok(());
+        }
+        let location = match next {
+            Sent::At(latitude, longitude) => Location {
+                latitude_tenths: Some(latitude),
+                longitude_tenths: Some(longitude),
+            },
+            _ => Location::default(),
+        };
+        self.lock().send(Body::Location(location))?;
+        *sent = next;
+        Ok(())
+    }
+
     /// 사람이 한 번 더 확인한 뒤에 부른다. 결과는 `CommandResult` 로 온다.
     pub fn kill_process(
         &self,
@@ -273,8 +410,12 @@ impl PhoneSession {
 
 impl PhoneSession {
     fn lock(&self) -> MutexGuard<'_, Session> {
-        self.0.lock().unwrap_or_else(|lock| lock.into_inner())
+        lock(&self.session)
     }
+}
+
+fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
+    mutex.lock().unwrap_or_else(|lock| lock.into_inner())
 }
 
 #[cfg(test)]
@@ -367,6 +508,118 @@ mod tests {
             Some(PhoneEvent::Performance { value }) if value.cpu == 12.5 && value.gpu.is_none()
         ));
         assert_ne!(new_request_id(), new_request_id());
+    }
+
+    fn ready() -> (Arc<PhoneSession>, Session) {
+        let computer = Identity::generate();
+        let phone = generate_key_pair();
+        let phone_key: [u8; KEY_LEN] = phone.public_key.clone().try_into().unwrap();
+        let session = PhoneSession::new(
+            phone.private_key,
+            phone.public_key,
+            vec![computer.public.to_vec()],
+            true,
+        )
+        .unwrap();
+        let mut c = Session::new(Role::Computer, &computer, vec![phone_key], false);
+        for _ in 0..3 {
+            session.feed(c.take_output()).unwrap();
+            c.feed(&session.take_output()).unwrap();
+        }
+        assert!(matches!(
+            session.next_event(),
+            Some(PhoneEvent::Ready { .. })
+        ));
+        (session, c)
+    }
+
+    fn locations(session: &PhoneSession, c: &mut Session) -> Vec<Location> {
+        c.feed(&session.take_output()).unwrap();
+        std::iter::from_fn(|| c.next_event())
+            .filter_map(|event| match event {
+                Event::Message(Body::Location(location)) => Some(location),
+                _ => None,
+            })
+            .collect()
+    }
+
+    fn weather(latitude: i32, longitude: i32) -> Body {
+        Body::Weather(crate::Weather {
+            temperature: 3.5,
+            latitude_tenths: latitude,
+            longitude_tenths: longitude,
+            provider: crate::Provider::Kma as i32,
+            ..Default::default()
+        })
+    }
+
+    #[test]
+    fn location_is_rounded_once_and_not_repeated() {
+        let (session, mut c) = ready();
+        let seoul = Place {
+            latitude: 37.5665,
+            longitude: 126.978,
+        };
+        session.send_location(Some(seoul)).unwrap();
+        session.send_location(Some(seoul)).unwrap();
+        session
+            .send_location(Some(Place {
+                latitude: 37.6,
+                longitude: 127.0,
+            }))
+            .unwrap();
+        assert_eq!(
+            locations(&session, &mut c),
+            [Location {
+                latitude_tenths: Some(376),
+                longitude_tenths: Some(1270),
+            }]
+        );
+        session
+            .send_location(Some(Place {
+                latitude: f64::NAN,
+                longitude: 127.0,
+            }))
+            .unwrap();
+        session.send_location(None).unwrap();
+        assert_eq!(locations(&session, &mut c), [Location::default()]);
+    }
+
+    #[test]
+    fn only_weather_for_the_sent_place_comes_up() {
+        let (session, mut c) = ready();
+        // 위치를 보내기 전 값은 버린다.
+        c.send(weather(376, 1270)).unwrap();
+        session.feed(c.take_output()).unwrap();
+        assert_eq!(session.next_event(), None);
+        session
+            .send_location(Some(Place {
+                latitude: 37.6,
+                longitude: 127.0,
+            }))
+            .unwrap();
+        c.send(weather(375, 1270)).unwrap();
+        c.send(weather(376, 1270)).unwrap();
+        session.feed(c.take_output()).unwrap();
+        assert_eq!(
+            session.next_event(),
+            Some(PhoneEvent::Weather {
+                value: WeatherInfo {
+                    temperature: 3.5,
+                    sky: Sky::Unknown,
+                    high: 0.0,
+                    low: 0.0,
+                    is_day: false,
+                    fetched_at: 0,
+                    source: WeatherSource::Kma,
+                }
+            })
+        );
+        assert_eq!(session.next_event(), None);
+        session.send_location(None).unwrap();
+        c.send(weather(376, 1270)).unwrap();
+        session.feed(c.take_output()).unwrap();
+        assert_eq!(session.next_event(), None);
     }
 
     #[test]

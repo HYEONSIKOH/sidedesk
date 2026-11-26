@@ -12,6 +12,8 @@ import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.darkColorScheme
+import androidx.compose.material3.lightColorScheme
+import io.github.hyeonsikoh.sidedesk.ui.Palette
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -23,7 +25,13 @@ import io.github.hyeonsikoh.sidedesk.R
 
 @Composable
 fun HomeScreen(state: HomeState, onAnswer: (Boolean) -> Unit) {
-    MaterialTheme(colorScheme = darkColorScheme()) {
+    val p = Palette
+    val colors = if (p.dark) {
+        darkColorScheme(primary = p.accent, onPrimary = p.panel, surface = p.ground, onSurface = p.ink)
+    } else {
+        lightColorScheme(primary = p.accent, onPrimary = p.panel, surface = p.ground, onSurface = p.ink)
+    }
+    MaterialTheme(colorScheme = colors) {
         Surface(Modifier.fillMaxSize()) {
             Box(Modifier.padding(24.dp), contentAlignment = Alignment.Center) {
                 val code = state.pairingCode

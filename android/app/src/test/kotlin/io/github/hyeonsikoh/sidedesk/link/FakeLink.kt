@@ -7,6 +7,8 @@ class FakeLink : ComputerLink {
     override val state = MutableStateFlow<LinkState>(LinkState.Waiting)
     override val perf = MutableStateFlow<Perf?>(null)
     override val processes = MutableStateFlow<Processes?>(null)
+    override val weather = MutableStateFlow<Weather?>(null)
+    val locations = mutableListOf<LocationState>()
     override val killResults = MutableSharedFlow<KillResult>(extraBufferCapacity = 8)
     val answers = mutableListOf<Boolean>()
     val subscriptions = mutableListOf<Subscription>()
@@ -22,6 +24,10 @@ class FakeLink : ComputerLink {
 
     override fun subscribe(subscription: Subscription) {
         subscriptions += subscription
+    }
+
+    override fun setLocation(location: LocationState) {
+        locations += location
     }
 
     override fun kill(command: KillCommand) {

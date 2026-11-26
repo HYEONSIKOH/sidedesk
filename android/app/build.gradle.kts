@@ -25,6 +25,12 @@ android {
 
     kotlinOptions { jvmTarget = "17" }
 
+    testOptions {
+        unitTests.isIncludeAndroidResources = true
+        // 화면 그림 시험이 png 를 남기게 한다. 기준 그림과 비교하지 않는다.
+        unitTests.all { it.systemProperty("roborazzi.test.record", "true") }
+    }
+
     buildFeatures {
         compose = true
         buildConfig = true
@@ -73,4 +79,8 @@ dependencies {
 
     testImplementation("junit:junit:4.13.2")
     testImplementation("org.jetbrains.kotlinx:kotlinx-coroutines-test:1.9.0")
+    testImplementation("org.robolectric:robolectric:4.14.1")
+    testImplementation("io.github.takahirom.roborazzi:roborazzi:1.32.2")
+    testImplementation("io.github.takahirom.roborazzi:roborazzi-compose:1.32.2")
+    testImplementation("androidx.compose.ui:ui-test-junit4")
 }

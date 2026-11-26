@@ -444,3 +444,142 @@ fn a_panicking_collector_is_tried_again() {
         hub.stop();
     });
 }
+
+/// 처음 한 번 panic 하고, 그 뒤로는 부른 횟수를 센다.
+struct Sky(AtomicUsize);
+
+impl sidedesk_domain::WeatherSource for Sky {
+    fn fetch(&self, _place: sidedesk_domain::Place) -> Result<sidedesk_core::Weather, PortError> {
+        if self.0.fetch_add(1, Ordering::SeqCst) == 0 {
+            panic!("날씨 시험용 panic");
+        }
+        Ok(sidedesk_core::Weather {
+            temperature: 7.0,
+            ..Default::default()
+        })
+    }
+}
+
+fn quick_weather() -> sidedesk_domain::WeatherCadence {
+    let ms = Duration::from_millis;
+    sidedesk_domain::WeatherCadence {
+        every: ms(150),
+        retry: [ms(20), ms(20), ms(20), ms(20), ms(20)],
+        nap: ms(30),
+        keep: ms(200),
+    }
+}
+
+#[test]
+fn phones_at_one_place_share_weather_and_stop_ends_the_thread() {
+    let calls = Arc::new(Sky(AtomicUsize::new(0)));
+    struct Shared(Arc<Sky>);
+    impl sidedesk_domain::WeatherSource for Shared {
+        fn fetch(
+            &self,
+            place: sidedesk_domain::Place,
+        ) -> Result<sidedesk_core::Weather, PortError> {
+            self.0.fetch(place)
+        }
+    }
+    let counts = Counts::default();
+    let hub = hub(&counts).with_weather(Box::new(Shared(Arc::clone(&calls))), quick_weather());
+    let seoul = sidedesk_core::Location {
+        latitude_tenths: Some(376),
+        longitude_tenths: Some(1270),
+    };
+    thread::scope(|scope| {
+        let runner = scope.spawn(|| hub.run_weather());
+        let _stopper = Stopper(&hub);
+        let a = hub.join();
+        let b = hub.join();
+        for phone in [&a, &b] {
+            phone.place(&seoul);
+            phone.set(&watch(View::Weather, &[]));
+        }
+        let mut got = (0, 0);
+        let start = Instant::now();
+        while start.elapsed() < Duration::from_millis(400) {
+            for (phone, n) in [(&a, &mut got.0), (&b, &mut got.1)] {
+                for body in phone.take() {
+                    if let Body::Weather(w) = body {
+                        assert_eq!((w.latitude_tenths, w.longitude_tenths), (376, 1270));
+                        assert!(w.fetched_at > 0);
+                        *n += 1;
+                    }
+                }
+            }
+            thread::sleep(Duration::from_millis(5));
+        }
+        // 첫 번째는 panic(실패), 20ms 뒤 성공, 그 뒤 150ms 마다. 두 기기가 함께 쓴다(기기마다 받지 않음).
+        let fetched = calls.0.load(Ordering::SeqCst);
+        assert!((2..=5).contains(&fetched), "받기 {fetched}");
+        assert!(got.0 >= 1 && got.1 >= 1, "{got:?}");
+        // 성능은 아무도 안 봐서 모으지 않았다.
+        assert_eq!(count(&counts.performance), 0);
+
+        // 둘 다 날씨를 안 보면 더 받지 않는다.
+        for phone in [&a, &b] {
+            phone.set(&Subscribe::default());
+        }
+        thread::sleep(Duration::from_millis(100));
+        let stopped = calls.0.load(Ordering::SeqCst);
+        thread::sleep(Duration::from_millis(300));
+        assert_eq!(calls.0.load(Ordering::SeqCst), stopped);
+
+        hub.stop();
+        let start = Instant::now();
+        while !runner.is_finished() {
+            assert!(
+                start.elapsed() < Duration::from_secs(1),
+                "날씨 스레드가 끝나지 않음"
+            );
+            thread::sleep(Duration::from_millis(5));
+        }
+    });
+}
+
+#[test]
+fn without_a_weather_source_the_thread_ends_at_once() {
+    let counts = Counts::default();
+    let hub = hub(&counts);
+    hub.run_weather();
+}
+
+#[test]
+fn weather_notices_do_not_disturb_performance_collection() {
+    let calls = Arc::new(Sky(AtomicUsize::new(1)));
+    struct Shared(Arc<Sky>);
+    impl sidedesk_domain::WeatherSource for Shared {
+        fn fetch(
+            &self,
+            place: sidedesk_domain::Place,
+        ) -> Result<sidedesk_core::Weather, PortError> {
+            self.0.fetch(place)
+        }
+    }
+    let counts = Counts::default();
+    let hub = hub(&counts).with_weather(Box::new(Shared(calls)), quick_weather());
+    thread::scope(|scope| {
+        scope.spawn(|| hub.run());
+        scope.spawn(|| hub.run_weather());
+        let _stopper = Stopper(&hub);
+        let phone = hub.join();
+        phone.set(&watch(View::Performance, &[View::Weather]));
+        // 위치를 계속 바꿔 날씨 쪽만 깨운다.
+        let start = Instant::now();
+        let mut tenths = 0;
+        while start.elapsed() < Duration::from_millis(400) {
+            tenths = (tenths + 1) % 50;
+            phone.place(&sidedesk_core::Location {
+                latitude_tenths: Some(370 + tenths),
+                longitude_tenths: Some(1270),
+            });
+            thread::sleep(Duration::from_millis(1));
+        }
+        // 성능은 40ms 주기 그대로(약 10번). 날씨 알림마다 더 모으지 않는다.
+        let performance = count(&counts.performance);
+        assert!((5..=14).contains(&performance), "성능 {performance}");
+        hub.stop();
+    });
+}
