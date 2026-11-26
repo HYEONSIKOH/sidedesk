@@ -52,7 +52,8 @@ jobs:
       - run: cargo build --release -p sidedesk
       - uses: actions/upload-artifact@v4
         with:
-          name: sidedesk-windows
+          # 개발용: 경로 바꾸기와 비밀값 검사를 거치지 않았다. 배포 파일은 release.yml(SD-12 뒤)
+          name: sidedesk-windows-dev
           path: target/release/sidedesk.exe
           retention-days: 7
 

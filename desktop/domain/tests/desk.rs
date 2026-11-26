@@ -1092,13 +1092,14 @@ fn a_slow_bluetooth_link_gets_the_small_picture_and_stays_up() {
     );
 }
 
-/// 큰 버전이 하나 높은 폰 하나가 USB 로 붙어 있는 길
-struct NewerPhone {
+/// 큰 버전이 다른 폰 하나가 USB 로 붙어 있는 길
+struct OtherVersion {
+    major: u8,
     /// 폰 쪽 끝을 살려 둔다.
     ends: Mutex<Vec<Pipe>>,
 }
 
-impl sidedesk_domain::PhoneLinks for NewerPhone {
+impl sidedesk_domain::PhoneLinks for OtherVersion {
     fn link(&self) -> sidedesk_domain::Link {
         sidedesk_domain::Link::Usb
     }
@@ -1112,9 +1113,7 @@ impl sidedesk_domain::PhoneLinks for NewerPhone {
     }
     fn connect(&self, _: &str) -> Result<Box<dyn Conn>, PortError> {
         let (mine, theirs) = pipes();
-        let _ = theirs
-            .outgoing
-            .send(vec![b'S', b'D', sidedesk_core::VERSION[0] + 1, 0]);
+        let _ = theirs.outgoing.send(vec![b'S', b'D', self.major, 0]);
         self.ends.lock().unwrap().push(theirs);
         Ok(Box::new(mine))
     }
@@ -1129,8 +1128,8 @@ impl Report for Notes {
     }
 }
 
-#[test]
-fn a_phone_with_another_major_version_is_refused_with_an_update_note() {
+/// 큰 버전이 `major` 인 폰을 붙여 두고, 거절 알림을 본 뒤 재시도 간격의 두 배 넘게 더 기다려 센다.
+fn refused_notes(major: u8) -> (Vec<(String, String)>, usize) {
     let counts = Counts::default();
     let hub = hub(&counts);
     let computer = Computer {
@@ -1155,7 +1154,8 @@ fn a_phone_with_another_major_version_is_refused_with_an_update_note() {
             answer: Duration::from_secs(1),
         },
     };
-    let links = NewerPhone {
+    let links = OtherVersion {
+        major,
         ends: Mutex::default(),
     };
     let stop = AtomicBool::new(false);
@@ -1172,23 +1172,35 @@ fn a_phone_with_another_major_version_is_refused_with_an_update_note() {
         {
             thread::sleep(Duration::from_millis(20));
         }
+        // 다시 시도하지 않는지 보려면 재시도 간격(RETRY)이 몇 번 지나도록 둔다.
+        thread::sleep(sidedesk_domain::RETRY * 2 + Duration::from_millis(500));
         stop.store(true, Ordering::Relaxed);
     });
     let notes = notes.0.into_inner().unwrap();
-    let refused: Vec<_> = notes
+    let refused = notes
         .iter()
         .filter_map(|(id, n)| match n {
-            sidedesk_domain::Note::Refused(text) => Some((id.as_str(), text.as_str())),
+            sidedesk_domain::Note::Refused(text) => Some((id.clone(), text.clone())),
             _ => None,
         })
         .collect();
-    // 설정 창 폰 줄에 남는 문장. 다시 시도하지 않으므로 한 번만.
-    assert_eq!(refused.len(), 1, "{notes:?}");
-    assert_eq!(refused[0].0, "p");
-    assert!(
-        refused[0].1.contains("버전이 달라") && refused[0].1.contains("업데이트"),
-        "{}",
-        refused[0].1
-    );
-    assert_eq!(links.ends.lock().unwrap().len(), 1);
+    let connects = links.ends.lock().unwrap().len();
+    (refused, connects)
+}
+
+#[test]
+fn a_phone_with_another_major_version_is_refused_once_with_an_update_note() {
+    let mine = sidedesk_core::VERSION[0];
+    for major in [mine + 1, mine - 1] {
+        let (refused, connects) = refused_notes(major);
+        // 설정 창 폰 줄에 남는 문장. 다시 시도하지 않으므로 한 번, 접속도 한 번.
+        assert_eq!(refused.len(), 1, "큰 버전 {major}: {refused:?}");
+        assert_eq!(connects, 1, "큰 버전 {major}");
+        assert_eq!(refused[0].0, "p");
+        assert!(
+            refused[0].1.contains("버전이 달라") && refused[0].1.contains("업데이트"),
+            "{}",
+            refused[0].1
+        );
+    }
 }

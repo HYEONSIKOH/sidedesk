@@ -29,6 +29,7 @@ jobs:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
           persist-credentials: false
+      # 검사 스크립트는 파이썬 3.9 이상이면 돈다(러너 기본 python3).
       - run: python3 -I scripts/test_check_secrets.py
       - run: python3 -I scripts/check_secrets.py --repo
 
@@ -84,15 +85,22 @@ jobs:
         working-directory: android
         run: ./gradlew --no-daemon assembleRelease
       - name: 검사(비밀값, 16KB 정렬)
+        # pipefail 로 unzip, readelf 가 실패하면 멈춘다.
+        shell: bash
         run: |
           apk=$(ls android/app/build/outputs/apk/release/SideDesk-*-unsigned.apk)
           echo "서명 없음: $(basename "$apk")"
-          python3 -I scripts/check_secrets.py --artifact "$apk" --forbid "$HOME" --forbid "$GITHUB_WORKSPACE"
+          cargo_home=${CARGO_HOME:-$HOME/.cargo}
+          rustup_home=${RUSTUP_HOME:-$HOME/.rustup}
+          python3 -I scripts/check_secrets.py --artifact "$apk" --forbid "$HOME" \
+            --forbid "$GITHUB_WORKSPACE" --forbid "$cargo_home" --forbid "$rustup_home"
           tools=$(ls -d "$ANDROID_HOME"/build-tools/* | sort -V | tail -1)
           "$tools/zipalign" -c -P 16 4 "$apk"
           readelf="$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/darwin-x86_64/bin/llvm-readelf"
           unzip -p "$apk" lib/arm64-v8a/libsidedesk_core.so > "$RUNNER_TEMP/core.so"
-          "$readelf" -l "$RUNNER_TEMP/core.so" | awk '/LOAD/ { if ($NF != "0x4000") bad = 1 } END { exit bad }'
+          # LOAD 가 하나도 없거나 하나라도 0x4000 이 아니면 실패
+          "$readelf" -l "$RUNNER_TEMP/core.so" \
+            | awk '/LOAD/ { n++; if ($NF != "0x4000") bad = 1 } END { exit (bad || n == 0) }'
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: sidedesk-android
