@@ -101,7 +101,13 @@ pub fn with_music(panel: &'static crate::MusicPanel) {
     let _ = MUSIC.set(panel);
 }
 
-/// 띄운 설정 창. 웹뷰를 창보다 먼저 버린다.
+/// 창 닫기: 띄운 것(창과 웹뷰)을 버린다. 다시 열 길(메뉴 막대 아이콘)이 없으면 끝내야 하니 true.
+fn close<T>(shown: &mut Option<T>, can_reopen: bool) -> bool {
+    drop(shown.take());
+    !can_reopen
+}
+
+/// 띄운 설정 창. 필드 순서대로 버려지므로 웹뷰가 창보다 먼저 버려진다.
 struct Shown {
     webview: WebView,
     window: Window,
@@ -339,12 +345,7 @@ pub fn open(board: &'static Board, mode_file: PathBuf) -> Result<(), String> {
                 event: WindowEvent::CloseRequested,
                 ..
             } => {
-                if let Some(Shown { webview, window }) = shown.take() {
-                    drop(webview);
-                    drop(window);
-                }
-                // 메뉴 막대 아이콘을 못 만들었으면 다시 열 길이 없으니 끝낸다.
-                if tray.is_none() {
+                if close(&mut shown, tray.is_some()) {
                     quit();
                 }
             }
@@ -357,4 +358,34 @@ pub fn open(board: &'static Board, mode_file: PathBuf) -> Result<(), String> {
             _ => {}
         }
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    struct Probe(Arc<AtomicUsize>);
+
+    impl Drop for Probe {
+        fn drop(&mut self) {
+            self.0.fetch_add(1, Ordering::SeqCst);
+        }
+    }
+
+    #[test]
+    fn closing_drops_what_was_shown_and_quits_only_without_a_tray() {
+        let dropped = Arc::new(AtomicUsize::new(0));
+        let mut shown = Some(Probe(Arc::clone(&dropped)));
+        assert!(!close(&mut shown, true));
+        assert!(shown.is_none());
+        assert_eq!(dropped.load(Ordering::SeqCst), 1);
+        // 이미 닫힌 뒤 다시 닫아도 아무것도 버리지 않는다.
+        assert!(!close(&mut shown, true));
+        assert_eq!(dropped.load(Ordering::SeqCst), 1);
+        let mut shown = Some(Probe(Arc::clone(&dropped)));
+        assert!(close(&mut shown, false));
+        assert_eq!(dropped.load(Ordering::SeqCst), 2);
+    }
 }
