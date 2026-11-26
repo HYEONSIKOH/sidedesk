@@ -19,6 +19,7 @@ version = "0.1.0"
 edition = "2024"
 
 [profile.release]
-lto = "thin"
+lto = "fat"
 codegen-units = 1
-strip = true
+# 기호 지우기는 묶는 스크립트가 맥 strip 으로 한다(cargo 의 strip 은 툴체인에 따라 실패한다).
+# panic = "abort" 는 넣지 않는다: 어댑터 패닉을 catch_unwind 로 막는 곳이 있다.
