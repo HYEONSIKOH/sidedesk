@@ -44,8 +44,10 @@ jobs:
       - run: cargo clippy --workspace --all-targets -- -D warnings
       - run: cargo test --workspace --no-fail-fast
       - name: 윈도우 전용 시험(자격 증명 관리자, 인터넷, 설정 창)
+        # pwsh 는 마지막 명령의 종료 코드만 보므로 앞 명령이 실패해도 멈추게 한다.
         run: |
           cargo test -p sidedesk-windows -- --ignored windows_only_ --nocapture
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
           cargo test -p sidedesk-window -- --ignored windows_only_ --nocapture
       - name: 수집기 걸린 시간
         run: cargo test -p sidedesk-windows -- values_are_in_range lists_this_process --nocapture
@@ -57,6 +59,7 @@ jobs:
           if ($LASTEXITCODE -ne 1) { throw "종료 코드 $LASTEXITCODE" }
           if (-not ($out -match 'sidedesk-cli pair')) { throw "사용법이 없음: $out" }
           Write-Output "종료 코드 1, $out"
+          exit 0
       - uses: actions/upload-artifact@v4
         with:
           name: sidedesk-windows
