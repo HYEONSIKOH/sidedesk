@@ -17,6 +17,10 @@ class FakeLink : ComputerLink {
     val subscriptions = mutableListOf<Subscription>()
     val kills = mutableListOf<Command>()
     override val shortcuts = MutableStateFlow<List<Shortcut>?>(null)
+    override val nowPlaying = MutableStateFlow<NowPlaying?>(null)
+    override val volume = MutableStateFlow<Volume?>(null)
+    override val artworks = MutableStateFlow<Map<Long, ByteArray>>(emptyMap())
+    var acceptMusic = true
     /** runShortcut 이 받아들일지 */
     var acceptShortcuts = true
 
@@ -42,6 +46,12 @@ class FakeLink : ComputerLink {
 
     override fun runShortcut(command: RunShortcut): Boolean {
         if (!acceptShortcuts) return false
+        kills += command
+        return true
+    }
+
+    override fun music(command: MusicCommand): Boolean {
+        if (!acceptMusic) return false
         kills += command
         return true
     }

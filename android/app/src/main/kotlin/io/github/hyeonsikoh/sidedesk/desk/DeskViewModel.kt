@@ -27,6 +27,7 @@ enum class Screen(val topic: Topic) {
     Perf(Topic.Perf),
     Processes(Topic.Processes),
     Shortcuts(Topic.Shortcuts),
+    Music(Topic.Music),
 }
 
 data class DeskState(

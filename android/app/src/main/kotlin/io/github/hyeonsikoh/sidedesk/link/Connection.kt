@@ -86,12 +86,15 @@ class Connection(
                 location.take(owner.location.get())?.let { place ->
                     session.sendLocation((place as? LocationState.At)?.let { Place(it.latitude, it.longitude) })
                 }
+                // 볼륨은 대기열 밖이다. 이 연결에서 든 마지막 값만 한 번 보낸다.
+                mine?.let(owner::takeVolume)?.let { music(session, it) }
                 for (command in owner.pendingCommands(computer)) {
                     if (!sentCommands.add(command.commandId)) continue
                     when (command) {
                         is KillCommand ->
                             session.killProcess(command.commandId.toULong(), command.pid.toUInt(), command.startedAt.toULong())
                         is RunShortcut -> runShortcut(session, command)
+                        is MusicCommand -> music(session, command)
                     }
                 }
                 flush()
@@ -128,6 +131,11 @@ class Connection(
                         is PhoneEvent.AiSessions -> mine?.let { owner.receivedSessions(it, event.items.map(::session)) }
                         is PhoneEvent.AiAlert -> mine?.let { owner.receivedAlert(it, alert(event.value)) }
                         is PhoneEvent.Shortcuts -> mine?.let { owner.receivedShortcuts(it, event.book.toLong(), event.items.map(::shortcut)) }
+                        is PhoneEvent.NowPlaying -> mine?.let { owner.receivedNowPlaying(it, nowPlaying(event.value)) }
+                        is PhoneEvent.Artwork -> mine?.let { owner.receivedArtwork(it, event.hash.toLong(), event.jpeg) }
+                        is PhoneEvent.Volume -> mine?.let {
+                            event.value.let { v -> owner.receivedVolume(it, Volume(v.available, v.level.toInt(), v.muted, v.settable)) }
+                        }
                         is PhoneEvent.Forge -> mine?.let { owner.receivedForge(it, Forge(forge(event.github), forge(event.gitlab))) }
                         is PhoneEvent.CommandResult ->
                             owner.receivedResult(CommandResult(event.requestId.toLong(), event.ok, event.reason))
@@ -180,6 +188,7 @@ class Connection(
             Topic.Weather -> View.WEATHER
             Topic.Ai -> View.AI
             Topic.Shortcuts -> View.SHORTCUTS
+            Topic.Music -> View.MUSIC
             Topic.Perf -> View.PERFORMANCE
             Topic.Processes -> View.PROCESSES
         }
@@ -252,6 +261,36 @@ class Connection(
                 notices = it.notices.toInt(),
             )
         }
+
+        private fun music(session: PhoneSession, command: MusicCommand) = session.musicCommand(
+            command.commandId.toULong(),
+            when (command.action) {
+                MusicAction.PlayPause -> uniffi.sidedesk_core.MusicAction.PLAY_PAUSE
+                MusicAction.Next -> uniffi.sidedesk_core.MusicAction.NEXT
+                MusicAction.Previous -> uniffi.sidedesk_core.MusicAction.PREVIOUS
+                MusicAction.SetVolume -> uniffi.sidedesk_core.MusicAction.SET_VOLUME
+            },
+            command.level.toUInt(),
+        )
+
+        private fun nowPlaying(it: uniffi.sidedesk_core.NowPlayingInfo) = NowPlaying(
+            player = when (it.player) {
+                uniffi.sidedesk_core.MusicPlayer.MUSIC -> MusicPlayer.Music
+                uniffi.sidedesk_core.MusicPlayer.SPOTIFY -> MusicPlayer.Spotify
+                uniffi.sidedesk_core.MusicPlayer.SYSTEM -> MusicPlayer.System
+                uniffi.sidedesk_core.MusicPlayer.NONE -> MusicPlayer.None
+            },
+            title = it.title,
+            artist = it.artist,
+            album = it.album,
+            durationMs = it.durationMs.toLong(),
+            artwork = it.artwork.toLong(),
+            playing = it.playing,
+            positionMs = it.positionMs.toLong(),
+            canPlay = it.canPlay,
+            canNext = it.canNext,
+            canPrevious = it.canPrevious,
+        )
 
         private fun runShortcut(session: PhoneSession, command: RunShortcut) =
             session.runShortcut(command.commandId.toULong(), command.shortcutId.toUInt(), command.book.toULong())

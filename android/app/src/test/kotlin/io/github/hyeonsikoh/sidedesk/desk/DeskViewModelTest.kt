@@ -79,9 +79,9 @@ class DeskViewModelTest {
         desk.setVisible(false)
         assertEquals(
             listOf(
-                Subscription(Topic.Weather, setOf(Topic.Ai, Topic.Perf, Topic.Processes, Topic.Shortcuts)),
-                Subscription(Topic.Perf, setOf(Topic.Weather, Topic.Ai, Topic.Processes, Topic.Shortcuts)),
-                Subscription(Topic.Processes, setOf(Topic.Weather, Topic.Ai, Topic.Perf, Topic.Shortcuts)),
+                Subscription(Topic.Weather, setOf(Topic.Ai, Topic.Perf, Topic.Processes, Topic.Shortcuts, Topic.Music)),
+                Subscription(Topic.Perf, setOf(Topic.Weather, Topic.Ai, Topic.Processes, Topic.Shortcuts, Topic.Music)),
+                Subscription(Topic.Processes, setOf(Topic.Weather, Topic.Ai, Topic.Perf, Topic.Shortcuts, Topic.Music)),
                 Subscription.NONE,
             ),
             link.subscriptions,
@@ -92,7 +92,7 @@ class DeskViewModelTest {
     fun startsAtHome() {
         val desk = DeskViewModel(link) { 1L }
         assertEquals(Screen.Home, desk.state.value.big)
-        assertEquals(listOf(Screen.Ai, Screen.Perf, Screen.Processes, Screen.Shortcuts), desk.state.value.small)
+        assertEquals(listOf(Screen.Ai, Screen.Perf, Screen.Processes, Screen.Shortcuts, Screen.Music), desk.state.value.small)
     }
 
     @Test
@@ -107,9 +107,11 @@ class DeskViewModelTest {
         desk.next()
         assertEquals(Screen.Shortcuts, desk.state.value.big)
         desk.next()
+        assertEquals(Screen.Music, desk.state.value.big)
+        desk.next()
         assertEquals(Screen.Home, desk.state.value.big)
         desk.previous()
-        assertEquals(Screen.Shortcuts, desk.state.value.big)
+        assertEquals(Screen.Music, desk.state.value.big)
     }
 
     @Test
@@ -224,8 +226,8 @@ class DeskViewModelTest {
         val desk = DeskViewModel(link) { 1L }
         desk.setVisible(true)
         desk.show(Screen.Ai)
-        assertEquals(Subscription(Topic.Ai, setOf(Topic.Weather, Topic.Perf, Topic.Processes, Topic.Shortcuts)), link.subscriptions.last())
+        assertEquals(Subscription(Topic.Ai, setOf(Topic.Weather, Topic.Perf, Topic.Processes, Topic.Shortcuts, Topic.Music)), link.subscriptions.last())
         desk.show(Screen.Shortcuts)
-        assertEquals(Subscription(Topic.Shortcuts, setOf(Topic.Weather, Topic.Ai, Topic.Perf, Topic.Processes)), link.subscriptions.last())
+        assertEquals(Subscription(Topic.Shortcuts, setOf(Topic.Weather, Topic.Ai, Topic.Perf, Topic.Processes, Topic.Music)), link.subscriptions.last())
     }
 }

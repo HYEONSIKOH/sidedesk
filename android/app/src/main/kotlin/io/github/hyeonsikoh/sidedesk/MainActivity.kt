@@ -21,6 +21,9 @@ import io.github.hyeonsikoh.sidedesk.ai.PhoneBuzzer
 import io.github.hyeonsikoh.sidedesk.clock.ClockViewModel
 import io.github.hyeonsikoh.sidedesk.desk.AiPart
 import io.github.hyeonsikoh.sidedesk.desk.ShortcutPart
+import io.github.hyeonsikoh.sidedesk.desk.MusicPart
+import io.github.hyeonsikoh.sidedesk.music.MusicActions
+import io.github.hyeonsikoh.sidedesk.music.MusicViewModel
 import io.github.hyeonsikoh.sidedesk.shortcut.ShortcutViewModel
 import io.github.hyeonsikoh.sidedesk.clock.PickActions
 import io.github.hyeonsikoh.sidedesk.clock.PrefsSettings
@@ -57,6 +60,9 @@ class MainActivity : ComponentActivity() {
     }
     private val shortcuts: ShortcutViewModel by viewModels {
         viewModelFactory { initializer { ShortcutViewModel(app.link, PhoneBuzzer(app)) { newRequestId().toLong() } } }
+    }
+    private val music: MusicViewModel by viewModels {
+        viewModelFactory { initializer { MusicViewModel(app.link, PhoneBuzzer(app), { newRequestId().toLong() }) } }
     }
     private val clock: ClockViewModel by viewModels {
         viewModelFactory { initializer { ClockViewModel(app.link, settings) } }
@@ -104,6 +110,11 @@ class MainActivity : ComponentActivity() {
                         actions,
                         aiPart,
                         ShortcutPart(shortcuts.state.collectAsStateWithLifecycle().value, shortcuts::press),
+                        MusicPart(
+                            music.state.collectAsStateWithLifecycle().value,
+                            { System.nanoTime() / 1_000_000 },
+                            remember { MusicActions(music::playPause, music::next, music::previous, music::dragVolume, music::releaseVolume) },
+                        ),
                         modal = if (askLocation.value) LOCATION_NOTICE else null,
                         onModal = ::answerLocation,
                     )
