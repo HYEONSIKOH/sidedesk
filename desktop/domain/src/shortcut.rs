@@ -757,7 +757,19 @@ mod tests {
                 long.exists(),
                 std::fs::canonicalize(&short)
             );
-            assert_eq!(check_path(&short), Err("실행 파일은 앱 열기로 등록하세요"));
+            // 서버 백신이 실행 꼴 파일을 만든 직후 지우는 일이 있다(CI 에서 바로 앞 줄은 있었고
+            // 다음 줄에서 사라진 것을 봄). 그러면 실제 경로를 못 풀어 "찾지 못함"으로 거절된다.
+            // 어느 쪽이든 짧은 이름이 통과하지 않는 것이 이 시험의 뜻이다.
+            let result = check_path(&short);
+            eprintln!(
+                "짧은 이름 결과: {result:?}, 그 뒤 파일 있음: {}",
+                long.exists()
+            );
+            match result {
+                Err("실행 파일은 앱 열기로 등록하세요") => {}
+                Err("파일이나 폴더를 찾지 못했습니다") => assert!(!long.exists()),
+                other => panic!("짧은 이름이 거절되지 않음: {other:?}"),
+            }
         }
         // 없는 파일(실제 경로를 못 푸는 것)은 짧은 이름 꼴이어도 받지 않는다.
         let missing = folder.join("GONE~1.SET");
