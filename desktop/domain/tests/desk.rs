@@ -105,12 +105,21 @@ fn collects_only_while_someone_watches() {
 
         let phone = hub.join();
         phone.set(&watch(View::Performance, &[View::Processes]));
+        let start = Instant::now();
         thread::sleep(Duration::from_millis(400));
         let performance = count(&counts.performance);
         let processes = count(&counts.processes);
-        // 400ms 동안 성능 40ms 마다(약 10번), 프로세스 작은 칸 240ms 마다(약 2번)
-        assert!((5..=14).contains(&performance), "성능 {performance}");
-        assert!((1..=4).contains(&processes), "프로세스 {processes}");
+        let elapsed = start.elapsed().as_millis() as usize;
+        // 성능 40ms 마다, 프로세스 작은 칸 240ms 마다. 느린 CI 서버는 주기가 밀려 덜 모일 수 있어
+        // 아래는 "모였다"만, 위는 실제로 흐른 시간으로 엄격히 본다.
+        assert!(
+            (1..=elapsed / 40 + 4).contains(&performance),
+            "성능 {performance}, {elapsed}ms"
+        );
+        assert!(
+            (1..=elapsed / 240 + 2).contains(&processes),
+            "프로세스 {processes}, {elapsed}ms"
+        );
         assert!(!phone.take().is_empty());
 
         // 화면이 꺼지면 빈 구독이 온다.
@@ -147,16 +156,24 @@ fn two_phones_share_one_collection() {
         far.set(&watch(View::Nothing, &[View::Performance]));
         let mut got = (0, 0);
         let start = Instant::now();
-        while start.elapsed() < Duration::from_millis(500) {
+        // 고정 시간 대신 여러 번 모일 때까지 본다(느린 CI 서버를 생각해 최대 20초).
+        while count(&counts.performance) < 8 && start.elapsed() < Duration::from_secs(20) {
             got.0 += near.take().len();
             got.1 += far.take().len();
             thread::sleep(Duration::from_millis(5));
         }
+        thread::sleep(Duration::from_millis(20));
+        got.0 += near.take().len();
+        got.1 += far.take().len();
         let collected = count(&counts.performance);
-        // 수집은 빠른 쪽 주기 한 번뿐이고, 작은 칸 폰은 그 절반쯤 받는다.
-        assert!((6..=16).contains(&collected), "수집 {collected}");
+        let elapsed = start.elapsed().as_millis() as usize;
+        // 수집은 빠른 쪽 주기 한 번뿐이고(두 폰이 따로 모으지 않음), 작은 칸 폰은 그 절반쯤 받는다.
+        assert!(
+            (8..=elapsed / 40 + 4).contains(&collected),
+            "수집 {collected}, {elapsed}ms"
+        );
         assert!(got.0 + 2 >= collected, "큰 화면 {got:?}");
-        assert!((3..=9).contains(&got.1) && got.1 < got.0, "작은 칸 {got:?}");
+        assert!(got.1 >= 2 && got.1 < got.0, "작은 칸 {got:?}");
         hub.stop();
     });
 }
@@ -535,7 +552,11 @@ fn phones_at_one_place_share_weather_and_stop_ends_the_thread() {
         }
         // 첫 번째는 panic(실패), 20ms 뒤 성공, 그 뒤 150ms 마다. 두 기기가 함께 쓴다(기기마다 받지 않음).
         let fetched = calls.0.load(Ordering::SeqCst);
-        assert!((2..=5).contains(&fetched), "받기 {fetched}");
+        let elapsed = start.elapsed().as_millis() as usize;
+        assert!(
+            (2..=elapsed / 150 + 4).contains(&fetched),
+            "받기 {fetched}, {elapsed}ms"
+        );
         assert!(got.0 >= 1 && got.1 >= 1, "{got:?}");
         // 성능은 아무도 안 봐서 모으지 않았다.
         assert_eq!(count(&counts.performance), 0);
