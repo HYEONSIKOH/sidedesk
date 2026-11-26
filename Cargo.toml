@@ -7,6 +7,7 @@ members = [
     "desktop/mac",
     "desktop/windows",
     "desktop/link",
+    "desktop/window",
     "desktop/app",
 ]
 

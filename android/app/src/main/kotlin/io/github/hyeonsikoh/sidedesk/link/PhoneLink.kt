@@ -205,8 +205,8 @@ class PhoneLink(private val keys: KeyFiles) : ComputerLink {
 
         fun reason(error: LinkException) = when (error) {
             is LinkException.Version -> "컴퓨터와 버전이 다름. 둘 다 최신으로 업데이트"
-            is LinkException.NotPaired -> "짝을 맺지 않은 컴퓨터. 컴퓨터에서 sidedesk pair 를 실행"
-            is LinkException.Rejected -> "짝 맺기를 취소함"
+            is LinkException.NotPaired -> "등록되지 않은 컴퓨터. 컴퓨터의 SideDesk 설정에서 이 폰을 등록하세요"
+            is LinkException.Rejected -> "등록을 취소함"
             is LinkException.Broken -> "연결 오류: ${error.reason}"
         }
     }

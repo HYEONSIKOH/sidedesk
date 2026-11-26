@@ -1,0 +1,69 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<title>SideDesk 설정</title>
+<link rel="stylesheet" href="app.css">
+</head>
+<body>
+<header class="top">
+  <svg class="logo" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3 L22 20 H2 Z" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linejoin="round"/></svg>
+  <span class="brand">SideDesk</span>
+</header>
+<main class="board">
+  <nav class="menu">
+    <p class="menu-title">설정</p>
+    <button class="menu-item" data-page="phones">기기</button>
+    <button class="menu-item" data-page="general">일반</button>
+    <button class="menu-item" data-page="about">정보</button>
+  </nav>
+  <section class="page" id="phones">
+    <h1>기기</h1>
+    <p class="lead">이 컴퓨터에 등록하거나 연결한 기기를 확인하고 관리하는 페이지입니다.</p>
+    <p class="notice" id="notice" hidden></p>
+    <table>
+      <thead><tr><th>이름</th><th>일련번호</th><th>연결 방식</th><th>상태</th><th class="end">관리</th></tr></thead>
+      <tbody id="device-rows"></tbody>
+    </table>
+    <p class="empty" id="device-empty">기기가 없습니다. 기기를 USB로 연결하고 SideDesk 앱을 여세요.</p>
+  </section>
+  <section class="page" id="general">
+    <h1>일반</h1>
+    <p class="lead">SideDesk 창의 모양을 정합니다.</p>
+    <dl class="facts">
+      <dt>화면 모드</dt>
+      <dd>
+        <div class="segment" role="radiogroup" aria-label="화면 모드">
+          <button role="radio" data-mode="auto">자동</button>
+          <button role="radio" data-mode="light">밝게</button>
+          <button role="radio" data-mode="dark">어둡게</button>
+        </div>
+        <p class="hint">자동은 컴퓨터의 화면 모드 설정을 따릅니다.</p>
+      </dd>
+    </dl>
+  </section>
+  <section class="page" id="about">
+    <h1>정보</h1>
+    <p class="lead">이 컴퓨터의 SideDesk 정보입니다.</p>
+    <dl class="facts">
+      <dt>컴퓨터 이름</dt><dd id="computer-name"></dd>
+      <dt>버전</dt><dd id="version"></dd>
+      <dt>이 컴퓨터의 키</dt><dd id="fingerprint" class="mono"></dd>
+    </dl>
+  </section>
+</main>
+<div class="veil" id="pairing" hidden>
+  <div class="dialog" role="dialog" aria-modal="true" aria-labelledby="pairing-title">
+    <h2 id="pairing-title">기기 등록</h2>
+    <p class="lead" id="pairing-phone"></p>
+    <p class="code" id="pairing-code"></p>
+    <p class="question" id="pairing-question"></p>
+    <div class="actions">
+      <button class="button primary" id="pairing-yes">등록</button>
+      <button class="button outline" id="pairing-no">취소</button>
+    </div>
+  </div>
+</div>
+<script src="app.js"></script>
+</body>
+</html>

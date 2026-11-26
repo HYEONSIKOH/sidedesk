@@ -31,9 +31,9 @@ pub enum PhoneEvent {
 pub enum LinkError {
     #[error("버전이 다름")]
     Version { mine: u8, theirs: u8 },
-    #[error("짝을 맺지 않은 컴퓨터")]
+    #[error("등록되지 않은 컴퓨터")]
     NotPaired,
-    #[error("짝 맺기를 거절함")]
+    #[error("등록을 취소함")]
     Rejected,
     #[error("{reason}")]
     Broken { reason: String },

@@ -3,7 +3,7 @@
     <string name="app_name">SideDesk</string>
     <string name="home_waiting">컴퓨터를 기다리는 중</string>
     <string name="home_lost">연결 끊김</string>
-    <string name="pairing_question">컴퓨터에 뜬 숫자와 같나요?</string>
-    <string name="pairing_yes">맞음</string>
-    <string name="pairing_no">아님</string>
+    <string name="pairing_question">컴퓨터에 표시된 번호와 같으면 등록을 누르세요.</string>
+    <string name="pairing_yes">등록</string>
+    <string name="pairing_no">취소</string>
 </resources>

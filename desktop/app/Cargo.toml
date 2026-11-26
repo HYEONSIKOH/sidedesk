@@ -7,6 +7,7 @@ edition.workspace = true
 sidedesk-core = { path = "../../core" }
 sidedesk-domain = { path = "../domain" }
 sidedesk-link = { path = "../link" }
+sidedesk-window = { path = "../window" }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 sidedesk-mac = { path = "../mac" }

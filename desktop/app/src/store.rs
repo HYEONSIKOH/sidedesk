@@ -3,9 +3,10 @@
 use std::fs::{self, File, OpenOptions};
 use std::io::{ErrorKind, Write};
 use std::path::{Path, PathBuf};
+use std::sync::Mutex;
 
 use sidedesk_core::{Identity, KEY_LEN};
-use sidedesk_domain::{Keys, PortError};
+use sidedesk_domain::{Keys, Paired, PortError};
 
 const IDENTITY: &str = "identity.key";
 const PHONES: &str = "phones.txt";
@@ -44,6 +45,8 @@ pub fn lock(folder: &Path) -> Result<File, PortError> {
 
 pub struct FileKeys {
     folder: PathBuf,
+    /// 짝 목록을 읽고 고쳐 쓰는 동안 다른 스레드가 끼어들지 못하게 한다.
+    phones: Mutex<()>,
 }
 
 impl FileKeys {
@@ -53,12 +56,17 @@ impl FileKeys {
         if let Ok(entries) = fs::read_dir(&folder) {
             for entry in entries.flatten() {
                 let name = entry.file_name().to_string_lossy().into_owned();
-                if name.starts_with(IDENTITY) && name.ends_with(".tmp") {
+                if (name.starts_with(IDENTITY) || name.starts_with(PHONES))
+                    && name.ends_with(".tmp")
+                {
                     let _ = fs::remove_file(entry.path());
                 }
             }
         }
-        Self { folder }
+        Self {
+            folder,
+            phones: Mutex::new(()),
+        }
     }
 
     fn read_identity(&self, path: &Path) -> Result<Identity, PortError> {
@@ -101,7 +109,52 @@ impl Keys for FileKeys {
         }
     }
 
-    fn trusted(&self) -> Result<Vec<[u8; KEY_LEN]>, PortError> {
+    fn trusted(&self) -> Result<Vec<Paired>, PortError> {
+        let _held = self.phones.lock().unwrap_or_else(|lock| lock.into_inner());
+        self.read_phones()
+    }
+
+    fn trust(&self, key: [u8; KEY_LEN], name: &str, serial: &str) -> Result<(), PortError> {
+        let _held = self.phones.lock().unwrap_or_else(|lock| lock.into_inner());
+        let mut phones = self.read_phones()?;
+        let fresh = Paired {
+            key,
+            name: name.to_owned(),
+            serial: serial.to_owned(),
+        };
+        match phones.iter_mut().find(|paired| paired.key == key) {
+            Some(saved) => *saved = fresh,
+            None => phones.push(fresh),
+        }
+        self.write_phones(&phones)
+    }
+
+    fn update(&self, key: [u8; KEY_LEN], name: &str, serial: &str) -> Result<(), PortError> {
+        let _held = self.phones.lock().unwrap_or_else(|lock| lock.into_inner());
+        let mut phones = self.read_phones()?;
+        let Some(saved) = phones.iter_mut().find(|paired| paired.key == key) else {
+            return Ok(());
+        };
+        saved.name = name.to_owned();
+        saved.serial = serial.to_owned();
+        self.write_phones(&phones)
+    }
+
+    fn forget(&self, key: [u8; KEY_LEN]) -> Result<(), PortError> {
+        let _held = self.phones.lock().unwrap_or_else(|lock| lock.into_inner());
+        let mut phones = self.read_phones()?;
+        let before = phones.len();
+        phones.retain(|paired| paired.key != key);
+        if phones.len() == before {
+            return Ok(());
+        }
+        self.write_phones(&phones)
+    }
+}
+
+impl FileKeys {
+    /// 한 줄에 `키16진수<TAB>이름<TAB>일련번호`. 이름이나 일련번호가 없는 옛 줄도 읽는다.
+    fn read_phones(&self) -> Result<Vec<Paired>, PortError> {
         let path = self.folder.join(PHONES);
         let text = match fs::read_to_string(&path) {
             Ok(text) => text,
@@ -111,21 +164,34 @@ impl Keys for FileKeys {
         text.lines()
             .filter(|line| !line.trim().is_empty())
             .map(|line| {
-                decode(line.trim())
-                    .ok_or_else(|| PortError::new(format!("{}: 깨진 줄이 있음", path.display())))
+                let mut fields = line.split('\t');
+                let key = decode(fields.next().unwrap_or("").trim())
+                    .ok_or_else(|| PortError::new(format!("{}: 깨진 줄이 있음", path.display())))?;
+                Ok(Paired {
+                    key,
+                    name: fields.next().unwrap_or("").trim().to_owned(),
+                    serial: fields.next().unwrap_or("").trim().to_owned(),
+                })
             })
             .collect()
     }
 
-    fn trust(&self, key: [u8; KEY_LEN]) -> Result<(), PortError> {
-        let mut keys = self.trusted()?;
-        if keys.contains(&key) {
-            return Ok(());
-        }
-        keys.push(key);
-        let text: String = keys.iter().map(|key| encode(key) + "\n").collect();
+    fn write_phones(&self, phones: &[Paired]) -> Result<(), PortError> {
+        let text: String = phones
+            .iter()
+            .map(|paired| {
+                format!(
+                    "{}\t{}\t{}\n",
+                    encode(&paired.key),
+                    paired.name.replace(['\t', '\n'], " "),
+                    paired.serial.replace(['\t', '\n'], " ")
+                )
+            })
+            .collect();
         let path = self.folder.join(PHONES);
-        let temporary = self.folder.join(format!("{PHONES}.tmp"));
+        let temporary = self
+            .folder
+            .join(format!("{PHONES}.{}.tmp", std::process::id()));
         let _ = fs::remove_file(&temporary);
         let mut file = private_file(&temporary, true).map_err(|error| failed(&temporary, error))?;
         file.write_all(text.as_bytes())
@@ -230,14 +296,87 @@ mod tests {
     }
 
     #[test]
-    fn trusts_each_phone_once() {
+    fn trusts_each_phone_once_and_keeps_the_newest_name() {
         let folder = temporary("trust");
         let keys = FileKeys::new(folder);
         assert!(keys.trusted().unwrap().is_empty());
-        keys.trust([1; KEY_LEN]).unwrap();
-        keys.trust([2; KEY_LEN]).unwrap();
-        keys.trust([1; KEY_LEN]).unwrap();
-        assert_eq!(keys.trusted().unwrap(), [[1; KEY_LEN], [2; KEY_LEN]]);
+        keys.trust([1; KEY_LEN], "A", "s").unwrap();
+        keys.trust([2; KEY_LEN], "B", "s").unwrap();
+        keys.trust([1; KEY_LEN], "A2", "s").unwrap();
+        let names: Vec<_> = keys
+            .trusted()
+            .unwrap()
+            .into_iter()
+            .map(|p| (p.key[0], p.name))
+            .collect();
+        assert_eq!(names, [(1, "A2".to_owned()), (2, "B".to_owned())]);
+    }
+
+    #[test]
+    fn update_does_not_bring_back_a_forgotten_phone() {
+        let folder = temporary("update");
+        let keys = FileKeys::new(folder);
+        keys.trust([1; KEY_LEN], "", "").unwrap();
+        keys.update([1; KEY_LEN], "SM A716S", "R3C").unwrap();
+        keys.forget([1; KEY_LEN]).unwrap();
+        keys.update([1; KEY_LEN], "SM A716S", "R3C").unwrap();
+        assert!(keys.trusted().unwrap().is_empty());
+    }
+
+    #[test]
+    fn reads_old_lines_without_a_name() {
+        let folder = temporary("old");
+        fs::write(folder.join(PHONES), format!("{}\n", encode(&[3; KEY_LEN]))).unwrap();
+        assert_eq!(
+            FileKeys::new(folder).trusted().unwrap(),
+            [Paired {
+                key: [3; KEY_LEN],
+                name: String::new(),
+                serial: String::new()
+            }]
+        );
+    }
+
+    #[test]
+    fn forgets_a_phone() {
+        let folder = temporary("forget");
+        let keys = FileKeys::new(folder);
+        keys.trust([1; KEY_LEN], "A", "s").unwrap();
+        keys.trust([2; KEY_LEN], "B", "s").unwrap();
+        keys.forget([1; KEY_LEN]).unwrap();
+        keys.forget([9; KEY_LEN]).unwrap();
+        assert_eq!(
+            keys.trusted().unwrap(),
+            [Paired {
+                key: [2; KEY_LEN],
+                name: "B".into(),
+                serial: "s".into()
+            }]
+        );
+    }
+
+    #[test]
+    fn forgetting_and_trusting_together_lose_nothing() {
+        let folder = temporary("together");
+        let keys = FileKeys::new(folder);
+        for i in 0..20u8 {
+            keys.trust([i; KEY_LEN], "x", "s").unwrap();
+        }
+        std::thread::scope(|scope| {
+            for i in 0..20u8 {
+                let keys = &keys;
+                scope.spawn(move || keys.forget([i; KEY_LEN]).unwrap());
+                scope.spawn(move || keys.trust([100 + i; KEY_LEN], "y", "s").unwrap());
+            }
+        });
+        let left: Vec<_> = keys
+            .trusted()
+            .unwrap()
+            .into_iter()
+            .map(|p| p.key[0])
+            .collect();
+        assert_eq!(left.len(), 20);
+        assert!(left.iter().all(|first| *first >= 100));
     }
 
     #[test]

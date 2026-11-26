@@ -59,14 +59,14 @@ impl AdbLinks {
 impl PhoneLinks for AdbLinks {
     fn attached(&self) -> Result<Vec<Phone>, PortError> {
         let mut stream = self.open(Some(TRANSFER))?;
-        request(&mut stream, "host:devices")?;
+        request(&mut stream, "host:devices-l")?;
         Ok(phones(&read_text(&mut stream)?))
     }
 
     fn watch(&self, changed: &mut dyn FnMut(Vec<Phone>)) -> Result<(), PortError> {
         // 바뀔 때만 오므로 시간 제한을 두지 않는다.
         let mut stream = self.open(None)?;
-        request(&mut stream, "host:track-devices")?;
+        request(&mut stream, "host:track-devices-l")?;
         loop {
             changed(phones(&read_text(&mut stream)?));
         }
@@ -76,7 +76,7 @@ impl PhoneLinks for AdbLinks {
         let mut stream = self.open(Some(TRANSFER))?;
         request(&mut stream, &format!("host:transport:{id}"))?;
         request(&mut stream, SOCKET).map_err(|refusal| match refusal {
-            Refusal::Said(_) => PortError::new("폰의 앱이 꺼져 있거나 뒤에 있음"),
+            Refusal::Said(_) => PortError::new("기기에서 SideDesk 앱을 열어 주세요"),
             Refusal::Broken(error) => error,
         })?;
         stream.set_read_timeout(Some(POLL)).map_err(broken)?;
@@ -116,12 +116,21 @@ impl Conn for AdbConn {
     }
 }
 
+/// `devices-l` 한 줄: 일련번호, 상태, 그 뒤로 `product:… model:… device:…` 가 공백으로 이어진다.
 fn phones(list: &str) -> Vec<Phone> {
     list.lines()
-        .filter_map(|line| line.split_once('\t'))
-        .map(|(id, state)| Phone {
-            id: id.to_owned(),
-            blocked: blocked(state),
+        .filter_map(|line| {
+            let mut words = line.split_whitespace();
+            let id = words.next()?;
+            let state = words.next()?;
+            let model = words
+                .find_map(|word| word.strip_prefix("model:"))
+                .map(|model| model.replace('_', " "));
+            Some(Phone {
+                id: id.to_owned(),
+                model,
+                blocked: blocked(state),
+            })
         })
         .collect()
 }
@@ -129,8 +138,8 @@ fn phones(list: &str) -> Vec<Phone> {
 fn blocked(state: &str) -> Option<String> {
     match state {
         "device" => None,
-        "unauthorized" => Some("폰에서 USB 디버깅을 허용하지 않음".to_owned()),
-        "offline" => Some("폰이 응답하지 않음".to_owned()),
+        "unauthorized" => Some("기기에서 USB 디버깅을 허용해 주세요".to_owned()),
+        "offline" => Some("기기가 응답하지 않습니다".to_owned()),
         other => Some(format!("보낼 수 없는 상태: {other}")),
     }
 }
@@ -196,22 +205,31 @@ mod tests {
 
     #[test]
     fn lists_phones_with_the_reason_they_are_blocked() {
-        let (links, server) = adb(&["OKAY0021a\tdevice\nb\tunauthorized\nc\toffline"], "");
+        let list = "R3CN704E5EX            device usb:1X product:a71xskt model:SM_A716S device:a71x transport_id:23\n\
+                    b                      unauthorized usb:2X transport_id:24\n\
+                    c                      offline transport_id:25\n";
+        let answer: &'static str =
+            Box::leak(format!("OKAY{:04x}{list}", list.len()).into_boxed_str());
+        let answers: &'static [&'static str] = Box::leak(vec![answer].into_boxed_slice());
+        let (links, server) = adb(answers, "");
         let phones = links.attached().unwrap();
+        assert_eq!(phones[0].id, "R3CN704E5EX");
+        assert_eq!(phones[0].model.as_deref(), Some("SM A716S"));
         assert_eq!(phones[0].blocked, None);
+        assert_eq!(phones[1].model, None);
         assert!(phones[1].blocked.as_ref().unwrap().contains("허용"));
         assert!(phones[2].blocked.is_some());
-        assert_eq!(server.join().unwrap().0, ["host:devices"]);
+        assert_eq!(server.join().unwrap().0, ["host:devices-l"]);
     }
 
     #[test]
     fn watches_phones_come_and_go() {
-        let (links, server) = adb(&["OKAY"], "0009a\tdevice\n00000009a\tdevice\n");
+        let (links, server) = adb(&["OKAY"], "0009a device\n00000009a device\n");
         let mut seen = Vec::new();
         let ended = links.watch(&mut |phones| seen.push(phones.len()));
         assert!(ended.is_err());
         assert_eq!(seen, [1, 0, 1]);
-        assert_eq!(server.join().unwrap().0, ["host:track-devices"]);
+        assert_eq!(server.join().unwrap().0, ["host:track-devices-l"]);
     }
 
     #[test]
@@ -237,7 +255,7 @@ mod tests {
     #[test]
     fn tells_a_missing_app_from_a_missing_phone() {
         let (links, _server) = adb(&["OKAY", "FAIL0006closed"], "");
-        assert!(links.connect("a").err().unwrap().0.contains("앱이 꺼져"));
+        assert!(links.connect("a").err().unwrap().0.contains("앱을 열어"));
         let (links, _server) = adb(&["FAIL0004gone"], "");
         assert!(links.connect("a").err().unwrap().0.contains("gone"));
     }
