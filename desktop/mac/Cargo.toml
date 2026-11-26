@@ -6,13 +6,14 @@ edition.workspace = true
 [target.'cfg(target_os = "macos")'.dependencies]
 block2 = "0.6"
 core-foundation = "0.9"
+core-foundation-sys = "0.8"
 libc = "0.2"
 sidedesk-domain = { path = "../domain" }
 sidedesk-weather = { path = "../weather" }
 system-configuration-sys = "0.6"
 sidedesk-core = { path = "../../core" }
 objc2 = "0.6"
-objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "NSApplication", "NSWorkspace", "NSOpenPanel", "NSSavePanel", "NSPanel", "NSWindow", "NSResponder"] }
+objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "NSApplication", "NSWorkspace", "NSOpenPanel", "NSSavePanel", "NSPanel", "NSWindow", "NSResponder", "NSRunningApplication"] }
 dispatch2 = "0.3"
 objc2-core-bluetooth = "0.3"
 objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSString", "NSData", "NSDictionary", "NSArray", "NSValue", "NSStream", "NSUUID", "NSError", "NSObject", "NSEnumerator", "NSURLSession", "NSURLRequest", "NSURL", "NSURLResponse", "NSDate", "NSBundle", "block2"] }

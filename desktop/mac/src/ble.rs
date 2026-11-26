@@ -620,8 +620,9 @@ impl Conn for BleConn {
         }
     }
 
+    /// 큰 그림도 보낼 수 있게, 시간 제한은 마지막으로 조금이라도 보낸 뒤부터 센다.
     fn send(&mut self, bytes: &[u8]) -> Result<(), PortError> {
-        let start = Instant::now();
+        let mut progress = Instant::now();
         let mut sent = 0;
         while sent < bytes.len() {
             if self.broken() {
@@ -639,9 +640,12 @@ impl Conn for BleConn {
                     return Err(PortError::new("블루투스로 보내지 못했습니다"));
                 }
                 sent += wrote as usize;
+                if wrote > 0 {
+                    progress = Instant::now();
+                }
                 continue;
             }
-            if start.elapsed() > WRITE_LIMIT {
+            if progress.elapsed() > WRITE_LIMIT {
                 return Err(PortError::new("블루투스로 보내는 데 너무 오래 걸립니다"));
             }
             thread::sleep(Duration::from_millis(2));

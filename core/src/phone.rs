@@ -65,6 +65,17 @@ pub enum PhoneEvent {
         book: u64,
         items: Vec<ShortcutInfo>,
     },
+    NowPlaying {
+        value: NowPlayingInfo,
+    },
+    /// 앨범 그림. 해시로 기억해 두었다가 NowPlaying.artwork 와 맞춰 쓴다.
+    Artwork {
+        hash: u64,
+        jpeg: Vec<u8>,
+    },
+    Volume {
+        value: VolumeInfo,
+    },
 }
 
 /// 폰에 보이는 자료. 시계는 폰이 혼자 그리므로 없다.
@@ -76,6 +87,7 @@ pub enum View {
     /// 큰 화면이면 세션과 GitHub/GitLab, 작은 칸이면 세션만
     Ai,
     Shortcuts,
+    Music,
 }
 
 impl From<View> for crate::View {
@@ -86,6 +98,7 @@ impl From<View> for crate::View {
             View::Weather => Self::Weather,
             View::Ai => Self::Ai,
             View::Shortcuts => Self::Shortcuts,
+            View::Music => Self::Music,
         }
     }
 }
@@ -257,6 +270,100 @@ mirror!(
     SignedOut,
     Failed
 );
+
+/// None 이면 재생 중인 것이 없음. 모르는 값도 None.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, uniffi::Enum)]
+pub enum MusicPlayer {
+    None,
+    Music,
+    Spotify,
+    System,
+}
+
+impl MusicPlayer {
+    fn from_wire(value: i32) -> Self {
+        match crate::MusicPlayer::try_from(value) {
+            Ok(crate::MusicPlayer::Music) => Self::Music,
+            Ok(crate::MusicPlayer::Spotify) => Self::Spotify,
+            Ok(crate::MusicPlayer::System) => Self::System,
+            _ => Self::None,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, uniffi::Enum)]
+pub enum MusicAction {
+    PlayPause,
+    Next,
+    Previous,
+    SetVolume,
+}
+
+impl From<MusicAction> for crate::MusicAction {
+    fn from(action: MusicAction) -> Self {
+        match action {
+            MusicAction::PlayPause => Self::PlayPause,
+            MusicAction::Next => Self::Next,
+            MusicAction::Previous => Self::Previous,
+            MusicAction::SetVolume => Self::SetVolume,
+        }
+    }
+}
+
+/// player 가 None 이면 재생 중인 곡 없음. position_ms 는 보낸 순간의 위치.
+#[derive(Clone, Debug, PartialEq, uniffi::Record)]
+pub struct NowPlayingInfo {
+    pub player: MusicPlayer,
+    pub title: String,
+    pub artist: String,
+    pub album: String,
+    pub duration_ms: u64,
+    pub artwork: u64,
+    pub playing: bool,
+    pub position_ms: u64,
+    pub measured_at: u64,
+    pub can_play: bool,
+    pub can_next: bool,
+    pub can_previous: bool,
+}
+
+impl From<crate::NowPlaying> for NowPlayingInfo {
+    fn from(n: crate::NowPlaying) -> Self {
+        Self {
+            player: MusicPlayer::from_wire(n.player),
+            title: n.title,
+            artist: n.artist,
+            album: n.album,
+            duration_ms: n.duration_ms,
+            artwork: n.artwork,
+            playing: n.playing,
+            position_ms: n.position_ms,
+            measured_at: n.measured_at,
+            can_play: n.can_play,
+            can_next: n.can_next,
+            can_previous: n.can_previous,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, uniffi::Record)]
+pub struct VolumeInfo {
+    pub available: bool,
+    pub level: u32,
+    pub muted: bool,
+    pub settable: bool,
+}
+
+impl From<crate::Volume> for VolumeInfo {
+    fn from(v: crate::Volume) -> Self {
+        Self {
+            available: v.available,
+            level: v.level,
+            muted: v.muted,
+            settable: v.settable,
+        }
+    }
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, uniffi::Enum)]
 pub enum ShortcutToggle {
@@ -513,6 +620,16 @@ impl PhoneSession {
                     book: shortcuts.book,
                     items: shortcuts.items.into_iter().map(Into::into).collect(),
                 }),
+                Event::Message(Body::NowPlaying(now)) => {
+                    Some(PhoneEvent::NowPlaying { value: now.into() })
+                }
+                Event::Message(Body::Artwork(art)) => Some(PhoneEvent::Artwork {
+                    hash: art.hash,
+                    jpeg: art.jpeg,
+                }),
+                Event::Message(Body::Volume(volume)) => Some(PhoneEvent::Volume {
+                    value: volume.into(),
+                }),
                 Event::Message(Body::Forge(forge)) => Some(PhoneEvent::Forge {
                     github: forge.github.map(Into::into),
                     gitlab: forge.gitlab.map(Into::into),
@@ -573,6 +690,20 @@ impl PhoneSession {
             request_id,
             shortcut_id,
             book,
+        }))?)
+    }
+
+    /// 음악 조작. level 은 SetVolume 일 때 0~100. 결과는 `CommandResult` 로 온다.
+    pub fn music_command(
+        &self,
+        request_id: u64,
+        action: MusicAction,
+        level: u32,
+    ) -> Result<(), LinkError> {
+        Ok(self.lock().send(Body::MusicCommand(crate::MusicCommand {
+            request_id,
+            action: crate::MusicAction::from(action) as i32,
+            level: level.min(100),
         }))?)
     }
 
@@ -900,6 +1031,57 @@ mod tests {
         assert_eq!(book, 99);
         assert_eq!(items[0].id, 7);
         assert_eq!(items[0].toggle, ShortcutToggle::None);
+    }
+
+    #[test]
+    fn music_messages_go_both_ways() {
+        let (session, mut c) = ready();
+        session
+            .music_command(5, MusicAction::SetVolume, 250)
+            .unwrap();
+        c.feed(&session.take_output()).unwrap();
+        assert!(std::iter::from_fn(|| c.next_event()).any(|e| e
+            == Event::Message(Body::MusicCommand(crate::MusicCommand {
+                request_id: 5,
+                action: crate::MusicAction::SetVolume as i32,
+                level: 100,
+            }))));
+        c.send(Body::NowPlaying(crate::NowPlaying {
+            player: 99,
+            title: "곡".into(),
+            playing: true,
+            position_ms: 1_000,
+            ..Default::default()
+        }))
+        .unwrap();
+        c.send(Body::Artwork(crate::Artwork {
+            hash: 7,
+            jpeg: vec![1, 2, 3],
+        }))
+        .unwrap();
+        c.send(Body::Volume(crate::Volume {
+            available: true,
+            level: 40,
+            muted: false,
+            settable: true,
+        }))
+        .unwrap();
+        session.feed(c.take_output()).unwrap();
+        let Some(PhoneEvent::NowPlaying { value }) = session.next_event() else {
+            panic!("곡이 와야 함");
+        };
+        assert_eq!(value.player, MusicPlayer::None);
+        assert_eq!(value.title, "곡");
+        assert_eq!(
+            session.next_event(),
+            Some(PhoneEvent::Artwork {
+                hash: 7,
+                jpeg: vec![1, 2, 3]
+            })
+        );
+        assert!(
+            matches!(session.next_event(), Some(PhoneEvent::Volume { value }) if value.level == 40)
+        );
     }
 
     #[test]

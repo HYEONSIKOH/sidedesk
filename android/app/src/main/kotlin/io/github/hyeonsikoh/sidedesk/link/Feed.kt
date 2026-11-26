@@ -1,7 +1,7 @@
 package io.github.hyeonsikoh.sidedesk.link
 
 /** 컴퓨터가 모아 보낼 수 있는 것. 시계는 폰 시각을 써서 없다. */
-enum class Topic { Weather, Ai, Perf, Processes, Shortcuts }
+enum class Topic { Weather, Ai, Perf, Processes, Shortcuts, Music }
 
 enum class Sky { Unknown, Clear, PartlyCloudy, Cloudy, Fog, Drizzle, Rain, Snow, Shower, Thunderstorm }
 
@@ -98,6 +98,36 @@ data class KillCommand(override val commandId: Long, val pid: Int, val startedAt
 
 /** book 은 목록을 받을 때 온 그 컴퓨터의 장부 번호다. LinkOwner 가 채운다. */
 data class RunShortcut(override val commandId: Long, val shortcutId: Int, val book: Long = 0) : Command
+
+enum class MusicPlayer { None, Music, Spotify, System }
+
+/**
+ * 지금 재생 중인 곡. player 가 None 이면 곡이 없다.
+ * receivedAt 은 이 값을 받은 폰의 단조 시각(밀리초)이다. 진행 바는 이것을 기준으로 폰이 스스로 움직인다.
+ */
+data class NowPlaying(
+    val player: MusicPlayer,
+    val title: String,
+    val artist: String,
+    val album: String,
+    /** 0 은 모름(라디오, 생방송) */
+    val durationMs: Long,
+    /** 그림 해시. 0 은 없음 */
+    val artwork: Long,
+    val playing: Boolean,
+    val positionMs: Long,
+    val canPlay: Boolean,
+    val canNext: Boolean,
+    val canPrevious: Boolean,
+    val receivedAt: Long = 0,
+)
+
+data class Volume(val available: Boolean, val level: Int, val muted: Boolean, val settable: Boolean)
+
+enum class MusicAction { PlayPause, Next, Previous, SetVolume }
+
+/** level 은 SetVolume 일 때만 쓴다. */
+data class MusicCommand(override val commandId: Long, val action: MusicAction, val level: Int = 0) : Command
 
 /** 소리 끄기, 방해 금지처럼 켜짐 상태가 있는 버튼. None 은 누르면 한 번 하는 것 */
 enum class Toggle { None, On, Off }

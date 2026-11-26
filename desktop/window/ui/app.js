@@ -350,3 +350,12 @@ $('sb-save').addEventListener('click', () => {
 });
 $('shortcut-key-settings').addEventListener('click', () => send({ 'shortcut-key-settings': true }));
 document.querySelector('[data-page="shortcuts"]').addEventListener('click', () => send({ 'shortcut-open': true }));
+
+// 음악 앱 자동화 권한 안내. 까닭이 있을 때만 보인다.
+function renderMusic(next) {
+  const problem = next && next.problem;
+  $('music-label').hidden = !problem;
+  $('music-row').hidden = !problem;
+  $('music-problem').textContent = problem || '';
+}
+$('music-settings').addEventListener('click', () => send({ 'music-settings': true }));

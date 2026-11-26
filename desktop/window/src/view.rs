@@ -88,6 +88,13 @@ pub fn with_shortcuts(panel: &'static crate::ShortcutsPanel) {
     let _ = SHORTCUTS.set(panel);
 }
 
+/// 일반 칸의 음악 안내
+static MUSIC: std::sync::OnceLock<&'static crate::MusicPanel> = std::sync::OnceLock::new();
+
+pub fn with_music(panel: &'static crate::MusicPanel) {
+    let _ = MUSIC.set(panel);
+}
+
 /// 설정 창을 띄운다. 창을 닫으면 프로세스를 끝낸다(연결 스레드를 기다리지 않는다).
 /// `mode_file` 에 고른 화면 모드를 저장한다.
 pub fn open(board: &'static Board, mode_file: PathBuf) -> Result<(), String> {
@@ -101,6 +108,12 @@ pub fn open(board: &'static Board, mode_file: PathBuf) -> Result<(), String> {
         let proxy = event_loop.create_proxy();
         panel.on_change(move |snapshot| {
             let _ = proxy.send_event(Change::Script(format!("renderShortcuts({snapshot})")));
+        });
+    }
+    if let Some(panel) = MUSIC.get() {
+        let proxy = event_loop.create_proxy();
+        panel.on_change(move |snapshot| {
+            let _ = proxy.send_event(Change::Script(format!("renderMusic({snapshot})")));
         });
     }
     board.on_change(move |snapshot| {
@@ -146,7 +159,9 @@ pub fn open(board: &'static Board, mode_file: PathBuf) -> Result<(), String> {
                 let _ = ipc.send_event(Change::Drag);
             } else if let Some(chosen) = body.strip_prefix("mode:").and_then(mode) {
                 let _ = ipc.send_event(Change::Mode(chosen));
-            } else if !SHORTCUTS.get().is_some_and(|panel| panel.command(body)) {
+            } else if !SHORTCUTS.get().is_some_and(|panel| panel.command(body))
+                && !MUSIC.get().is_some_and(|panel| panel.command(body))
+            {
                 board.command(body);
             }
         })

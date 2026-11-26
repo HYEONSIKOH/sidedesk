@@ -26,6 +26,17 @@ class LinkOwner(private val nanos: () -> Long = System::nanoTime) {
     private var shortcutsFrom: ByteArray? = null
     /** 그 목록과 함께 온 장부 번호. 실행할 때 돌려주면 컴퓨터가 다른 장부의 번호를 거절한다. */
     private var shortcutsBook = 0L
+    val nowPlaying = MutableStateFlow<NowPlaying?>(null)
+    val volume = MutableStateFlow<Volume?>(null)
+    /** 해시로 기억한 앨범 그림. 마지막 8장 */
+    val artworks = MutableStateFlow<Map<Long, ByteArray>>(emptyMap())
+    /** 곡과 볼륨을 보낸 컴퓨터. 다른 컴퓨터에 음악 명령을 보내지 않으려고 기억한다. */
+    private var musicFrom: ByteArray? = null
+    /** 바로 보낼 볼륨 하나. 다시 붙어도 보내지 않는다(늦은 값이 새 값을 덮지 않게). */
+    private var volumeOut: MusicCommand? = null
+    private var volumeFor = 0
+    /** 결과를 기다리는 볼륨 명령 번호. 다시 보내지는 않지만 실패는 넘긴다. */
+    private val volumeWaiting = HashSet<Long>()
     /** 이 세대에서 받은 알림 번호. 새 연결이면 비운다(컴퓨터가 다시 켜지면 번호가 1부터 다시 간다). */
     private val seenAlerts = HashSet<Long>()
     private var seenFor = 0
@@ -88,10 +99,71 @@ class LinkOwner(private val nanos: () -> Long = System::nanoTime) {
 
     /** 다른 컴퓨터가 붙으면 앞 컴퓨터의 단축키 목록을 바로 지운다. 화면이 붙음으로 바뀌기 전이다. */
     private fun forgetShortcutsOfOthers(computer: ByteArray) {
+        val music = musicFrom
+        if (music != null && !music.contentEquals(computer)) {
+            nowPlaying.value = null
+            volume.value = null
+            musicFrom = null
+        }
         val from = shortcutsFrom ?: return
         if (from.contentEquals(computer)) return
         shortcuts.value = null
         shortcutsFrom = null
+    }
+
+    /** 받은 순간의 폰 시각을 붙여 둔다. */
+    fun receivedNowPlaying(mine: Int, value: NowPlaying) = synchronized(this) {
+        val now = current?.takeIf { it.generation == mine } ?: return@synchronized
+        val computer = now.computer ?: return@synchronized
+        nowPlaying.value = value.copy(receivedAt = nanos() / 1_000_000)
+        musicFrom = computer
+    }
+
+    fun receivedVolume(mine: Int, value: Volume) = synchronized(this) {
+        val now = current?.takeIf { it.generation == mine } ?: return@synchronized
+        val computer = now.computer ?: return@synchronized
+        volume.value = value
+        musicFrom = computer
+    }
+
+    fun receivedArtwork(mine: Int, hash: Long, jpeg: ByteArray) = synchronized(this) {
+        if (generation != mine || hash == 0L) return@synchronized
+        val kept = LinkedHashMap(artworks.value)
+        kept.remove(hash)
+        kept[hash] = jpeg
+        while (kept.size > ARTWORKS) kept.remove(kept.keys.first())
+        artworks.value = kept
+    }
+
+    /**
+     * 보이는 곡(볼륨)이 지금 붙은 컴퓨터 것일 때만 명령을 둔다.
+     * 재생/멈춤, 다음, 이전은 대기열(같은 번호 다시 보냄), 볼륨은 바로 보낼 칸에 마지막 값만 둔다.
+     */
+    fun music(command: MusicCommand): Boolean {
+        val ok = synchronized(this) {
+            val from = musicFrom
+            val holder = current
+            val now = holder?.computer
+            val same = from != null && now != null && from.contentEquals(now)
+            if (!same) return@synchronized false
+            if (command.action == MusicAction.SetVolume) {
+                volumeOut = command
+                volumeFor = holder!!.generation
+                volumeWaiting += command.commandId
+                return@synchronized true
+            }
+            nowPlaying.value?.player?.let { it != MusicPlayer.None } ?: false
+        }
+        if (ok && command.action != MusicAction.SetVolume) send(command)
+        return ok
+    }
+
+    /** 이 연결에 보낼 볼륨. 다른 연결에서 든 값은 버린다. */
+    @Synchronized
+    fun takeVolume(mine: Int): MusicCommand? {
+        val out = volumeOut ?: return null
+        volumeOut = null
+        return out.takeIf { volumeFor == mine }
     }
 
     fun receivedShortcuts(mine: Int, book: Long, value: List<Shortcut>) = synchronized(this) {
@@ -201,7 +273,7 @@ class LinkOwner(private val nanos: () -> Long = System::nanoTime) {
 
     /** 명령 결과는 어느 연결로 왔든 버리지 않는다. */
     fun receivedResult(result: CommandResult) {
-        val known = synchronized(this) { kills.remove(result.commandId) != null }
+        val known = synchronized(this) { kills.remove(result.commandId) != null || volumeWaiting.remove(result.commandId) }
         if (known) results.tryEmit(result)
     }
 
@@ -211,6 +283,7 @@ class LinkOwner(private val nanos: () -> Long = System::nanoTime) {
     }
 
     companion object {
+        const val ARTWORKS = 8
         const val KILL_LIMIT_MILLIS = 30_000L
         const val KILL_LIMIT_NANOS = KILL_LIMIT_MILLIS * 1_000_000
         const val NOT_CONNECTED = "컴퓨터와 연결되어 있지 않습니다"

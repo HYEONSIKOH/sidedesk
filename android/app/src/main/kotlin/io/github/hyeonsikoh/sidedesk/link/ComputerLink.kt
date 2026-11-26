@@ -39,6 +39,17 @@ interface ComputerLink {
     /** 세션 알림. 버리지 않는다. 한 연결 안의 같은 id 는 한 번만 온다. */
     val alerts: SharedFlow<AiAlert>
 
+    /** 지금 재생 중인 곡. 다른 컴퓨터가 붙으면 지운다. */
+    val nowPlaying: StateFlow<NowPlaying?>
+
+    val volume: StateFlow<Volume?>
+
+    /** 해시로 기억한 앨범 그림(jpeg) */
+    val artworks: StateFlow<Map<Long, ByteArray>>
+
+    /** 보이는 곡이 지금 컴퓨터 것이면 명령으로 두고 true, 아니면 보내지 않고 false */
+    fun music(command: MusicCommand): Boolean
+
     /** 지금 붙은 컴퓨터의 단축키 목록. 다른 컴퓨터가 붙으면 지운다. */
     val shortcuts: StateFlow<List<Shortcut>?>
 

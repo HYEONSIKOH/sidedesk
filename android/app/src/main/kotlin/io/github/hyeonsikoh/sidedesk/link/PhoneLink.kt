@@ -28,6 +28,9 @@ class PhoneLink(context: Context, private val keys: KeyFiles) : ComputerLink {
     override val forge = owner.forge
     override val alerts = owner.alerts
     override val shortcuts = owner.shortcuts
+    override val nowPlaying = owner.nowPlaying
+    override val volume = owner.volume
+    override val artworks = owner.artworks
     override val results = owner.results
 
     // 줄이 하나라서 이전 소켓을 닫은 뒤에만 같은 이름을 다시 연다.
@@ -58,6 +61,8 @@ class PhoneLink(context: Context, private val keys: KeyFiles) : ComputerLink {
     override fun giveUp(commandId: Long) = owner.giveUp(commandId)
 
     override fun runShortcut(command: RunShortcut) = owner.runShortcut(command)
+
+    override fun music(command: MusicCommand) = owner.music(command)
 
     /** 시작된 상태에서만 다시 연다(앱이 뒤에 있으면 앞으로 올 때 열린다). */
     override fun restartBluetooth() {

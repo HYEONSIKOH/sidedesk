@@ -14,6 +14,10 @@ const DEFAULT_OUTPUT: u32 = four(b"dOut");
 const GLOBAL: u32 = four(b"glob");
 const OUTPUT: u32 = four(b"outp");
 const MUTE: u32 = four(b"mute");
+/// 가상 주 볼륨(AudioHardwareService 속성)
+const VIRTUAL_MAIN: u32 = four(b"vmvc");
+/// 채널별 볼륨(0.0~1.0)
+const VOLUME_SCALAR: u32 = four(b"volm");
 const MAIN: u32 = 0;
 
 #[repr(C)]
@@ -146,6 +150,106 @@ pub fn toggle_mute() -> Result<(), PortError> {
     Ok(())
 }
 
+fn read_f32(object: u32, address: &Address) -> Option<f32> {
+    let mut value = 0f32;
+    let mut size = size_of::<f32>() as u32;
+    // SAFETY: value 는 size 바이트다.
+    let status = unsafe {
+        AudioObjectGetPropertyData(
+            object,
+            address,
+            0,
+            ptr::null(),
+            &mut size,
+            (&raw mut value).cast(),
+        )
+    };
+    (status == 0 && value.is_finite()).then_some(value.clamp(0.0, 1.0))
+}
+
+fn settable(device: u32, address: &Address) -> bool {
+    let mut settable = 0u8;
+    // SAFETY: address 는 살아 있다.
+    let status = unsafe { AudioObjectIsPropertySettable(device, address, &mut settable) };
+    status == 0 && settable != 0
+}
+
+/// 볼륨 요소들: 가상 주 볼륨이 있으면 그것 하나, 없으면 채널 1, 2.
+fn volume_elements(device: u32) -> Vec<Address> {
+    let main = Address {
+        selector: VIRTUAL_MAIN,
+        scope: OUTPUT,
+        element: MAIN,
+    };
+    // SAFETY: address 는 살아 있다.
+    if unsafe { AudioObjectHasProperty(device, &main) } != 0 {
+        return vec![main];
+    }
+    [1, 2]
+        .iter()
+        .map(|element| Address {
+            selector: VOLUME_SCALAR,
+            scope: OUTPUT,
+            element: *element,
+        })
+        // SAFETY: address 는 살아 있다.
+        .filter(|address| unsafe { AudioObjectHasProperty(device, address) } != 0)
+        .collect()
+}
+
+pub fn to_percent(value: f32) -> u32 {
+    (value.clamp(0.0, 1.0) * 100.0).round() as u32
+}
+
+/// 지금 볼륨(0~100, 채널이면 평균), 음소거, 바꿀 수 있는지. 장치가 없으면 없음.
+pub fn volume() -> Option<sidedesk_domain::Level> {
+    let device = output_device()?;
+    let elements = volume_elements(device);
+    let values: Vec<f32> = elements
+        .iter()
+        .filter_map(|address| read_f32(device, address))
+        .collect();
+    let level = if values.is_empty() {
+        0
+    } else {
+        to_percent(values.iter().sum::<f32>() / values.len() as f32)
+    };
+    Some(sidedesk_domain::Level {
+        level,
+        muted: muted().unwrap_or(false),
+        settable: !elements.is_empty() && elements.iter().all(|a| settable(device, a)),
+    })
+}
+
+/// 볼륨을 0~100 으로 맞춘다.
+pub fn set_volume(level: u32) -> Result<(), PortError> {
+    let cannot = || PortError::new("볼륨을 바꿀 수 없는 장치입니다");
+    let device =
+        output_device().ok_or_else(|| PortError::new("소리 출력 장치를 찾지 못했습니다"))?;
+    let elements = volume_elements(device);
+    if elements.is_empty() || !elements.iter().all(|a| settable(device, a)) {
+        return Err(cannot());
+    }
+    let value = level.min(100) as f32 / 100.0;
+    for address in &elements {
+        // SAFETY: value 는 f32 크기다.
+        let status = unsafe {
+            AudioObjectSetPropertyData(
+                device,
+                address,
+                0,
+                ptr::null(),
+                size_of::<f32>() as u32,
+                (&raw const value).cast(),
+            )
+        };
+        if status != 0 {
+            return Err(cannot());
+        }
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -159,5 +263,20 @@ mod tests {
     #[test]
     fn four_char_codes() {
         assert_eq!(MUTE, 0x6D75_7465);
+        assert_eq!(VIRTUAL_MAIN, 0x766D_7663);
+    }
+
+    #[test]
+    fn percent_rounding() {
+        assert_eq!(to_percent(0.0), 0);
+        assert_eq!(to_percent(0.494), 49);
+        assert_eq!(to_percent(0.495), 50);
+        assert_eq!(to_percent(1.2), 100);
+    }
+
+    #[test]
+    #[ignore = "이 맥의 볼륨을 읽기만 한다. 손으로 돌린다"]
+    fn reads_volume_only() {
+        eprintln!("볼륨: {:?}", volume());
     }
 }

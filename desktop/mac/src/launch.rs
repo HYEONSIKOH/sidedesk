@@ -1,13 +1,9 @@
 //! 맥 단축키 실행기와 설정 창 도우미. NSWorkspace, NSOpenPanel, NSBundle, 단축어 앱을 부른다.
 
 use std::collections::HashMap;
-use std::io::Read;
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command, Stdio};
 use std::sync::Mutex;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::thread;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use objc2::MainThreadMarker;
 use objc2::rc::autoreleasepool;
@@ -18,22 +14,21 @@ use sidedesk_domain::{
     check_url,
 };
 
+use crate::runner::Runner;
 use crate::{audio, keys};
 
 const SHORTCUTS: &str = "/usr/bin/shortcuts";
 const SHORTCUTS_LIMIT: Duration = Duration::from_secs(10);
-const KEEP: usize = 64 * 1024;
+const AUTOMATION_SETTINGS: &str =
+    "x-apple.systempreferences:com.apple.preference.security?Privacy_Automation";
 const KEY_SETTINGS: &str =
     "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility";
 
 pub struct MacLauncher {
     /// 방해 금지는 우리가 마지막으로 바꾼 값만 안다. 켜기, 끄기 단축어 쌍마다 따로.
     focus: Mutex<HashMap<(String, String), bool>>,
-    children: Mutex<HashMap<u32, Child>>,
-    stopped: AtomicBool,
+    runner: Runner,
     home: PathBuf,
-    tool: PathBuf,
-    limit: Duration,
 }
 
 impl MacLauncher {
@@ -45,88 +40,13 @@ impl MacLauncher {
     pub fn with_tool(home: PathBuf, tool: PathBuf, limit: Duration) -> Self {
         Self {
             focus: Mutex::default(),
-            children: Mutex::default(),
-            stopped: AtomicBool::new(false),
+            runner: Runner::new(tool, home.clone(), limit),
             home,
-            tool,
-            limit,
         }
     }
 
-    /// 쉘 없이 정해진 인자로 돌린다. 시간이 넘으면 끝내고 거둔다.
-    /// `capture` 가 아니면 출력을 받지 않는다(단축어가 띄운 손자가 파이프를 물고 남아도 막히지 않게).
     fn shortcuts(&self, args: &[&str], capture: bool) -> Option<(bool, Vec<u8>)> {
-        if self.stopped.load(Ordering::SeqCst) {
-            return None;
-        }
-        let mut child = Command::new(&self.tool)
-            .args(args)
-            .current_dir(&self.home)
-            .stdin(Stdio::null())
-            .stdout(if capture {
-                Stdio::piped()
-            } else {
-                Stdio::null()
-            })
-            .stderr(Stdio::null())
-            .spawn()
-            .ok()?;
-        let pid = child.id();
-        let out = child.stdout.take().map(|mut pipe| {
-            thread::spawn(move || {
-                let mut kept = Vec::new();
-                let mut buffer = [0u8; 8192];
-                while let Ok(n) = pipe.read(&mut buffer) {
-                    if n == 0 {
-                        break;
-                    }
-                    let room = KEEP.saturating_sub(kept.len());
-                    kept.extend_from_slice(&buffer[..n.min(room)]);
-                }
-                kept
-            })
-        });
-        {
-            let mut children = self.lock_children();
-            children.insert(pid, child);
-            // 띄우는 사이 stop 이 왔으면 바로 끝낸다.
-            if self.stopped.load(Ordering::SeqCst)
-                && let Some(mut child) = children.remove(&pid)
-            {
-                let _ = child.kill();
-                let _ = child.wait();
-            }
-        }
-        let start = Instant::now();
-        let ok = loop {
-            let mut children = self.lock_children();
-            let Some(child) = children.get_mut(&pid) else {
-                break false;
-            };
-            match child.try_wait() {
-                Ok(Some(status)) => {
-                    children.remove(&pid);
-                    break status.success();
-                }
-                Ok(None) if start.elapsed() < self.limit => {}
-                _ => {
-                    let _ = child.kill();
-                    let _ = child.wait();
-                    children.remove(&pid);
-                    break false;
-                }
-            }
-            drop(children);
-            thread::sleep(Duration::from_millis(20));
-        };
-        let output = out.and_then(|h| h.join().ok()).unwrap_or_default();
-        Some((ok, output))
-    }
-
-    fn lock_children(&self) -> std::sync::MutexGuard<'_, HashMap<u32, Child>> {
-        self.children
-            .lock()
-            .unwrap_or_else(|lock| lock.into_inner())
+        self.runner.run(args, capture)
     }
 
     fn lock_focus(&self) -> std::sync::MutexGuard<'_, HashMap<(String, String), bool>> {
@@ -223,11 +143,7 @@ impl Launcher for MacLauncher {
     }
 
     fn stop(&self) {
-        self.stopped.store(true, Ordering::SeqCst);
-        for (_, mut child) in self.lock_children().drain() {
-            let _ = child.kill();
-            let _ = child.wait();
-        }
+        self.runner.stop();
     }
 }
 
@@ -285,6 +201,14 @@ impl ShortcutHelp for MacLauncher {
                 .URLForApplicationWithBundleIdentifier(&NSString::from_str(bundle))
                 .is_some()
         })
+    }
+
+    fn open_automation_settings(&self) {
+        autoreleasepool(|_| {
+            if let Some(url) = NSURL::URLWithString(&NSString::from_str(AUTOMATION_SETTINGS)) {
+                open_url(&url);
+            }
+        });
     }
 
     fn open_key_settings(&self) {
@@ -388,40 +312,6 @@ mod tests {
                 off: "끄기".into(),
             },
         };
-        assert!(launcher.run(&focus).is_err());
-    }
-
-    #[test]
-    fn slow_shortcuts_are_ended_and_stop_ends_running_ones() {
-        let focus = Action::System {
-            action: SystemAction::Focus {
-                on: "5".into(),
-                off: "5".into(),
-            },
-        };
-        // /bin/sleep 을 단축어 프로그램 대신 쓴다. 시간 제한을 넘기면 끝내고 실패로 본다.
-        let quick = MacLauncher::with_tool(
-            std::env::temp_dir(),
-            PathBuf::from("/bin/sleep"),
-            Duration::from_millis(200),
-        );
-        let start = Instant::now();
-        assert!(quick.shortcuts(&["5"], false).is_some_and(|(ok, _)| !ok));
-        assert!(start.elapsed() < Duration::from_secs(2));
-        let launcher = std::sync::Arc::new(MacLauncher::with_tool(
-            std::env::temp_dir(),
-            PathBuf::from("/bin/sleep"),
-            Duration::from_secs(10),
-        ));
-        let worker = {
-            let launcher = std::sync::Arc::clone(&launcher);
-            thread::spawn(move || launcher.shortcuts(&["5"], false))
-        };
-        thread::sleep(Duration::from_millis(200));
-        let start = Instant::now();
-        launcher.stop();
-        let _ = worker.join().unwrap();
-        assert!(start.elapsed() < Duration::from_secs(1));
         assert!(launcher.run(&focus).is_err());
     }
 

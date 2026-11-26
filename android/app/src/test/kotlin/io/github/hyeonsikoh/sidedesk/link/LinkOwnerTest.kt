@@ -205,4 +205,64 @@ class LinkOwnerTest {
         owner.release(mine)
         assertEquals(false, owner.runShortcut(RunShortcut(1, 3)))
     }
+
+    private val song = NowPlaying(MusicPlayer.Music, "여름 바다", "가수", "앨범", 221_000, 5, true, 84_000, true, true, true)
+
+    @Test
+    fun stampsNowPlayingWithThePhoneClock() {
+        val mine = connect(mac)
+        now = 7_000_000_000
+        owner.receivedNowPlaying(mine, song)
+        assertEquals(7_000L, owner.nowPlaying.value!!.receivedAt)
+    }
+
+    @Test
+    fun sendsPlaybackCommandsOnlyForTheComputerShowingTheSong() {
+        owner.receivedNowPlaying(connect(mac), song)
+        assertTrue(owner.music(MusicCommand(1, MusicAction.PlayPause)))
+        assertEquals(listOf<Command>(MusicCommand(1, MusicAction.PlayPause)), owner.pendingCommands(mac))
+        val usb = owner.takeUsb {}
+        assertEquals(false, owner.music(MusicCommand(2, MusicAction.Next)))
+        owner.ready(usb, other)
+        assertEquals(null, owner.nowPlaying.value)
+        assertEquals(false, owner.music(MusicCommand(3, MusicAction.Next)))
+    }
+
+    @Test
+    fun keepsOnlyTheLastVolumeForThisConnection() {
+        val mine = connect(mac)
+        owner.receivedVolume(mine, Volume(true, 40, false, true))
+        assertTrue(owner.music(MusicCommand(1, MusicAction.SetVolume, 50)))
+        assertTrue(owner.music(MusicCommand(2, MusicAction.SetVolume, 60)))
+        assertTrue(owner.pendingCommands(mac).isEmpty())
+        assertEquals(MusicCommand(2, MusicAction.SetVolume, 60), owner.takeVolume(mine))
+        assertEquals(null, owner.takeVolume(mine))
+    }
+
+    @Test
+    fun dropsAVolumeHeldForAnOldConnection() {
+        val first = connect(mac)
+        owner.receivedVolume(first, Volume(true, 40, false, true))
+        owner.music(MusicCommand(1, MusicAction.SetVolume, 50))
+        val second = connect(mac)
+        assertEquals(null, owner.takeVolume(second))
+    }
+
+    @Test
+    fun passesVolumeFailures() {
+        val mine = connect(mac)
+        owner.receivedVolume(mine, Volume(true, 40, false, true))
+        owner.music(MusicCommand(9, MusicAction.SetVolume, 50))
+        owner.receivedResult(CommandResult(9, false, "볼륨을 바꿀 수 없는 장치입니다"))
+        assertEquals(listOf(CommandResult(9, false, "볼륨을 바꿀 수 없는 장치입니다")), results)
+    }
+
+    @Test
+    fun keepsTheLastEightArtworks() {
+        val mine = connect(mac)
+        (1L..9L).forEach { owner.receivedArtwork(mine, it, byteArrayOf(it.toByte())) }
+        assertEquals((2L..9L).toList(), owner.artworks.value.keys.toList())
+        owner.receivedArtwork(mine, 0, byteArrayOf(1))
+        assertEquals(8, owner.artworks.value.size)
+    }
 }

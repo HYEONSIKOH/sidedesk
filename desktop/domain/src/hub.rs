@@ -6,12 +6,13 @@ use std::sync::{Arc, Condvar, Mutex, MutexGuard};
 use std::time::{Duration, Instant, SystemTime};
 
 use sidedesk_core::{
-    Body, CommandResult, KillProcess, Location, Performance, Process, Processes, RunShortcut,
-    Subscribe, View,
+    Body, CommandResult, KillProcess, Location, MusicCommand, Performance, Process, Processes,
+    RunShortcut, Subscribe, View,
 };
 
 use crate::ai::{AiBook, AiCadence};
 use crate::deck::{Deck, TOGGLE_EVERY};
+use crate::music::Jukebox;
 use crate::port::{Forges, Meter, Place, PortError, ProcessTable, SessionLog, WeatherSource};
 use crate::weather::{Book, WeatherCadence};
 
@@ -50,7 +51,9 @@ impl Cadence {
         let (main, tile) = match view {
             View::Performance => (self.performance_main, self.performance_tile),
             View::Processes => (self.processes_main, self.processes_tile),
-            View::Nothing | View::Weather | View::Ai | View::Shortcuts => return None,
+            View::Nothing | View::Weather | View::Ai | View::Shortcuts | View::Music => {
+                return None;
+            }
         };
         if subscribe.main == view as i32 {
             Some(main)
@@ -192,6 +195,7 @@ pub struct Hub {
     forges: Option<Box<dyn Forges>>,
     ai_cadence: AiCadence,
     deck: Option<Arc<Deck>>,
+    jukebox: Option<Arc<Jukebox>>,
     state: Mutex<State>,
     changed: Condvar,
     /// 날씨 스레드만 깨운다. 성능 수집 주기를 흔들지 않게 따로 둔다.
@@ -214,6 +218,7 @@ impl Hub {
             forges: None,
             ai_cadence: AiCadence::default(),
             deck: None,
+            jukebox: None,
             state: Mutex::default(),
             changed: Condvar::new(),
             weather_changed: Condvar::new(),
@@ -322,8 +327,25 @@ impl Hub {
         self
     }
 
+    pub fn music(&self) -> Option<&Arc<Jukebox>> {
+        self.jukebox.as_ref()
+    }
+
     pub fn shortcuts(&self) -> Option<&Arc<Deck>> {
         self.deck.as_ref()
+    }
+
+    /// 음악. 없으면 음악을 보내지 않고 조작은 거절한다.
+    pub fn with_music(mut self, jukebox: Arc<Jukebox>) -> Self {
+        self.jukebox = Some(jukebox);
+        self
+    }
+
+    /// 음악을 보는 기기가 있는 동안 곡과 볼륨을 따라간다. `stop` 을 부를 때까지 돌아오지 않는다.
+    pub fn run_music(&self) {
+        if let Some(jukebox) = &self.jukebox {
+            jukebox.run();
+        }
     }
 
     /// 소리 끄기 같은 켜짐 상태를 따라간다. `stop` 을 부를 때까지 돌아오지 않는다.
@@ -376,12 +398,24 @@ impl Hub {
 
     /// 연결 하나가 구독자가 된다. 연결이 끝나 놓으면 구독도 사라진다.
     pub fn join(&self) -> Subscriber<'_> {
+        self.join_over(crate::port::Link::Usb)
+    }
+
+    /// 연결 길을 알면 블루투스에는 더 작은 그림을 보낸다.
+    pub fn join_over(&self, link: crate::port::Link) -> Subscriber<'_> {
         let mut state = self.lock();
         state.next_id += 1;
         let id = state.next_id;
         drop(state);
         if let Some(deck) = &self.deck {
             deck.join(id);
+        }
+        if let Some(jukebox) = &self.jukebox {
+            let limit = match link {
+                crate::port::Link::Usb => crate::music::ART_LIMIT,
+                crate::port::Link::Ble => crate::music::BLE_ART_LIMIT,
+            };
+            jukebox.join(id, limit);
         }
         Subscriber {
             hub: self,
@@ -445,6 +479,9 @@ impl Hub {
         }
         if let Some(deck) = &self.deck {
             deck.stop();
+        }
+        if let Some(jukebox) = &self.jukebox {
+            jukebox.stop();
         }
     }
 
@@ -512,6 +549,14 @@ impl Subscriber<'_> {
             subscribe.main == ai,
         );
         drop(state);
+        if let Some(jukebox) = &self.hub.jukebox {
+            let music = View::Music as i32;
+            jukebox.set_wants(
+                self.id,
+                subscribe.main == music || subscribe.tiles.contains(&music),
+                subscribe.main == music,
+            );
+        }
         if let Some(deck) = &self.hub.deck {
             let shortcuts = View::Shortcuts as i32;
             deck.set_wants(
@@ -522,6 +567,22 @@ impl Subscriber<'_> {
         self.hub.changed.notify_all();
         self.hub.weather_changed.notify_all();
         self.hub.ai_changed.notify_all();
+    }
+
+    /// 폰의 음악 조작. 결과는 `take` 로 나간다.
+    pub fn music(&self, command: &MusicCommand) {
+        match &self.hub.jukebox {
+            Some(jukebox) => jukebox.enqueue(self.id, command),
+            None => self
+                .unanswered
+                .lock()
+                .unwrap_or_else(|l| l.into_inner())
+                .push(CommandResult {
+                    request_id: command.request_id,
+                    ok: false,
+                    reason: "재생 중인 곡이 없습니다".to_owned(),
+                }),
+        }
     }
 
     /// 폰이 누른 단축키. 결과는 `take` 로 나간다.
@@ -561,6 +622,10 @@ impl Subscriber<'_> {
             Some(deck) => deck.take(self.id),
             None => (None, Vec::new()),
         };
+        let (playing, artwork, volume, music_results) = match &self.hub.jukebox {
+            Some(jukebox) => jukebox.take(self.id),
+            None => (None, None, None, Vec::new()),
+        };
         let unanswered: Vec<CommandResult> =
             std::mem::take(&mut *self.unanswered.lock().unwrap_or_else(|l| l.into_inner()));
         performance
@@ -571,9 +636,13 @@ impl Subscriber<'_> {
             .chain(alerts.into_iter().map(Body::AiAlert))
             .chain(forge.map(Body::Forge))
             .chain(shortcuts.map(Body::Shortcuts))
+            .chain(playing.map(Body::NowPlaying))
+            .chain(artwork.map(Body::Artwork))
+            .chain(volume.map(Body::Volume))
             .chain(
                 results
                     .into_iter()
+                    .chain(music_results)
                     .chain(unanswered)
                     .map(Body::CommandResult),
             )
@@ -591,6 +660,9 @@ impl Drop for Subscriber<'_> {
         drop(state);
         if let Some(deck) = &self.hub.deck {
             deck.leave(self.id);
+        }
+        if let Some(jukebox) = &self.hub.jukebox {
+            jukebox.leave(self.id);
         }
         self.hub.changed.notify_all();
         self.hub.weather_changed.notify_all();
