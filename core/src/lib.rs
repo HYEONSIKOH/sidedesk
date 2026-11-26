@@ -15,8 +15,9 @@ pub use beacon::{
 };
 pub use place::{place_tenths, valid_tenths};
 pub use proto::{
-    CommandResult, Hello, KillProcess, Location, Performance, Process, Processes, Provider, Sky,
-    Subscribe, View, Weather, envelope::Body,
+    AiAlert, AiAlertKind, AiSession, AiSessions, AiState, AiTool, CommandResult, Forge,
+    ForgeCounts, ForgeState, Hello, KillProcess, Location, Performance, Process, Processes,
+    Provider, Sky, Subscribe, View, Weather, envelope::Body,
 };
 pub use session::{Event, Identity, KEY_LEN, Role, Session, SessionError, VERSION};
 pub use wire::{FrameReader, MAX_BODY, WireError, frame};

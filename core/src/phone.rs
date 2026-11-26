@@ -50,6 +50,16 @@ pub enum PhoneEvent {
     Weather {
         value: WeatherInfo,
     },
+    AiSessions {
+        items: Vec<AiSessionInfo>,
+    },
+    AiAlert {
+        value: AiAlertInfo,
+    },
+    Forge {
+        github: Option<ForgeInfo>,
+        gitlab: Option<ForgeInfo>,
+    },
 }
 
 /// 폰에 보이는 자료. 시계는 폰이 혼자 그리므로 없다.
@@ -58,6 +68,8 @@ pub enum View {
     Performance,
     Processes,
     Weather,
+    /// 큰 화면이면 세션과 GitHub/GitLab, 작은 칸이면 세션만
+    Ai,
 }
 
 impl From<View> for crate::View {
@@ -66,6 +78,7 @@ impl From<View> for crate::View {
             View::Performance => Self::Performance,
             View::Processes => Self::Processes,
             View::Weather => Self::Weather,
+            View::Ai => Self::Ai,
         }
     }
 }
@@ -202,6 +215,105 @@ impl From<crate::Weather> for WeatherInfo {
             source: crate::Provider::try_from(w.provider)
                 .unwrap_or(crate::Provider::Unknown)
                 .into(),
+        }
+    }
+}
+
+macro_rules! mirror {
+    ($name:ident, $from:path, $($variant:ident),+) => {
+        #[derive(Clone, Copy, Debug, PartialEq, Eq, uniffi::Enum)]
+        pub enum $name {
+            $($variant),+
+        }
+
+        impl $name {
+            fn from_wire(value: i32) -> Self {
+                use $from as Wire;
+                match Wire::try_from(value) {
+                    $(Ok(Wire::$variant) => Self::$variant,)+
+                    Err(_) => Self::Unknown,
+                }
+            }
+        }
+    };
+}
+
+mirror!(AiTool, crate::AiTool, Unknown, ClaudeCode, Codex);
+mirror!(AiState, crate::AiState, Unknown, Working, Waiting, Done);
+mirror!(AiAlertKind, crate::AiAlertKind, Unknown, Done, Waiting);
+mirror!(
+    ForgeState,
+    crate::ForgeState,
+    Unknown,
+    Ok,
+    Missing,
+    SignedOut,
+    Failed
+);
+
+/// since 는 지금 상태가 된 때(유닉스 밀리초)
+#[derive(Clone, Debug, PartialEq, uniffi::Record)]
+pub struct AiSessionInfo {
+    pub id: String,
+    pub tool: AiTool,
+    pub title: String,
+    pub project: String,
+    pub state: AiState,
+    pub since: u64,
+    pub open: bool,
+}
+
+impl From<crate::AiSession> for AiSessionInfo {
+    fn from(s: crate::AiSession) -> Self {
+        Self {
+            id: s.id,
+            tool: AiTool::from_wire(s.tool),
+            title: s.title,
+            project: s.project,
+            state: AiState::from_wire(s.state),
+            since: s.since,
+            open: s.open,
+        }
+    }
+}
+
+/// at 은 바뀜이 일어난 때(유닉스 밀리초)
+#[derive(Clone, Debug, PartialEq, uniffi::Record)]
+pub struct AiAlertInfo {
+    pub id: u64,
+    pub session_id: String,
+    pub title: String,
+    pub kind: AiAlertKind,
+    pub at: u64,
+}
+
+impl From<crate::AiAlert> for AiAlertInfo {
+    fn from(a: crate::AiAlert) -> Self {
+        Self {
+            id: a.id,
+            session_id: a.session_id,
+            title: a.title,
+            kind: AiAlertKind::from_wire(a.kind),
+            at: a.at,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, uniffi::Record)]
+pub struct ForgeInfo {
+    pub state: ForgeState,
+    pub reviews: u32,
+    pub mine: u32,
+    pub notices: u32,
+}
+
+impl From<crate::ForgeCounts> for ForgeInfo {
+    fn from(c: crate::ForgeCounts) -> Self {
+        Self {
+            state: ForgeState::from_wire(c.state),
+            reviews: c.reviews,
+            mine: c.mine,
+            notices: c.notices,
         }
     }
 }
@@ -348,6 +460,16 @@ impl PhoneSession {
                         value: weather.into(),
                     })
                 }
+                Event::Message(Body::AiSessions(sessions)) => Some(PhoneEvent::AiSessions {
+                    items: sessions.items.into_iter().map(Into::into).collect(),
+                }),
+                Event::Message(Body::AiAlert(alert)) => Some(PhoneEvent::AiAlert {
+                    value: alert.into(),
+                }),
+                Event::Message(Body::Forge(forge)) => Some(PhoneEvent::Forge {
+                    github: forge.github.map(Into::into),
+                    gitlab: forge.gitlab.map(Into::into),
+                }),
                 Event::Message(_) => continue,
             };
         }
@@ -620,6 +742,71 @@ mod tests {
         c.send(weather(376, 1270)).unwrap();
         session.feed(c.take_output()).unwrap();
         assert_eq!(session.next_event(), None);
+    }
+
+    #[test]
+    fn ai_messages_come_up() {
+        let (session, mut c) = ready();
+        session.subscribe(Some(View::Ai), vec![]).unwrap();
+        c.feed(&session.take_output()).unwrap();
+        assert!(std::iter::from_fn(|| c.next_event()).any(|e| e
+            == Event::Message(Body::Subscribe(Subscribe {
+                main: crate::View::Ai as i32,
+                tiles: vec![],
+            }))));
+        c.send(Body::AiSessions(crate::AiSessions {
+            items: vec![crate::AiSession {
+                id: "abc".into(),
+                tool: crate::AiTool::Codex as i32,
+                title: "제목".into(),
+                project: "폴더".into(),
+                state: 42,
+                since: 5,
+                open: true,
+            }],
+        }))
+        .unwrap();
+        c.send(Body::AiAlert(crate::AiAlert {
+            id: 1,
+            session_id: "abc".into(),
+            title: "제목".into(),
+            kind: crate::AiAlertKind::Waiting as i32,
+            at: 9,
+        }))
+        .unwrap();
+        c.send(Body::Forge(crate::Forge {
+            github: Some(crate::ForgeCounts {
+                state: crate::ForgeState::Ok as i32,
+                reviews: 1,
+                mine: 2,
+                notices: 3,
+            }),
+            gitlab: None,
+        }))
+        .unwrap();
+        session.feed(c.take_output()).unwrap();
+        let Some(PhoneEvent::AiSessions { items }) = session.next_event() else {
+            panic!("세션 목록이 와야 함");
+        };
+        assert_eq!(items[0].tool, AiTool::Codex);
+        // 모르는 상태 값은 Unknown
+        assert_eq!(items[0].state, AiState::Unknown);
+        assert!(matches!(
+            session.next_event(),
+            Some(PhoneEvent::AiAlert { value }) if value.kind == AiAlertKind::Waiting && value.at == 9
+        ));
+        assert_eq!(
+            session.next_event(),
+            Some(PhoneEvent::Forge {
+                github: Some(ForgeInfo {
+                    state: ForgeState::Ok,
+                    reviews: 1,
+                    mine: 2,
+                    notices: 3
+                }),
+                gitlab: None,
+            })
+        );
     }
 
     #[test]
