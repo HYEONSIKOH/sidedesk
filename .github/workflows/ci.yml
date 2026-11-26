@@ -119,7 +119,10 @@ jobs:
       # SD-14 원칙: 값이 그대로면 매 프레임 그리기와 1초 타이머가 없다. 다시 들어오면 실패한다.
       - name: 매 프레임 그리기 없음
         run: |
-          if grep -rnE 'TimelineView\(\.animation|\.periodic\(from:' ios/App; then
+          # 매 프레임 시계(.animation, AnimationTimelineSchedule), 정해진 간격 시계(.periodic, PeriodicTimelineSchedule,
+          # Timer.publish), 끝없는 애니메이션(.repeatForever)을 찾는다. 줄을 나눠 쓴 TimelineView( 도 잡는다.
+          # 보기용 값(Debug)은 디버그 빌드에만 있어 뺀다.
+          if grep -rnE 'TimelineView\(\s*$|TimelineView\(\.animation|AnimationTimelineSchedule|\.animation\(minimumInterval|PeriodicTimelineSchedule|\.periodic\(|Timer\.publish\(every:|\.repeatForever' --exclude-dir=Debug ios/App; then
             echo "ios/App 에 매 프레임 또는 1초 타이머가 있습니다(MinuteSchedule, MusicTicks 를 쓰세요)"
             exit 1
           fi
