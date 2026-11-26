@@ -98,10 +98,20 @@ fn hub(folder: &Path) -> (Hub, Arc<WeatherPrefs>) {
         Some(Arc::clone(&get)),
     ));
     let weather = sidedesk_weather::Chooser::new(prefs.clone(), get);
+    let home = std::env::var_os("HOME").map(std::path::PathBuf::from);
     let hub = collectors().with_weather(
         Box::new(weather),
         sidedesk_domain::WeatherCadence::default(),
     );
+    // AI 세션 기록과 gh, glab 은 홈 폴더 아래를 본다. 윈도우는 아직 없음(컴파일만).
+    let hub = match home {
+        Some(home) => hub.with_ai(
+            Box::new(sidedesk_agents::Agents::new(home.clone())),
+            Some(Box::new(sidedesk_forge::Forgery::system(home))),
+            sidedesk_domain::AiCadence::default(),
+        ),
+        None => hub,
+    };
     (hub, prefs)
 }
 
@@ -134,6 +144,8 @@ fn run() -> Result<(), String> {
     thread::scope(|scope| {
         scope.spawn(|| hub.run());
         scope.spawn(|| hub.run_weather());
+        scope.spawn(|| hub.run_ai());
+        scope.spawn(|| hub.run_forge());
         keep_connected(&[&AdbLinks::default()], &context, &AtomicBool::new(false));
         hub.stop();
     });
@@ -224,6 +236,10 @@ fn window() -> Result<(), String> {
     }));
     thread::spawn(|| context.hub.run());
     thread::spawn(|| context.hub.run_weather());
+    thread::spawn(|| context.hub.run_ai());
+    thread::spawn(|| context.hub.run_forge());
+    // 창을 닫으면 돌고 있는 gh, glab 을 끝내고 나간다.
+    sidedesk_window::on_exit(|| context.hub.stop());
     thread::spawn(move || {
         let _lock = lock;
         let usb = AdbLinks::default();

@@ -79,9 +79,9 @@ class DeskViewModelTest {
         desk.setVisible(false)
         assertEquals(
             listOf(
-                Subscription(Topic.Weather, setOf(Topic.Perf, Topic.Processes)),
-                Subscription(Topic.Perf, setOf(Topic.Weather, Topic.Processes)),
-                Subscription(Topic.Processes, setOf(Topic.Weather, Topic.Perf)),
+                Subscription(Topic.Weather, setOf(Topic.Ai, Topic.Perf, Topic.Processes)),
+                Subscription(Topic.Perf, setOf(Topic.Weather, Topic.Ai, Topic.Processes)),
+                Subscription(Topic.Processes, setOf(Topic.Weather, Topic.Ai, Topic.Perf)),
                 Subscription.NONE,
             ),
             link.subscriptions,
@@ -92,12 +92,14 @@ class DeskViewModelTest {
     fun startsAtHome() {
         val desk = DeskViewModel(link) { 1L }
         assertEquals(Screen.Home, desk.state.value.big)
-        assertEquals(listOf(Screen.Perf, Screen.Processes), desk.state.value.small)
+        assertEquals(listOf(Screen.Ai, Screen.Perf, Screen.Processes), desk.state.value.small)
     }
 
     @Test
     fun swipingGoesAroundTheScreens() {
         val desk = DeskViewModel(link) { 1L }
+        desk.next()
+        assertEquals(Screen.Ai, desk.state.value.big)
         desk.next()
         assertEquals(Screen.Perf, desk.state.value.big)
         desk.next()
@@ -212,5 +214,13 @@ class DeskViewModelTest {
         assertEquals(false, desk.state.value.dimmed)
         link.state.value = LinkState.Waiting
         assertTrue(desk.state.value.dimmed)
+    }
+
+    @Test
+    fun subscribesToTheAiScreen() {
+        val desk = DeskViewModel(link) { 1L }
+        desk.setVisible(true)
+        desk.show(Screen.Ai)
+        assertEquals(Subscription(Topic.Ai, setOf(Topic.Weather, Topic.Perf, Topic.Processes)), link.subscriptions.last())
     }
 }

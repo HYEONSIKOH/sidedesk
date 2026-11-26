@@ -205,7 +205,7 @@ mod tests {
 
     #[test]
     fn lists_phones_with_the_reason_they_are_blocked() {
-        let list = "R3CN704E5EX            device usb:1X product:a71xskt model:SM_A716S device:a71x transport_id:23\n\
+        let list = "SERIAL00001            device usb:1X product:a71xskt model:SM_A716S device:a71x transport_id:23\n\
                     b                      unauthorized usb:2X transport_id:24\n\
                     c                      offline transport_id:25\n";
         let answer: &'static str =
@@ -213,7 +213,7 @@ mod tests {
         let answers: &'static [&'static str] = Box::leak(vec![answer].into_boxed_slice());
         let (links, server) = adb(answers, "");
         let phones = links.attached().unwrap();
-        assert_eq!(phones[0].id, "R3CN704E5EX");
+        assert_eq!(phones[0].id, "SERIAL00001");
         assert_eq!(phones[0].model.as_deref(), Some("SM A716S"));
         assert_eq!(phones[0].blocked, None);
         assert_eq!(phones[1].model, None);
