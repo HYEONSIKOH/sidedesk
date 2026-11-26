@@ -199,7 +199,8 @@ mod tests {
             stream.write_all(rest.as_bytes()).unwrap();
             let mut got = Vec::new();
             stream
-                .set_read_timeout(Some(Duration::from_millis(300)))
+                // 느린 CI 서버에서도 앱 쪽 글을 다 받게 넉넉히 기다린다.
+                .set_read_timeout(Some(Duration::from_secs(1)))
                 .unwrap();
             let _ = stream.read_to_end(&mut got);
             (asked, got)

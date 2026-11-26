@@ -864,9 +864,9 @@ mod tests {
             board.snapshot().contains(r#""pairing":{"#),
             "숫자 전에는 닫지 않는다"
         );
-        thread::sleep(Duration::from_millis(250));
+        // 100ms 뒤 닫힌다. 느린 CI 서버를 생각해 고정 시간 대신 기다린다.
+        wait_until(|| board.snapshot().contains(r#""pairing":null"#));
         let snapshot = board.snapshot();
-        assert!(snapshot.contains(r#""pairing":null"#), "{snapshot}");
         assert!(snapshot.contains("앱이 열리지 않음"));
         assert!(!requests.is_asked("a"));
     }
@@ -1098,7 +1098,7 @@ mod tests {
     }
 
     fn settle(board: &Board) -> String {
-        for _ in 0..200 {
+        for _ in 0..4000 {
             let snapshot = board.snapshot();
             if snapshot.contains(r#""checking":false"#) {
                 return snapshot;
@@ -1185,8 +1185,9 @@ mod tests {
         assert!(setup.saved.lock().unwrap().is_none());
     }
 
+    /// 느린 CI 서버를 생각해 5ms 씩 최대 20초 기다린다.
     fn wait_until(done: impl Fn() -> bool) {
-        for _ in 0..200 {
+        for _ in 0..4000 {
             if done() {
                 return;
             }

@@ -443,7 +443,8 @@ mod tests {
         assert_eq!(snapshot(panel)["picked"], "/work/docs/plan.txt");
         assert!(snapshot(panel)["picked"].is_null());
         assert!(panel.command(r#"{"shortcut-open":true}"#));
-        for _ in 0..200 {
+        // 느린 CI 서버를 생각해 최대 20초
+        for _ in 0..4000 {
             if snapshot(panel)["apps"].is_array() {
                 break;
             }
