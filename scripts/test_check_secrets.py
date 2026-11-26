@@ -3,6 +3,7 @@
 사용: python3 -I scripts/test_check_secrets.py
 """
 
+import os
 import sys
 import tempfile
 import unittest
@@ -106,6 +107,70 @@ class Artifacts(unittest.TestCase):
             scan = cs.Scan()
             cs.scan_artifact(scan, "big.bin", path, scan.rules())
             self.assertEqual([f.kind for f in scan.found], ["GitHub 토큰"])
+
+
+class Strict(unittest.TestCase):
+    def test_artifacts_allow_no_runner_home_and_catch_forbidden(self):
+        runner = j("/Us", "ers/", "runner/work/app")
+        self.assertEqual(kinds(runner), [])
+        self.assertEqual(kinds(runner, cs.Scan(strict=True)), ["홈 경로"])
+        scan = cs.Scan(strict=True, forbid=[j("D:", "\\a\\side")])
+        self.assertEqual(kinds(j("x D:", "\\a\\side\\y"), scan), ["빌드한 곳 경로"])
+
+    def test_bare_hex_key_only_in_artifacts(self):
+        key = ("0123456789abcdef" * 4).encode()
+        self.assertEqual(kinds(key), [])
+        self.assertEqual(kinds(key, cs.Scan(strict=True)), ["기상청 키(16진)"])
+
+    def test_korean_deny_word_matches_inside_text(self):
+        word = "회사".encode()
+        self.assertEqual(kinds("우리회사이름".encode(), cs.Scan(words=[word])), ["금지어"])
+
+    def test_png_text_chunks_are_unpacked(self):
+        import struct as st
+        import zlib as zl
+
+        def chunk(kind, body):
+            return st.pack(">I", len(body)) + kind + body + b"\0\0\0\0"
+
+        hidden = j("/Us", "ers/", "dave/shot")
+        png = b"\x89PNG\r\n\x1a\n" + chunk(b"zTXt", b"Comment\0\0" + zl.compress(hidden))
+        scan = cs.Scan()
+        cs.scan_data(scan, "a.png", png, scan.rules())
+        self.assertEqual([(f.where, f.kind) for f in scan.found], [("a.png#글조각:1", "홈 경로")])
+
+    def test_compressed_elf_sections_fail(self):
+        scan = cs.Scan()
+        cs.scan_data(scan, "a.so", b"\x7fELF\x02\x01" + b"\0" * 64 + b".zdebug_info", scan.rules())
+        self.assertEqual([f.kind for f in scan.found], ["압축 구역(안을 못 봄)"])
+
+
+class Tree(unittest.TestCase):
+    def test_links_are_not_followed(self):
+        with tempfile.TemporaryDirectory() as folder, tempfile.TemporaryDirectory() as outside:
+            Path(outside, "secret.txt").write_bytes(j("gh", "p_", "k" * 36))
+            root = Path(folder) / "stage"
+            root.mkdir()
+            Path(root, "ok.txt").write_text("깨끗함")
+            os.symlink(outside, root / "Applications")
+            scan = cs.Scan(strict=True)
+            cs.scan_artifact(scan, "stage", root, scan.rules())
+            self.assertEqual(scan.found, [])
+            self.assertTrue(any("Applications" in note for note in scan.notes))
+
+    def test_nesting_deeper_than_the_limit_fails(self):
+        with tempfile.TemporaryDirectory() as folder:
+            inner = Path(folder) / "0.zip"
+            with zipfile.ZipFile(inner, "w") as z:
+                z.writestr("a.txt", "x")
+            for level in range(1, cs.DEPTH + 2):
+                outer = Path(folder) / f"{level}.zip"
+                with zipfile.ZipFile(outer, "w") as z:
+                    z.write(inner, "in.zip")
+                inner = outer
+            scan = cs.Scan()
+            cs.scan_artifact(scan, "top.zip", inner, scan.rules())
+            self.assertEqual([f.kind for f in scan.found], ["너무 깊은 압축(안을 못 봄)"])
 
 
 if __name__ == "__main__":
