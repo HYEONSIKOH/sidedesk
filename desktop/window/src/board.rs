@@ -1,6 +1,6 @@
 //! 화면에 보일 상태. 연결 스레드는 `Report`, `Prompt` 로 알리고, 화면은 명령을 보낸다.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Mutex, MutexGuard};
 use std::thread;
@@ -8,7 +8,8 @@ use std::time::Duration;
 
 use sidedesk_core::{KEY_LEN, beacon};
 use sidedesk_domain::{
-    Choice, KeyCheck, Keys, Link, Note, PairRequests, Phone, Prompt, Report, Secret, WeatherSetup,
+    Choice, KeyCheck, Keys, Link, Note, PairRequests, Phone, Prompt, Report, Secret, Source,
+    WeatherSetup,
 };
 
 use crate::json;
@@ -52,8 +53,12 @@ struct State {
     notice: Option<Notice>,
     /// 키마다 마지막으로 그 키로 붙었던 폰
     seen: HashMap<[u8; KEY_LEN], String>,
-    /// 링크 자체의 문제(adb 없음, 블루투스 꺼짐)
-    problems: HashMap<Link, String>,
+    /// 기기마다 그 기기를 낸 출처
+    origin: HashMap<String, Source>,
+    /// 출처 자체의 문제(adb 없음, 블루투스 꺼짐)
+    problems: HashMap<Source, String>,
+    /// 목록을 낸 적 있고 지금 문제 없는 출처
+    healthy: HashSet<Source>,
     /// 키 넣기와 지우기마다 올린다. 늦게 끝난 앞 확인이 저장하거나 덮지 않게 한다.
     key_round: u64,
     checking: bool,
@@ -481,15 +486,24 @@ impl Board {
             ("pairing", pairing),
             ("notice", notice),
             ("weather", self.weather_json(&state)),
-            (
-                "problems",
-                json::array(
-                    [Link::Usb, Link::Ble]
-                        .into_iter()
-                        .filter_map(|link| state.problems.get(&link).map(|text| json::text(text))),
-                ),
-            ),
+            ("problems", json::array(Self::problems(&state))),
         ])
+    }
+
+    /// 보일 문제 문장. 같은 길의 다른 출처가 살아 있으면 그 길의 문제는 숨긴다
+    /// (아이폰만 쓰는 맥에서 adb 가 없다는 문장이 늘 남지 않게).
+    fn problems(state: &State) -> impl Iterator<Item = String> + '_ {
+        let mut sources: Vec<&Source> = state.problems.keys().collect();
+        sources.sort();
+        sources
+            .into_iter()
+            .filter(|source| {
+                !state
+                    .healthy
+                    .iter()
+                    .any(|other| other.link == source.link && other != *source)
+            })
+            .map(|source| json::text(&state.problems[source]))
     }
 
     /// 짝 맺기 중인 폰이 끝났으면 상자를 닫고 이유를 남긴다.
@@ -560,54 +574,53 @@ impl Report for Board {
         self.publish();
     }
 
-    fn link(&self, link: Link, problem: Option<String>) {
+    fn link(&self, source: Source, problem: Option<String>) {
         {
             let mut state = self.lock();
             match problem {
                 None => {
-                    if state.problems.remove(&link).is_none() {
+                    let fixed = state.problems.remove(&source).is_some();
+                    let new = state.healthy.insert(source);
+                    if !fixed && !new {
                         return;
                     }
                 }
-                // 링크를 쓸 수 없으면 그 링크의 기기를 알 수 없다. 그 이유로 끊김으로 둔다.
+                // 출처를 쓸 수 없으면 그 출처의 기기를 알 수 없다. 그 이유로 끊김으로 둔다.
                 Some(reason) => {
-                    if state.problems.get(&link) == Some(&reason) {
+                    state.healthy.remove(&source);
+                    if state.problems.get(&source) == Some(&reason) {
                         return;
                     }
-                    let ids: Vec<String> = state
-                        .attached
-                        .iter()
-                        .filter(|phone| phone.link == link)
-                        .map(|phone| phone.id.clone())
-                        .collect();
+                    let ids = Self::from_source(&state, source);
                     for id in &ids {
                         state
                             .status
                             .insert(id.clone(), Status::Lost(reason.clone()));
+                        state.origin.remove(id);
                     }
-                    state.attached.retain(|phone| phone.link != link);
+                    state.attached.retain(|phone| !ids.contains(&phone.id));
                     if let Some(id) = state.pairing.as_ref().map(|pairing| pairing.id.clone())
                         && ids.contains(&id)
                     {
                         self.requests.take(&id);
                         state.pairing = None;
                     }
-                    state.problems.insert(link, reason);
+                    state.problems.insert(source, reason);
                 }
             }
         }
         self.publish();
     }
 
-    fn phones(&self, link: Link, phones: &[Phone]) {
+    fn phones(&self, source: Source, phones: &[Phone]) {
         {
             let mut state = self.lock();
-            let gone: Vec<String> = state
-                .attached
+            let link = source.link;
+            let mine = Self::from_source(&state, source);
+            let gone: Vec<String> = mine
                 .iter()
-                .filter(|phone| phone.link == link)
-                .filter(|old| !phones.iter().any(|phone| phone.id == old.id))
-                .map(|phone| phone.id.clone())
+                .filter(|old| !phones.iter().any(|phone| phone.id == **old))
+                .cloned()
                 .collect();
             let reason = match link {
                 Link::Usb => "USB 연결이 끊김",
@@ -622,7 +635,9 @@ impl Report for Board {
                     state.status.insert(id, Status::Lost(reason.to_owned()));
                 }
             }
+            // 등록 중인 기기가 이 출처의 것이었을 때만 닫는다(다른 출처의 목록은 상관없다).
             if let Some(pairing) = &state.pairing
+                && mine.contains(&pairing.id)
                 && !phones.iter().any(|phone| phone.id == pairing.id)
             {
                 let id = pairing.id.clone();
@@ -636,10 +651,32 @@ impl Report for Board {
                     }),
                 );
             }
-            state.attached.retain(|phone| phone.link != link);
+            state.attached.retain(|phone| !mine.contains(&phone.id));
+            for id in &mine {
+                state.origin.remove(id);
+            }
+            // 다른 출처가 같은 id 를 냈으면(일어나지 않게 아이폰은 `ios:` 를 붙인다) 새 것으로 바꾼다.
+            state
+                .attached
+                .retain(|old| !phones.iter().any(|phone| phone.id == old.id));
+            for phone in phones {
+                state.origin.insert(phone.id.clone(), source);
+            }
             state.attached.extend_from_slice(phones);
+            state.healthy.insert(source);
         }
         self.publish();
+    }
+}
+
+impl Board {
+    fn from_source(state: &State, source: Source) -> Vec<String> {
+        state
+            .attached
+            .iter()
+            .filter(|phone| state.origin.get(&phone.id) == Some(&source))
+            .map(|phone| phone.id.clone())
+            .collect()
     }
 }
 
@@ -690,6 +727,10 @@ mod tests {
     use sidedesk_domain::{Paired, PortError};
 
     use super::*;
+
+    const USB: Source = Source::new(Link::Usb, "adb");
+    const MUX: Source = Source::new(Link::Usb, "usbmux");
+    const BLE: Source = Source::of(Link::Ble);
 
     #[derive(Default)]
     struct MemoryKeys(StdMutex<Vec<Paired>>);
@@ -762,7 +803,7 @@ mod tests {
     #[test]
     fn pairing_from_the_window() {
         let (board, keys, requests) = board();
-        board.phones(Link::Usb, &[phone("a")]);
+        board.phones(USB, &[phone("a")]);
         board.note("a", Note::Refused("등록되지 않은 상대".into()));
         assert!(board.snapshot().contains(r#""status":"refused""#));
 
@@ -803,7 +844,7 @@ mod tests {
     #[test]
     fn a_failed_pairing_closes_the_box_with_a_reason() {
         let (board, _, _) = board();
-        board.phones(Link::Usb, &[phone("a")]);
+        board.phones(USB, &[phone("a")]);
         board.command(r#"{"pair":"a"}"#);
         let _reply = board.ask("a", "123456");
         board.note("a", Note::Refused("등록을 취소함".into()));
@@ -815,7 +856,7 @@ mod tests {
     #[test]
     fn the_box_waits_for_the_app_then_gives_up() {
         let (board, _, requests) = board_waiting(Duration::from_millis(100));
-        board.phones(Link::Usb, &[phone("a")]);
+        board.phones(USB, &[phone("a")]);
         board.command(r#"{"pair":"a"}"#);
         board.note("a", Note::Lost("기기에서 SideDesk 앱을 열어 주세요".into()));
         board.note("a", Note::Refused("등록되지 않은 상대".into()));
@@ -834,10 +875,10 @@ mod tests {
     fn unplugging_turns_the_phone_red_and_ends_pairing() {
         let (board, keys, requests) = board();
         keys.trust([1; KEY_LEN], "SM A716S", "a").unwrap();
-        board.phones(Link::Usb, &[phone("a"), phone("b")]);
+        board.phones(USB, &[phone("a"), phone("b")]);
         board.note("a", Note::Connected { key: [1; KEY_LEN] });
         board.command(r#"{"pair":"b"}"#);
-        board.phones(Link::Usb, &[]);
+        board.phones(USB, &[]);
         let snapshot = board.snapshot();
         assert!(
             snapshot.contains(r#""status":"lost","reason":"USB 연결이 끊김""#),
@@ -851,7 +892,7 @@ mod tests {
     fn a_paired_phone_offers_no_pairing_while_disconnected() {
         let (board, keys, _) = board();
         keys.trust([1; KEY_LEN], "SM A716S", "a").unwrap();
-        board.phones(Link::Usb, &[phone("a")]);
+        board.phones(USB, &[phone("a")]);
         board.note("a", Note::Connected { key: [1; KEY_LEN] });
         board.note("a", Note::Lost("기기에서 SideDesk 앱을 열어 주세요".into()));
         assert!(board.snapshot().contains(r#""paired":true"#));
@@ -860,7 +901,7 @@ mod tests {
     #[test]
     fn saying_no_closes_the_box_and_only_one_pairing_at_a_time() {
         let (board, _, requests) = board();
-        board.phones(Link::Usb, &[phone("a"), phone("b")]);
+        board.phones(USB, &[phone("a"), phone("b")]);
         board.command(r#"{"pair":"a"}"#);
         board.command(r#"{"pair":"b"}"#);
         assert!(!requests.is_asked("b"));
@@ -874,9 +915,9 @@ mod tests {
     fn losing_adb_shows_its_reason_on_every_phone() {
         let (board, keys, _) = board();
         keys.trust([1; KEY_LEN], "SM A716S", "a").unwrap();
-        board.phones(Link::Usb, &[phone("a")]);
+        board.phones(USB, &[phone("a")]);
         board.note("a", Note::Connected { key: [1; KEY_LEN] });
-        board.link(Link::Usb, Some("adb 서버에 접속하지 못함".into()));
+        board.link(USB, Some("adb 서버에 접속하지 못함".into()));
         let snapshot = board.snapshot();
         assert!(
             snapshot.contains(r#""status":"lost","reason":"adb 서버에 접속하지 못함""#),
@@ -884,7 +925,7 @@ mod tests {
         );
         assert!(snapshot.contains(r#""attached":[]"#));
         assert!(snapshot.contains(r#""problems":["adb 서버에 접속하지 못함"]"#));
-        board.link(Link::Usb, None);
+        board.link(USB, None);
         assert!(board.snapshot().contains(r#""problems":[]"#));
     }
 
@@ -893,7 +934,7 @@ mod tests {
         let (board, keys, _) = board();
         keys.trust([1; KEY_LEN], "SM A716S", "a").unwrap();
         board.phones(
-            Link::Ble,
+            BLE,
             &[
                 air([1; KEY_LEN]),
                 Phone {
@@ -918,10 +959,10 @@ mod tests {
     fn bluetooth_list_does_not_wipe_usb() {
         let (board, keys, _) = board();
         keys.trust([1; KEY_LEN], "SM A716S", "a").unwrap();
-        board.phones(Link::Usb, &[phone("a")]);
+        board.phones(USB, &[phone("a")]);
         board.note("a", Note::Connected { key: [1; KEY_LEN] });
-        board.phones(Link::Ble, &[]);
-        board.link(Link::Ble, Some("맥의 블루투스가 꺼져 있습니다".into()));
+        board.phones(BLE, &[]);
+        board.link(BLE, Some("맥의 블루투스가 꺼져 있습니다".into()));
         let snapshot = board.snapshot();
         assert!(snapshot.contains(r#""link":"USB""#), "{snapshot}");
         assert!(snapshot.contains(r#""status":"connected""#), "{snapshot}");
@@ -931,12 +972,66 @@ mod tests {
     fn a_late_bluetooth_drop_does_not_cover_usb() {
         let (board, keys, _) = board();
         keys.trust([1; KEY_LEN], "SM A716S", "a").unwrap();
-        board.phones(Link::Usb, &[phone("a")]);
-        board.phones(Link::Ble, &[air([1; KEY_LEN])]);
+        board.phones(USB, &[phone("a")]);
+        board.phones(BLE, &[air([1; KEY_LEN])]);
         board.note("a", Note::Connected { key: [1; KEY_LEN] });
         // 물러난 블루투스는 알리지 않으므로, 끊김이 와도 다른 id 에 붙는다.
         board.note("ble:1", Note::Lost("끊김".into()));
         assert!(board.snapshot().contains(r#""status":"connected""#));
+    }
+
+    fn iphone() -> Phone {
+        Phone::usb("ios:00008110", Some("iPhone".into()), None)
+    }
+
+    #[test]
+    fn missing_adb_leaves_a_connected_iphone_alone_and_hides_its_reason() {
+        let (board, keys, _) = board();
+        keys.trust([2; KEY_LEN], "iPhone", "ios:00008110").unwrap();
+        board.link(MUX, None);
+        board.phones(MUX, &[iphone()]);
+        board.note("ios:00008110", Note::Connected { key: [2; KEY_LEN] });
+        // adb 는 1초마다 같은 이유로 끝난다.
+        for _ in 0..3 {
+            board.link(USB, Some("adb 서버에 접속하지 못함".into()));
+        }
+        let snapshot = board.snapshot();
+        assert!(snapshot.contains(r#""status":"connected""#), "{snapshot}");
+        assert!(snapshot.contains("ios:00008110"), "{snapshot}");
+        assert!(snapshot.contains(r#""problems":[]"#), "{snapshot}");
+        // usbmux 마저 안 되면 두 이유가 다 보인다.
+        board.link(MUX, Some("usbmuxd 에 접속하지 못함".into()));
+        let snapshot = board.snapshot();
+        assert!(
+            snapshot
+                .contains(r#""problems":["adb 서버에 접속하지 못함","usbmuxd 에 접속하지 못함"]"#),
+            "{snapshot}"
+        );
+    }
+
+    #[test]
+    fn one_usb_source_list_does_not_drop_the_other() {
+        let (board, keys, _) = board();
+        keys.trust([1; KEY_LEN], "SM A716S", "a").unwrap();
+        board.phones(USB, &[phone("a")]);
+        board.note("a", Note::Connected { key: [1; KEY_LEN] });
+        board.phones(MUX, &[iphone()]);
+        board.phones(MUX, &[]);
+        let snapshot = board.snapshot();
+        assert!(snapshot.contains(r#""status":"connected""#), "{snapshot}");
+        assert!(snapshot.contains(r#""id":"a""#), "{snapshot}");
+        assert!(!snapshot.contains(r#""id":"ios:00008110""#), "{snapshot}");
+    }
+
+    #[test]
+    fn another_source_list_does_not_close_the_pairing_box() {
+        let (board, _, requests) = board();
+        board.phones(USB, &[phone("a")]);
+        board.command(r#"{"pair":"a"}"#);
+        board.phones(BLE, &[]);
+        board.phones(MUX, &[]);
+        assert!(board.snapshot().contains(r#""pairing":{"id":"a""#));
+        assert!(requests.is_asked("a"));
     }
 
     #[test]

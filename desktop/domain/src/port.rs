@@ -16,7 +16,7 @@ impl PortError {
 }
 
 /// 기기와 이어지는 길
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum Link {
     Usb,
     Ble,
@@ -28,6 +28,27 @@ impl fmt::Display for Link {
             Self::Usb => "USB",
             Self::Ble => "블루투스",
         })
+    }
+}
+
+/// 기기 목록을 내는 곳. 같은 길에 출처가 여럿일 수 있다(USB 는 adb 와 usbmux).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct Source {
+    pub link: Link,
+    pub name: &'static str,
+}
+
+impl Source {
+    pub const fn new(link: Link, name: &'static str) -> Self {
+        Self { link, name }
+    }
+
+    /// 그 길에 출처가 하나뿐일 때의 이름
+    pub const fn of(link: Link) -> Self {
+        match link {
+            Link::Usb => Self::new(link, "usb"),
+            Link::Ble => Self::new(link, "ble"),
+        }
     }
 }
 
@@ -71,6 +92,10 @@ pub trait Conn: Send {
 
 pub trait PhoneLinks: Send + Sync {
     fn link(&self) -> Link;
+    /// 목록과 문제를 알릴 때 쓰는 출처. 같은 길의 다른 출처와 이름이 달라야 한다.
+    fn source(&self) -> Source {
+        Source::of(self.link())
+    }
     fn attached(&self) -> Result<Vec<Phone>, PortError>;
     /// 붙은 폰 목록이 바뀔 때마다 알린다. 통로가 끊기면 돌아온다.
     fn watch(&self, changed: &mut dyn FnMut(Vec<Phone>)) -> Result<(), PortError>;
@@ -144,11 +169,11 @@ pub enum Note {
 pub trait Report: Send + Sync {
     fn note(&self, phone: &str, note: Note);
 
-    /// 한 링크의 기기 목록이 바뀌었다. 다른 링크의 목록은 건드리지 않는다.
-    fn phones(&self, _link: Link, _phones: &[Phone]) {}
+    /// 한 출처의 기기 목록이 바뀌었다. 다른 출처의 목록은 건드리지 않는다.
+    fn phones(&self, _source: Source, _phones: &[Phone]) {}
 
-    /// 링크 자체의 문제(adb 없음, 블루투스 꺼짐, 권한 없음). None 이면 문제가 풀렸다.
-    fn link(&self, _link: Link, _problem: Option<String>) {}
+    /// 출처 자체의 문제(adb 없음, 블루투스 꺼짐, 권한 없음). None 이면 문제가 풀렸다.
+    fn link(&self, _source: Source, _problem: Option<String>) {}
 }
 
 /// 지금 붙어 있는 기기 키와 그 길, 그 연결의 id. 한 기기에는 연결 하나만 붙인다(USB 우선).

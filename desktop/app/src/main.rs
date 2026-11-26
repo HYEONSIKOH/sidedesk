@@ -236,7 +236,7 @@ fn window() -> Result<(), String> {
         // 맥 블루투스는 Info.plist 가 있는 SideDesk.app 안에서만 쓸 수 있다.
         #[cfg(target_os = "macos")]
         board.link(
-            sidedesk_domain::Link::Ble,
+            sidedesk_domain::Source::of(sidedesk_domain::Link::Ble),
             Some("블루투스를 쓰려면 SideDesk.app 으로 실행하세요".to_owned()),
         );
         keep_connected(&[&usb], context, &AtomicBool::new(false));

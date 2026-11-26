@@ -11,7 +11,7 @@ use sidedesk_core::{Performance, Process};
 use sidedesk_domain::{
     Active, Cadence, ComputerName, Conn, Context, Ended, Hub, Keys, Link, Meter, Note,
     PairRequests, Paired, Phone, PhoneLinks, PortError, ProcessTable, Prompt, Received, Report,
-    ServeError, Timing, keep_connected, serve,
+    ServeError, Source, Timing, keep_connected, serve,
 };
 
 struct Pipe {
@@ -217,11 +217,19 @@ impl Prompt for Person {
 }
 
 #[derive(Default)]
-struct Notes(Mutex<Vec<(String, Note)>>);
+struct Notes(
+    Mutex<Vec<(String, Note)>>,
+    Mutex<Vec<(Source, Vec<String>)>>,
+);
 
 impl Report for Notes {
     fn note(&self, phone: &str, note: Note) {
         self.0.lock().unwrap().push((phone.to_owned(), note));
+    }
+
+    fn phones(&self, source: Source, phones: &[Phone]) {
+        let ids = phones.iter().map(|phone| phone.id.clone()).collect();
+        self.1.lock().unwrap().push((source, ids));
     }
 }
 
@@ -654,6 +662,8 @@ fn a_pair_request_waits_for_the_app_to_open() {
 /// 목록을 시험 중에 바꿀 수 있는 링크. 접속할 때마다 폰 쪽 세션을 새로 띄운다.
 struct Switch {
     link: Link,
+    /// 출처 이름. None 이면 길의 기본 이름
+    name: Option<&'static str>,
     phones: Mutex<Vec<Phone>>,
     identity: Identity,
     trusted: Vec<[u8; KEY_LEN]>,
@@ -666,6 +676,7 @@ impl Switch {
     fn new(link: Link, phone: Phone, identity: Identity, trusted: Vec<[u8; KEY_LEN]>) -> Self {
         Self {
             link,
+            name: None,
             phones: Mutex::new(vec![phone]),
             identity,
             trusted,
@@ -687,6 +698,11 @@ impl Switch {
 impl PhoneLinks for Switch {
     fn link(&self) -> Link {
         self.link
+    }
+
+    fn source(&self) -> Source {
+        self.name
+            .map_or(Source::of(self.link), |name| Source::new(self.link, name))
     }
 
     fn attached(&self) -> Result<Vec<Phone>, PortError> {
@@ -951,5 +967,34 @@ fn a_rotated_bluetooth_address_does_not_add_a_second_connection() {
         new.connects.load(Ordering::Relaxed),
         0,
         "같은 기기는 블루투스 연결 하나"
+    );
+}
+
+#[test]
+fn each_usb_source_reports_only_its_own_list() {
+    let phone_key = Identity::generate();
+    let world = World::new(vec![phone_key.public], None);
+    let computer = vec![world.computer.identity.public];
+    let mut adb = Switch::new(Link::Usb, p(), phone_key.clone(), computer.clone());
+    adb.name = Some("adb");
+    adb.unplug();
+    let mut mux = Switch::new(
+        Link::Usb,
+        Phone::usb("ios:1", Some("iPhone".into()), None),
+        phone_key,
+        computer,
+    );
+    mux.name = Some("usbmux");
+    run_links(&[&adb, &mux], &world, || {
+        thread::sleep(Duration::from_millis(300));
+    });
+    let lists = world.notes.1.lock().unwrap().clone();
+    assert!(lists.contains(&(Source::new(Link::Usb, "adb"), Vec::new())));
+    assert!(lists.contains(&(Source::new(Link::Usb, "usbmux"), vec!["ios:1".to_owned()])));
+    assert!(
+        lists
+            .iter()
+            .all(|(source, ids)| source.name != "adb" || ids.is_empty()),
+        "adb 목록에 아이폰이 섞이지 않음"
     );
 }

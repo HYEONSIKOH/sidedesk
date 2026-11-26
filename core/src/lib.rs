@@ -1,4 +1,5 @@
 mod beacon;
+mod ios;
 mod place;
 mod proto;
 mod session;
@@ -13,6 +14,7 @@ uniffi::setup_scaffolding!();
 pub use beacon::{
     BEACON_LEN, BLE_SERVICE, SERVICE_DATA_LEN, beacon, parse_service_data, service_data,
 };
+pub use ios::{BLE_INFO, IOS_USB_PORT};
 pub use place::{place_tenths, valid_tenths};
 pub use proto::{
     CommandResult, Hello, KillProcess, Location, Performance, Process, Processes, Provider, Sky,

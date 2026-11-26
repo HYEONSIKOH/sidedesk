@@ -2,7 +2,7 @@ use std::io::{self, ErrorKind, Read, Write};
 use std::net::{IpAddr, Ipv4Addr, SocketAddr, TcpStream};
 use std::time::Duration;
 
-use sidedesk_domain::{Conn, Link, Phone, PhoneLinks, PortError, Received};
+use sidedesk_domain::{Conn, Link, Phone, PhoneLinks, PortError, Received, Source};
 
 const SERVER: SocketAddr = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 5037);
 const SOCKET: &str = "localabstract:sidedesk";
@@ -59,6 +59,10 @@ impl AdbLinks {
 impl PhoneLinks for AdbLinks {
     fn link(&self) -> Link {
         Link::Usb
+    }
+
+    fn source(&self) -> Source {
+        Source::new(Link::Usb, "adb")
     }
 
     fn attached(&self) -> Result<Vec<Phone>, PortError> {

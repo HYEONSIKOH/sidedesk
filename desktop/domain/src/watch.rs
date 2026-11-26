@@ -25,12 +25,13 @@ pub fn keep_connected(links: &[&dyn PhoneLinks], context: &Context, stop: &Atomi
 
 fn watch_link(links: &dyn PhoneLinks, context: &Context, stop: &AtomicBool) {
     let link = links.link();
+    let source = links.source();
     thread::scope(|scope| {
         let mut workers: HashMap<String, Arc<AtomicBool>> = HashMap::new();
         while !stop.load(Ordering::Relaxed) {
             let watched = links.watch(&mut |phones| {
-                context.report.link(link, None);
-                context.report.phones(link, &phones);
+                context.report.link(source, None);
+                context.report.phones(source, &phones);
                 let ready: HashSet<String> = phones
                     .iter()
                     .filter(|phone| phone.blocked.is_none())
@@ -65,7 +66,7 @@ fn watch_link(links: &dyn PhoneLinks, context: &Context, stop: &AtomicBool) {
                 }
             });
             if let Err(error) = watched {
-                context.report.link(link, Some(error.0));
+                context.report.link(source, Some(error.0));
                 // 블루투스를 쓸 수 없으면 기기 작업을 멈춘다(헛된 붙기 시도가 줄의 이유를 덮지 않게).
                 // 다시 켜지면 새로 시작한다. USB 는 adb 가 잠깐 끊겨도 작업과 등록 요청을 남긴다.
                 if link == Link::Ble {
