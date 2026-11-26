@@ -151,36 +151,39 @@ pub trait Report: Send + Sync {
     fn link(&self, _link: Link, _problem: Option<String>) {}
 }
 
-/// 지금 붙어 있는 기기 키와 그 길. 한 기기에는 한 길만 붙인다(USB 우선).
+/// 지금 붙어 있는 기기 키와 그 길, 그 연결의 id. 한 기기에는 연결 하나만 붙인다(USB 우선).
 #[derive(Default)]
-pub struct Active(Mutex<HashMap<[u8; KEY_LEN], Link>>);
+pub struct Active(Mutex<HashMap<[u8; KEY_LEN], (Link, String)>>);
 
 impl Active {
-    /// 이 길로 붙어도 되면 자리를 잡고 true. 블루투스는 USB 가 이미 있으면 진다.
-    pub fn claim(&self, key: [u8; KEY_LEN], link: Link) -> bool {
+    /// 이 연결로 붙어도 되면 자리를 잡고 true.
+    /// 블루투스는 USB 가 있거나, 같은 기기가 다른 블루투스 id(주소가 바뀐 경우)로 붙어 있으면 진다.
+    pub fn claim(&self, key: [u8; KEY_LEN], link: Link, id: &str) -> bool {
         let mut held = self.lock();
-        match (held.get(&key), link) {
-            (Some(Link::Usb), Link::Ble) => false,
-            _ => {
-                held.insert(key, link);
-                true
-            }
+        let lose = match (held.get(&key), link) {
+            (Some((Link::Usb, _)), Link::Ble) => true,
+            (Some((Link::Ble, other)), Link::Ble) => other != id,
+            _ => false,
+        };
+        if !lose {
+            held.insert(key, (link, id.to_owned()));
         }
+        !lose
     }
 
-    /// 이 길이 잡은 자리만 놓는다.
-    pub fn release(&self, key: [u8; KEY_LEN], link: Link) {
+    /// 이 연결이 잡은 자리만 놓는다.
+    pub fn release(&self, key: [u8; KEY_LEN], id: &str) {
         let mut held = self.lock();
-        if held.get(&key) == Some(&link) {
+        if held.get(&key).is_some_and(|(_, holder)| holder == id) {
             held.remove(&key);
         }
     }
 
     pub fn holds(&self, key: [u8; KEY_LEN], link: Link) -> bool {
-        self.lock().get(&key) == Some(&link)
+        self.lock().get(&key).is_some_and(|(held, _)| *held == link)
     }
 
-    fn lock(&self) -> std::sync::MutexGuard<'_, HashMap<[u8; KEY_LEN], Link>> {
+    fn lock(&self) -> std::sync::MutexGuard<'_, HashMap<[u8; KEY_LEN], (Link, String)>> {
         self.0.lock().unwrap_or_else(|lock| lock.into_inner())
     }
 }

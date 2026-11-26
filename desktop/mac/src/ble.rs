@@ -33,16 +33,14 @@ const READ_WAIT: Duration = Duration::from_millis(250);
 const WRITE_LIMIT: Duration = Duration::from_secs(5);
 const PREFIX: &str = "ble:";
 
-/// CoreBluetooth 객체를 스레드 사이로 넘긴다.
-/// CoreBluetooth 는 어느 스레드에서 불러도 되고, 콜백은 우리가 정한 큐로만 온다.
-struct Shared<T>(T);
-// SAFETY: 위 설명대로 CoreBluetooth 객체는 스레드에 묶이지 않는다. 동시에 바꾸는 상태는 Mutex 로 감싼다.
-unsafe impl<T> Send for Shared<T> {}
-// SAFETY: 같은 이유
-unsafe impl<T> Sync for Shared<T> {}
+/// 한 스레드가 쥐고 있다가 다른 스레드로 넘기기만 하는 CoreBluetooth 객체(기기, 채널, 스트림).
+/// 동시에 두 스레드가 쓰지 않는다.
+struct Sendable<T>(T);
+// SAFETY: 위 설명대로 한 번에 한 스레드만 쓴다. 넘기는 것만 허용하고 Sync 는 붙이지 않는다.
+unsafe impl<T> Send for Sendable<T> {}
 
 struct Seen {
-    peripheral: Shared<Retained<CBPeripheral>>,
+    peripheral: Sendable<Retained<CBPeripheral>>,
     psm: u16,
     beacon: [u8; BEACON_LEN],
     name: Option<String>,
@@ -52,7 +50,7 @@ struct Seen {
 enum Step {
     Connected,
     Failed(String),
-    Channel(Shared<Retained<CBL2CAPChannel>>),
+    Channel(Sendable<Retained<CBL2CAPChannel>>),
     Disconnected,
 }
 
@@ -62,7 +60,11 @@ struct State {
     problem: Option<String>,
     seen: HashMap<String, Seen>,
     connected: HashSet<String>,
-    waiters: HashMap<String, Sender<Step>>,
+    /// 기기 id 마다 지금 기다리는 연결 번호와 받는 쪽
+    waiters: HashMap<String, (u64, Sender<Step>)>,
+    tickets: u64,
+    /// 붙는 중인 수. 0 일 때만 찾기를 켠다.
+    connecting: usize,
     version: u64,
 }
 
@@ -83,8 +85,20 @@ impl Hub {
     }
 
     fn step(&self, id: &str, step: Step) {
-        if let Some(waiter) = self.lock().waiters.get(id) {
+        if let Some((_, waiter)) = self.lock().waiters.get(id) {
             let _ = waiter.send(step);
+        }
+    }
+
+    /// 이 연결 번호가 걸어 둔 대기자만 지운다.
+    fn forget_waiter(&self, id: &str, ticket: u64) {
+        let mut state = self.lock();
+        if state
+            .waiters
+            .get(id)
+            .is_some_and(|(mine, _)| *mine == ticket)
+        {
+            state.waiters.remove(id);
         }
     }
 }
@@ -129,9 +143,10 @@ define_class!(
             if problem.is_some() {
                 state.seen.clear();
             }
+            let idle = state.connecting == 0;
             hub.bump(&mut state);
             drop(state);
-            if power == CBManagerState::PoweredOn {
+            if power == CBManagerState::PoweredOn && idle {
                 scan(central);
             }
         }
@@ -162,7 +177,7 @@ define_class!(
             state.seen.insert(
                 id,
                 Seen {
-                    peripheral: Shared(peripheral.retain()),
+                    peripheral: Sendable(peripheral.retain()),
                     psm,
                     beacon,
                     name,
@@ -218,7 +233,7 @@ define_class!(
             error: Option<&NSError>,
         ) {
             let step = match (channel, error) {
-                (Some(channel), None) => Step::Channel(Shared(channel.retain())),
+                (Some(channel), None) => Step::Channel(Sendable(channel.retain())),
                 (_, error) => Step::Failed(
                     error
                         .map(|error| error.localizedDescription().to_string())
@@ -272,12 +287,88 @@ fn local_name(advertisement: &NSDictionary<NSString, AnyObject>) -> Option<Strin
     Some(value.downcast::<NSString>().ok()?.to_string())
 }
 
+/// 관리자와 대리자. 관리자 메서드는 전용 큐 안에서만 부른다(콜백도 그 큐로 온다).
+struct Manager {
+    central: Retained<CBCentralManager>,
+    delegate: Retained<Delegate>,
+    queue: DispatchRetained<DispatchQueue>,
+}
+
+// SAFETY: 관리자와 대리자는 `on_queue` 를 거쳐 전용 직렬 큐에서만 쓴다. 큐가 한 번에 하나씩 돌린다.
+unsafe impl Send for Manager {}
+// SAFETY: 같은 이유
+unsafe impl Sync for Manager {}
+
+impl Manager {
+    fn on_queue(&self, work: impl FnOnce(&CBCentralManager, &Delegate)) {
+        struct Job<F>(F);
+        // SAFETY: 작업은 exec_sync 가 끝나기 전에 큐에서 한 번 돌고 끝난다. 그동안 부른 스레드는 기다린다.
+        unsafe impl<F> Send for Job<F> {}
+        let job = Job(|| work(&self.central, &self.delegate));
+        self.queue.exec_sync(move || {
+            let job = job;
+            (job.0)()
+        });
+    }
+
+    /// 붙기를 시작한다. 처음 붙는 것이면 찾기를 멈춘다(찾는 중에는 붙기가 끝나지 않는 일이 있다).
+    fn begin(&self, hub: &Hub, peripheral: &CBPeripheral) {
+        let first = {
+            let mut state = hub.lock();
+            state.connecting += 1;
+            state.connecting == 1
+        };
+        let peripheral = Sendable(peripheral);
+        self.on_queue(|central, delegate| {
+            let peripheral = &peripheral;
+            // SAFETY: 이 관리자가 찾은 기기에 대리자를 두고 붙는다.
+            unsafe {
+                if first {
+                    central.stopScan();
+                }
+                peripheral
+                    .0
+                    .setDelegate(Some(ProtocolObject::from_ref(delegate)));
+                central.connectPeripheral_options(peripheral.0, None);
+            }
+        });
+    }
+
+    /// 붙기가 끝났다(성공이든 실패든). 붙는 중인 것이 없으면 찾기를 다시 켠다.
+    fn end(&self, hub: &Hub) {
+        let idle = {
+            let mut state = hub.lock();
+            state.connecting = state.connecting.saturating_sub(1);
+            state.connecting == 0 && state.problem.is_none()
+        };
+        if idle {
+            self.on_queue(|central, _| scan(central));
+        }
+    }
+
+    fn cancel(&self, peripheral: &CBPeripheral) {
+        let peripheral = Sendable(peripheral);
+        self.on_queue(|central, _| {
+            let peripheral = &peripheral;
+            // SAFETY: 이 관리자가 붙인 기기를 놓는다. 그래야 기기가 다시 알림 신호를 낸다.
+            unsafe { central.cancelPeripheralConnection(peripheral.0) };
+        });
+    }
+
+    fn open_channel(&self, peripheral: &CBPeripheral, psm: u16) {
+        let peripheral = Sendable(peripheral);
+        self.on_queue(|_, _| {
+            let peripheral = &peripheral;
+            // SAFETY: 붙은 기기의 채널을 연다.
+            unsafe { peripheral.0.openL2CAPChannel(psm) };
+        });
+    }
+}
+
 /// 맥 블루투스 링크. 만들면 곧바로 찾기 시작한다.
 pub struct BleLinks {
     hub: Arc<Hub>,
-    central: Shared<Retained<CBCentralManager>>,
-    delegate: Shared<Retained<Delegate>>,
-    _queue: Shared<DispatchRetained<DispatchQueue>>,
+    manager: Arc<Manager>,
 }
 
 impl BleLinks {
@@ -288,7 +379,7 @@ impl BleLinks {
             "io.github.hyeonsikoh.sidedesk.ble",
             DispatchQueueAttr::SERIAL,
         );
-        // SAFETY: 대리자와 큐는 이 구조체가 살아 있는 동안 함께 산다.
+        // SAFETY: 대리자와 큐는 관리자와 함께 Manager 에 남는다.
         let central = unsafe {
             CBCentralManager::initWithDelegate_queue(
                 CBCentralManager::alloc(),
@@ -298,20 +389,27 @@ impl BleLinks {
         };
         Self {
             hub,
-            central: Shared(central),
-            delegate: Shared(delegate),
-            _queue: Shared(queue),
+            manager: Arc::new(Manager {
+                central,
+                delegate,
+                queue,
+            }),
         }
     }
 
-    fn list(state: &State) -> Result<Vec<Phone>, PortError> {
+    /// 오래 안 보인 기기는 지우고, 최근에 보였거나 붙어 있는 기기만 목록으로 낸다.
+    fn list(state: &mut State) -> Result<Vec<Phone>, PortError> {
         if let Some(problem) = &state.problem {
             return Err(PortError::new(problem.clone()));
         }
+        let connected = &state.connected;
+        state
+            .seen
+            .retain(|id, seen| seen.last.elapsed() < GONE * 6 || connected.contains(id));
         let mut phones: Vec<Phone> = state
             .seen
             .iter()
-            .filter(|(id, seen)| seen.last.elapsed() < GONE || state.connected.contains(*id))
+            .filter(|(id, seen)| seen.last.elapsed() < GONE || connected.contains(*id))
             .map(|(id, seen)| Phone {
                 id: id.clone(),
                 model: seen.name.clone(),
@@ -324,17 +422,26 @@ impl BleLinks {
         Ok(phones)
     }
 
-    fn wait(steps: &Receiver<Step>, limit: Duration) -> Result<Step, RecvTimeoutError> {
-        steps.recv_timeout(limit)
+    /// 원하는 단계를 기다린다. 이전 연결의 늦은 끊김 소식은 붙기 전이면 버린다.
+    fn wait(steps: &Receiver<Step>, limit: Duration, connected: bool) -> Option<Step> {
+        let until = Instant::now() + limit;
+        loop {
+            let left = until.checked_duration_since(Instant::now())?;
+            match steps.recv_timeout(left) {
+                Ok(Step::Disconnected) if !connected => continue,
+                Ok(step) => return Some(step),
+                Err(RecvTimeoutError::Timeout | RecvTimeoutError::Disconnected) => return None,
+            }
+        }
     }
 
-    fn give_up(&self, peripheral: &CBPeripheral, id: &str, reason: String) -> PortError {
-        // SAFETY: 붙던 기기를 놓는다.
-        unsafe { self.central.0.cancelPeripheralConnection(peripheral) };
-        scan(&self.central.0);
+    fn give_up(&self, peripheral: &CBPeripheral, id: &str, ticket: u64, reason: &str) -> PortError {
+        self.manager.cancel(peripheral);
+        self.hub.forget_waiter(id, ticket);
         let mut state = self.hub.lock();
-        state.waiters.remove(id);
-        state.connected.remove(id);
+        if state.connected.remove(id) {
+            self.hub.bump(&mut state);
+        }
         PortError::new(reason)
     }
 }
@@ -345,14 +452,14 @@ impl PhoneLinks for BleLinks {
     }
 
     fn attached(&self) -> Result<Vec<Phone>, PortError> {
-        Self::list(&self.hub.lock())
+        Self::list(&mut self.hub.lock())
     }
 
     fn watch(&self, changed: &mut dyn FnMut(Vec<Phone>)) -> Result<(), PortError> {
         let mut last: Option<Vec<Phone>> = None;
         loop {
-            let state = self.hub.lock();
-            let phones = Self::list(&state)?;
+            let mut state = self.hub.lock();
+            let phones = Self::list(&mut state)?;
             if last.as_ref() != Some(&phones) {
                 drop(state);
                 changed(phones.clone());
@@ -370,69 +477,81 @@ impl PhoneLinks for BleLinks {
 
     fn connect(&self, id: &str) -> Result<Box<dyn Conn>, PortError> {
         let (tx, steps) = mpsc::channel();
-        let (peripheral, psm) = {
+        let (peripheral, psm, ticket) = {
             let mut state = self.hub.lock();
             let seen = state
                 .seen
                 .get(id)
                 .ok_or_else(|| PortError::new("블루투스에서 기기가 보이지 않습니다"))?;
-            let found = (seen.peripheral.0.clone(), seen.psm);
-            state.waiters.insert(id.to_owned(), tx);
-            found
+            let peripheral = seen.peripheral.0.clone();
+            let psm = seen.psm;
+            state.tickets += 1;
+            let ticket = state.tickets;
+            state.waiters.insert(id.to_owned(), (ticket, tx));
+            (peripheral, psm, ticket)
         };
-        // 찾는 중에는 붙기가 끝나지 않는 일이 있어, 붙는 동안 찾기를 멈춘다.
-        // SAFETY: 이 큐의 관리자와 이 관리자가 찾은 기기
-        unsafe {
-            self.central.0.stopScan();
-            peripheral.setDelegate(Some(ProtocolObject::from_ref(&*self.delegate.0)));
-            self.central.0.connectPeripheral_options(&peripheral, None);
-        }
-        match Self::wait(&steps, CONNECT_LIMIT) {
-            Ok(Step::Connected) => {}
-            Ok(Step::Failed(reason)) => return Err(self.give_up(&peripheral, id, reason)),
-            Ok(_) | Err(_) => {
-                return Err(self.give_up(
-                    &peripheral,
-                    id,
-                    "이 기기와 다른 블루투스 연결이 있어 붙지 못했습니다. 그 앱을 끄고 다시 시도하세요"
-                        .to_owned(),
-                ));
-            }
-        }
-        self.hub.lock().connected.insert(id.to_owned());
-        // SAFETY: 붙은 기기의 채널을 연다.
-        unsafe { peripheral.openL2CAPChannel(psm) };
-        let channel = match Self::wait(&steps, CHANNEL_LIMIT) {
-            Ok(Step::Channel(channel)) => channel,
-            Ok(Step::Failed(reason)) => return Err(self.give_up(&peripheral, id, reason)),
+        self.manager.begin(&self.hub, &peripheral);
+        let result = self.finish_connect(id, &peripheral, psm, ticket, steps);
+        self.manager.end(&self.hub);
+        result
+    }
+}
+
+impl BleLinks {
+    fn finish_connect(
+        &self,
+        id: &str,
+        peripheral: &Retained<CBPeripheral>,
+        psm: u16,
+        ticket: u64,
+        steps: Receiver<Step>,
+    ) -> Result<Box<dyn Conn>, PortError> {
+        match Self::wait(&steps, CONNECT_LIMIT, false) {
+            Some(Step::Connected) => {}
+            Some(Step::Failed(reason)) => return Err(self.give_up(peripheral, id, ticket, &reason)),
             _ => {
                 return Err(self.give_up(
-                    &peripheral,
+                    peripheral,
                     id,
-                    "블루투스 채널을 열지 못했습니다".to_owned(),
+                    ticket,
+                    "이 기기와 다른 블루투스 연결이 있어 붙지 못했습니다. 그 앱을 끄고 다시 시도하세요",
+                ));
+            }
+        }
+        {
+            let mut state = self.hub.lock();
+            state.connected.insert(id.to_owned());
+            self.hub.bump(&mut state);
+        }
+        self.manager.open_channel(peripheral, psm);
+        let channel = match Self::wait(&steps, CHANNEL_LIMIT, true) {
+            Some(Step::Channel(channel)) => channel,
+            Some(Step::Failed(reason)) => return Err(self.give_up(peripheral, id, ticket, &reason)),
+            _ => {
+                return Err(self.give_up(
+                    peripheral,
+                    id,
+                    ticket,
+                    "블루투스 채널을 열지 못했습니다",
                 ));
             }
         };
-        scan(&self.central.0);
         // SAFETY: 열린 채널의 스트림
         let (input, output) = unsafe { (channel.0.inputStream(), channel.0.outputStream()) };
         let (Some(input), Some(output)) = (input, output) else {
-            return Err(self.give_up(
-                &peripheral,
-                id,
-                "블루투스 채널에 통로가 없습니다".to_owned(),
-            ));
+            return Err(self.give_up(peripheral, id, ticket, "블루투스 채널에 통로가 없습니다"));
         };
         input.open();
         output.open();
         Ok(Box::new(BleConn {
             id: id.to_owned(),
+            ticket,
             hub: Arc::clone(&self.hub),
-            central: Shared(self.central.0.clone()),
-            peripheral: Shared(peripheral),
+            manager: Arc::clone(&self.manager),
+            peripheral: Sendable(peripheral.clone()),
             _channel: channel,
-            input: Shared(input),
-            output: Shared(output),
+            input: Sendable(input),
+            output: Sendable(output),
             steps,
         }))
     }
@@ -440,12 +559,13 @@ impl PhoneLinks for BleLinks {
 
 struct BleConn {
     id: String,
+    ticket: u64,
     hub: Arc<Hub>,
-    central: Shared<Retained<CBCentralManager>>,
-    peripheral: Shared<Retained<CBPeripheral>>,
-    _channel: Shared<Retained<CBL2CAPChannel>>,
-    input: Shared<Retained<objc2_foundation::NSInputStream>>,
-    output: Shared<Retained<objc2_foundation::NSOutputStream>>,
+    manager: Arc<Manager>,
+    peripheral: Sendable<Retained<CBPeripheral>>,
+    _channel: Sendable<Retained<CBL2CAPChannel>>,
+    input: Sendable<Retained<objc2_foundation::NSInputStream>>,
+    output: Sendable<Retained<objc2_foundation::NSOutputStream>>,
     steps: Receiver<Step>,
 }
 
@@ -523,14 +643,9 @@ impl Drop for BleConn {
     fn drop(&mut self) {
         self.input.0.close();
         self.output.0.close();
-        // SAFETY: 이 연결이 붙인 기기를 놓는다. 그래야 기기가 다시 알림 신호를 낸다.
-        unsafe {
-            self.central
-                .0
-                .cancelPeripheralConnection(&self.peripheral.0)
-        };
+        self.manager.cancel(&self.peripheral.0);
+        self.hub.forget_waiter(&self.id, self.ticket);
         let mut state = self.hub.lock();
-        state.waiters.remove(&self.id);
         if state.connected.remove(&self.id) {
             self.hub.bump(&mut state);
         }

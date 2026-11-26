@@ -39,7 +39,9 @@ class PhoneLink(context: Context, private val keys: KeyFiles) : ComputerLink {
 
     override fun answer(same: Boolean) = owner.answer.set(same)
 
+    /** 시작된 상태에서만 다시 연다(앱이 뒤에 있으면 앞으로 올 때 열린다). */
     override fun restartBluetooth() {
+        if (listener == null) return
         bluetooth.stop()
         bluetooth.start()
     }

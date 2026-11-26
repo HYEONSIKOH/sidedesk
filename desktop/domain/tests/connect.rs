@@ -15,6 +15,8 @@ use sidedesk_domain::{
 struct Pipe {
     incoming: Receiver<Vec<u8>>,
     outgoing: Sender<Vec<u8>>,
+    /// 상대가 닫은 뒤 보내면 오류를 낸다(실제 블루투스처럼).
+    strict: bool,
 }
 
 fn pipes() -> (Pipe, Pipe) {
@@ -24,10 +26,12 @@ fn pipes() -> (Pipe, Pipe) {
         Pipe {
             incoming: a_rx,
             outgoing: b_tx,
+            strict: false,
         },
         Pipe {
             incoming: b_rx,
             outgoing: a_tx,
+            strict: false,
         },
     )
 }
@@ -45,8 +49,8 @@ impl Conn for Pipe {
     }
 
     fn send(&mut self, bytes: &[u8]) -> Result<(), PortError> {
-        if !bytes.is_empty() {
-            let _ = self.outgoing.send(bytes.to_vec());
+        if !bytes.is_empty() && self.outgoing.send(bytes.to_vec()).is_err() && self.strict {
+            return Err(PortError::new("블루투스 연결이 끊겼습니다"));
         }
         Ok(())
     }
@@ -627,6 +631,7 @@ struct Switch {
     trusted: Vec<[u8; KEY_LEN]>,
     says: PhoneSays,
     connects: AtomicUsize,
+    strict: bool,
 }
 
 impl Switch {
@@ -638,6 +643,7 @@ impl Switch {
             trusted,
             says: PhoneSays::Stay,
             connects: AtomicUsize::new(0),
+            strict: false,
         }
     }
 
@@ -674,7 +680,8 @@ impl PhoneLinks for Switch {
 
     fn connect(&self, _id: &str) -> Result<Box<dyn Conn>, PortError> {
         self.connects.fetch_add(1, Ordering::Relaxed);
-        let (mine, theirs) = pipes();
+        let (mut mine, theirs) = pipes();
+        mine.strict = self.strict;
         phone(
             self.identity.clone(),
             self.trusted.clone(),
@@ -768,6 +775,7 @@ fn bluetooth_reports_busy_when_the_phone_drops_it_at_ready() {
         vec![world.computer.identity.public],
     );
     air.says = PhoneSays::Busy;
+    air.strict = true;
     run_links(&[&air], &world, || {
         thread::sleep(Duration::from_millis(3500))
     });
@@ -839,17 +847,81 @@ fn bluetooth_fills_a_missing_name_but_keeps_the_serial() {
 fn usb_wins_the_slot_over_bluetooth() {
     let active = Active::default();
     let key = [1; KEY_LEN];
-    assert!(active.claim(key, Link::Usb));
-    assert!(!active.claim(key, Link::Ble));
-    active.release(key, Link::Ble);
+    assert!(active.claim(key, Link::Usb, "p"));
+    assert!(!active.claim(key, Link::Ble, "ble:1"));
+    active.release(key, "ble:1");
     assert!(
         active.holds(key, Link::Usb),
         "블루투스가 USB 자리를 놓지 않음"
     );
-    active.release(key, Link::Usb);
-    assert!(active.claim(key, Link::Ble));
+    active.release(key, "p");
+    assert!(active.claim(key, Link::Ble, "ble:1"));
     assert!(
-        active.claim(key, Link::Usb),
+        !active.claim(key, Link::Ble, "ble:2"),
+        "주소가 바뀐 같은 기기는 블루투스 연결을 하나만"
+    );
+    assert!(
+        active.claim(key, Link::Usb, "p"),
         "USB 는 블루투스 자리를 가져감"
+    );
+    active.release(key, "ble:1");
+    assert!(
+        active.holds(key, Link::Usb),
+        "끝난 블루투스가 USB 자리를 지우지 않음"
+    );
+}
+
+#[test]
+fn bluetooth_yields_when_usb_already_holds_the_phone() {
+    let phone_key = Identity::generate();
+    let public = phone_key.public;
+    let world = World::new(vec![public], None);
+    assert!(world.active.claim(public, Link::Usb, "p"));
+    let (mut mine, theirs) = pipes();
+    let handle = phone(
+        phone_key,
+        vec![world.computer.identity.public],
+        PhoneSays::Stay,
+        theirs,
+    );
+    let result = serve(
+        &ble(&public),
+        &mut mine,
+        &world.context(),
+        false,
+        &AtomicBool::new(false),
+    );
+    drop(mine);
+    handle.join().unwrap();
+    assert_eq!(result, Ok(Ended::Yielded));
+    assert!(
+        world.notes.0.lock().unwrap().is_empty(),
+        "물러날 때는 알리지 않음"
+    );
+}
+
+#[test]
+fn a_rotated_bluetooth_address_does_not_add_a_second_connection() {
+    let phone_key = Identity::generate();
+    let public = phone_key.public;
+    let world = World::new(vec![public], None);
+    let computer = vec![world.computer.identity.public];
+    let second = || Phone {
+        id: "ble:2".into(),
+        ..ble(&public)
+    };
+    let old = Switch::new(Link::Ble, ble(&public), phone_key.clone(), computer.clone());
+    let new = Switch::new(Link::Ble, second(), phone_key, computer);
+    new.unplug();
+    run_links(&[&old, &new], &world, || {
+        thread::sleep(Duration::from_millis(800));
+        new.plug(second());
+        thread::sleep(Duration::from_millis(1500));
+    });
+    assert_eq!(connected_on(&world, "ble:1"), 1);
+    assert_eq!(
+        new.connects.load(Ordering::Relaxed),
+        0,
+        "같은 기기는 블루투스 연결 하나"
     );
 }

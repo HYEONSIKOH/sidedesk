@@ -103,7 +103,13 @@ class BleLink(
             .setIncludeDeviceName(false)
             .addServiceData(ParcelUuid(service), bleServiceData(opened.psm.toUShort(), keys.identity().publicKey))
             .build()
-        val response = AdvertiseData.Builder().setIncludeDeviceName(true).build()
+        advertise(advertiser, data, withName = true)
+        Thread({ accept(opened) }, "sidedesk-ble-accept").start()
+    }
+
+    /** 기기 이름이 길어 스캔 응답에 안 들어가면 이름 없이 다시 알린다. */
+    private fun advertise(advertiser: android.bluetooth.le.BluetoothLeAdvertiser, data: AdvertiseData, withName: Boolean) {
+        val response = AdvertiseData.Builder().setIncludeDeviceName(withName).build()
         val settings = AdvertiseSettings.Builder()
             .setAdvertiseMode(AdvertiseSettings.ADVERTISE_MODE_BALANCED)
             .setConnectable(true)
@@ -115,12 +121,15 @@ class BleLink(
 
             override fun onStartFailure(errorCode: Int) {
                 Log.w(TAG, "알림 신호 실패 $errorCode")
+                if (withName && errorCode == ADVERTISE_FAILED_DATA_TOO_LARGE) {
+                    synchronized(this@BleLink) { if (running && server != null) advertise(advertiser, data, false) }
+                    return
+                }
                 problem.value = "블루투스 알림 신호를 내지 못해 USB 로만 연결합니다"
             }
         }
         advertising = callback
         advertiser.startAdvertising(settings, data, response, callback)
-        Thread({ accept(opened) }, "sidedesk-ble-accept").start()
     }
 
     @Synchronized
@@ -151,12 +160,12 @@ class BleLink(
                 continue
             }
             Thread({
+                // 이 접속이 잡은 확인 자리는 이 접속이 한 번만 놓는다.
+                val held = AtomicBoolean(true)
+                val letGo = { if (held.compareAndSet(true, false)) checking.set(false) }
                 val pipe = BlePipe(socket)
-                val connection = Connection(pipe, Via.Bluetooth, owner, keys, null, READY_LIMIT_NANOS) {
-                    checking.set(false)
-                }
-                connection.run()
-                checking.set(false)
+                Connection(pipe, Via.Bluetooth, owner, keys, null, READY_LIMIT_NANOS, letGo).run()
+                letGo()
             }, "sidedesk-ble").start()
         }
     }

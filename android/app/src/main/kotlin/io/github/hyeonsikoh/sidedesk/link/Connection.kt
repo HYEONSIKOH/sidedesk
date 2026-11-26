@@ -116,8 +116,14 @@ class Connection(
                 if (bytes.isNotEmpty()) {
                     heard = System.nanoTime()
                     session.feed(bytes)
-                    flush()
-                    if (!handleEvents()) return
+                    if (mine == null) {
+                        // 블루투스는 이어받을지 먼저 정한다. 질 연결이 Pong 을 보내 컴퓨터가 연결됨으로 알지 않게.
+                        if (!handleEvents()) return
+                        flush()
+                    } else {
+                        flush()
+                        if (!handleEvents()) return
+                    }
                 } else if (System.nanoTime() - heard > SILENCE_NANOS) {
                     return
                 }

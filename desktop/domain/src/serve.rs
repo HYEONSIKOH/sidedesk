@@ -80,22 +80,38 @@ pub struct Context<'a> {
 struct Hold<'a> {
     active: &'a Active,
     key: [u8; KEY_LEN],
-    link: Link,
+    id: &'a str,
 }
 
 impl Drop for Hold<'_> {
     fn drop(&mut self) {
-        self.active.release(self.key, self.link);
+        self.active.release(self.key, self.id);
     }
 }
 
 /// 폰 하나와 연결을 맺고, 끊길 때까지 살아 있게 한다.
+/// 블루투스에서 기기가 받아들이기 전에(첫 Pong 전에) 끊기면, 보내기 오류든 닫힘이든 `Busy` 로 본다.
 pub fn serve(
     phone: &Phone,
     conn: &mut dyn Conn,
     context: &Context,
     pairing: bool,
     stop: &AtomicBool,
+) -> Result<Ended, ServeError> {
+    let confirming = std::cell::Cell::new(false);
+    match run(phone, conn, context, pairing, stop, &confirming) {
+        Err(ServeError::Port(_)) if confirming.get() => Err(ServeError::Busy),
+        other => other,
+    }
+}
+
+fn run(
+    phone: &Phone,
+    conn: &mut dyn Conn,
+    context: &Context,
+    pairing: bool,
+    stop: &AtomicBool,
+    confirming: &std::cell::Cell<bool>,
 ) -> Result<Ended, ServeError> {
     let identity = context.keys.identity()?;
     let trusted = context
@@ -108,8 +124,6 @@ pub fn serve(
     let id = phone.id.as_str();
     let mut peer = None;
     let mut _hold = None;
-    // 블루투스는 기기가 이 연결을 받아들였는지(첫 Pong) 본 뒤에 연결됨을 알린다.
-    let mut confirming = false;
     let mut buffer = vec![0; 16 * 1024];
     let mut heard = Instant::now();
     let mut next_ping = Instant::now() + context.timing.ping;
@@ -135,13 +149,13 @@ pub fn serve(
                 }
                 Event::Ready { peer: key } => {
                     // 같은 기기에 다른 길이 이미 있으면 아무것도 알리지 않고 물러난다.
-                    if !context.active.claim(key, phone.link) {
+                    if !context.active.claim(key, phone.link, id) {
                         return Ok(Ended::Yielded);
                     }
                     _hold = Some(Hold {
                         active: context.active,
                         key,
-                        link: phone.link,
+                        id,
                     });
                     peer = Some(key);
                     fill_record(context, phone, key);
@@ -152,7 +166,7 @@ pub fn serve(
                         Link::Ble => {
                             session.ping()?;
                             next_ping = Instant::now() + context.timing.ping;
-                            confirming = true;
+                            confirming.set(true);
                         }
                     }
                 }
@@ -205,8 +219,10 @@ pub fn serve(
             Received::Bytes(count) => {
                 heard = Instant::now();
                 session.feed(&buffer[..count])?;
-                if confirming && let Some(key) = peer {
-                    confirming = false;
+                if confirming.get()
+                    && let Some(key) = peer
+                {
+                    confirming.set(false);
                     context.report.note(id, Note::Connected { key });
                 }
             }
@@ -214,7 +230,7 @@ pub fn serve(
                 return Err(ServeError::Silent);
             }
             Received::Nothing => {}
-            Received::Closed if confirming => return Err(ServeError::Busy),
+            Received::Closed if confirming.get() => return Err(ServeError::Busy),
             Received::Closed => return Ok(Ended::Closed),
         }
     }

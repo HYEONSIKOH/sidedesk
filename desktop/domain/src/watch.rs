@@ -66,6 +66,14 @@ fn watch_link(links: &dyn PhoneLinks, context: &Context, stop: &AtomicBool) {
             });
             if let Err(error) = watched {
                 context.report.link(link, Some(error.0));
+                // 블루투스를 쓸 수 없으면 기기 작업을 멈춘다(헛된 붙기 시도가 줄의 이유를 덮지 않게).
+                // 다시 켜지면 새로 시작한다. USB 는 adb 가 잠깐 끊겨도 작업과 등록 요청을 남긴다.
+                if link == Link::Ble {
+                    for quit in workers.values() {
+                        quit.store(true, Ordering::Relaxed);
+                    }
+                    workers.clear();
+                }
             }
             rest(stop, RETRY);
         }
@@ -143,7 +151,8 @@ fn keep_ble(links: &dyn PhoneLinks, context: &Context, phone: &Phone, quit: &Ato
             rest(quit, RETRY);
             continue;
         };
-        if context.active.holds(key, Link::Usb) {
+        // USB 로 붙어 있거나, 주소가 바뀌기 전 블루투스 연결이 아직 살아 있으면 기다린다.
+        if context.active.holds(key, Link::Usb) || context.active.holds(key, Link::Ble) {
             rest(quit, RETRY);
             continue;
         }
