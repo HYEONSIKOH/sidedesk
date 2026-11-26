@@ -60,9 +60,22 @@ jobs:
           if (-not ($out -match 'sidedesk-cli pair')) { throw "사용법이 없음: $out" }
           Write-Output "종료 코드 1, $out"
           exit 0
+      # 검사가 윈도우 경로를 실제로 잡는지: 경로 바꾸기 없이 빌드한 개발용 exe 는 걸려야 한다.
+      - name: 경로 바꾸기 없는 exe 는 비밀값 검사에 걸림
+        shell: pwsh
+        run: |
+          if (-not (Test-Path target/release/sidedesk.exe)) { throw "검사할 exe 가 없음" }
+          # 검사 스크립트는 UTF-8 로 찍으므로 그대로 읽는다(한글 요약 줄을 맞추려고).
+          [Console]::OutputEncoding = [Text.UTF8Encoding]::new()
+          $out = python -I scripts/check_secrets.py --artifact target/release/sidedesk.exe 2>&1 | Out-String
+          # 끝 코드 1 은 스크립트가 죽어도 나오므로, 홈 경로를 찾았다는 요약 줄까지 본다.
+          if ($LASTEXITCODE -ne 1) { throw "경로 바꾸기 없는 exe 가 검사를 통과함(끝 코드 $LASTEXITCODE)" }
+          if (-not ($out -match '(?m)^찾음: .*홈 경로')) { throw "홈 경로로 걸리지 않음: $out" }
+          Write-Output $out
+          exit 0
       - uses: actions/upload-artifact@v4
         with:
-          # 개발용: 경로 바꾸기와 비밀값 검사를 거치지 않았다. 배포 파일은 release.yml(SD-12 뒤)
+          # 개발용: 경로 바꾸기와 비밀값 검사를 거치지 않았다. 배포 파일은 release.yml 의 windows 작업
           name: sidedesk-windows-dev
           path: |
             target/release/sidedesk.exe

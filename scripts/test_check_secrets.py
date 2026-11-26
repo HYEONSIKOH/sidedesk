@@ -140,6 +140,10 @@ class Strict(unittest.TestCase):
         scan = cs.Scan(strict=True, forbid=[j("D:", "\\a\\side")])
         self.assertEqual(kinds(j("x D:", "\\a\\side\\y"), scan), ["빌드한 곳 경로"])
 
+    def test_forbidden_paths_ignore_case(self):
+        scan = cs.Scan(strict=True, forbid=[j("D:", "\\a\\x")])
+        self.assertEqual(kinds(j("d:", "\\A\\X\\y"), scan), ["빌드한 곳 경로"])
+
     def test_bare_hex_key_only_in_artifacts(self):
         key = ("0123456789abcdef" * 4).encode()
         self.assertEqual(kinds(key), [])

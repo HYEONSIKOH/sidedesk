@@ -2,7 +2,7 @@ name: 배포 파일
 
 # 배포 파일을 만들어 비밀값과 개인 정보 검사를 통과한 것만 Actions 산출물로 올린다.
 # Release, 태그를 만들지 않고 공개하지 않는다(공개는 사람이 정한다). 저장소 비밀값을 쓰지 않는다.
-# 윈도우 묶기는 SD-12 가 들어온 뒤 더한다(그때까지 윈도우 실행 파일은 ci.yml 이 올린다).
+# ci.yml 의 sidedesk-windows-dev 는 경로 바꾸기와 검사를 거치지 않은 개발 확인용이다. 배포는 여기 windows 작업.
 # run 단계에는 이벤트에서 온 글(제목, 본문, 브랜치 이름)을 넣지 않는다.
 
 on:
@@ -52,6 +52,29 @@ jobs:
         with:
           name: sidedesk-mac
           path: target/dist/SideDesk-*-mac.dmg
+          if-no-files-found: error
+          retention-days: 14
+
+  windows:
+    name: Windows zip
+    runs-on: windows-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          persist-credentials: false
+      # 배포 빌드는 캐시 없이 돈다(다른 작업의 캐시와 섞이지 않게).
+      - uses: dtolnay/rust-toolchain@39008827e6b4319a349e9a42dfc90579dd25f1ca # stable
+        with:
+          toolchain: stable
+      # 두 실행 파일을 경로 바꾸기로 빌드해 zip 으로 묶고, 사용자 폴더와 작업 폴더까지 검사한다(PDB 는 넣지 않음).
+      - name: 묶기와 검사
+        shell: pwsh
+        run: ./scripts/dist-windows.ps1
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: sidedesk-windows
+          path: target/dist/SideDesk-*-windows-x64.zip
           if-no-files-found: error
           retention-days: 14
 

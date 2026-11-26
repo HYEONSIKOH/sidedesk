@@ -118,7 +118,8 @@ class Scan:
                 wide = re.escape(word.decode("utf-8").encode("utf-16-le"))
                 rules.append(("금지어", re.compile(rb"(?i)" + wide if ascii_word else wide)))
         for value in self.forbid:
-            rules.append(("빌드한 곳 경로", re.compile(re.escape(value))))
+            # 윈도우, 맥(APFS 기본) 경로는 대소문자를 가리지 않는다.
+            rules.append(("빌드한 곳 경로", re.compile(rb"(?i)" + re.escape(value))))
         return rules
 
 
@@ -399,6 +400,10 @@ def report(scan: Scan) -> int:
 
 
 def main(argv: list[str]) -> int:
+    # 윈도우 콘솔의 기본 인코딩(cp1252 등)은 한글을 못 써서 출력하다 멈춘다.
+    for stream in (sys.stdout, sys.stderr):
+        if hasattr(stream, "reconfigure"):
+            stream.reconfigure(encoding="utf-8", errors="replace")
     parser = argparse.ArgumentParser(description="비밀값과 개인 정보 찾기")
     parser.add_argument("--repo", action="store_true")
     parser.add_argument("--history", action="store_true")
