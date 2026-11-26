@@ -21,6 +21,9 @@ class PhoneLink(context: Context, private val keys: KeyFiles) : ComputerLink {
     private val bluetooth = BleLink(context, owner, keys)
     override val state = owner.state
     override val bluetoothProblem = bluetooth.problem
+    override val perf = owner.perf
+    override val processes = owner.processes
+    override val killResults = owner.killResults
 
     // 줄이 하나라서 이전 소켓을 닫은 뒤에만 같은 이름을 다시 연다.
     private val acceptor = Executors.newSingleThreadExecutor()
@@ -40,6 +43,10 @@ class PhoneLink(context: Context, private val keys: KeyFiles) : ComputerLink {
     }
 
     override fun answer(same: Boolean) = owner.answer.set(same)
+
+    override fun subscribe(subscription: Subscription) = owner.subscription.set(subscription)
+
+    override fun kill(command: KillCommand) = owner.kill(command)
 
     /** 시작된 상태에서만 다시 연다(앱이 뒤에 있으면 앞으로 올 때 열린다). */
     override fun restartBluetooth() {

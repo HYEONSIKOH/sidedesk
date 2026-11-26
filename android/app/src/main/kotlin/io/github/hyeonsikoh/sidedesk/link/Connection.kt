@@ -4,6 +4,7 @@ import android.util.Log
 import uniffi.sidedesk_core.LinkException
 import uniffi.sidedesk_core.PhoneEvent
 import uniffi.sidedesk_core.PhoneSession
+import uniffi.sidedesk_core.View
 import java.io.IOException
 
 /** 컴퓨터와 이어진 통로 하나. USB 와 블루투스가 이 모양으로 맞춘다. */
@@ -66,7 +67,24 @@ class Connection(
         val started = System.nanoTime()
         PhoneSession(identity.privateKey, identity.publicKey, keys.computers(), via == Via.Usb).use { session ->
             var heard = System.nanoTime()
+            var ready = false
+            var subscribed: Subscription? = null
+            val sentKills = HashSet<Long>()
             fun flush() = session.takeOutput().takeIf { it.isNotEmpty() }?.let(pipe::send)
+
+            // 새 연결마다 마지막 구독과 결과를 못 받은 종료 명령을 같은 번호로 다시 보낸다.
+            fun sendQueued() {
+                val now = owner.subscription.get()
+                if (now != subscribed) {
+                    session.subscribe(now.big?.let(::view), now.small.map(::view))
+                    subscribed = now
+                }
+                for (kill in owner.pendingKills()) {
+                    if (!sentKills.add(kill.commandId)) continue
+                    session.killProcess(kill.commandId.toULong(), kill.pid.toUInt(), kill.startedAt.toULong())
+                }
+                flush()
+            }
             fun handleEvents(): Boolean {
                 while (true) {
                     when (val event = session.nextEvent() ?: break) {
@@ -83,6 +101,7 @@ class Connection(
                             } else {
                                 owner.ready(mine!!, event.computerKey)
                             }
+                            ready = true
                             onReady()
                             afterReady()
                             show(LinkState.Connected(owner.lastName, via))
@@ -91,6 +110,10 @@ class Connection(
                             owner.lastName = event.name
                             show(LinkState.Connected(event.name, via))
                         }
+                        is PhoneEvent.Performance -> mine?.let { owner.receivedPerf(it, perf(event)) }
+                        is PhoneEvent.Processes -> mine?.let { owner.receivedProcesses(it, processes(event)) }
+                        is PhoneEvent.CommandResult ->
+                            owner.receivedKill(KillResult(event.requestId.toLong(), event.ok, event.reason))
                     }
                 }
                 return true
@@ -112,6 +135,7 @@ class Connection(
                         if (!handleEvents()) return
                     }
                 }
+                if (ready) sendQueued()
                 val bytes = pipe.receive() ?: return
                 if (bytes.isNotEmpty()) {
                     heard = System.nanoTime()
@@ -134,6 +158,19 @@ class Connection(
     companion object {
         const val TAG = "SideDeskLink"
         const val SILENCE_NANOS = 15_000_000_000L
+
+        private fun view(topic: Topic) = when (topic) {
+            Topic.Perf -> View.PERFORMANCE
+            Topic.Processes -> View.PROCESSES
+        }
+
+        private fun perf(event: PhoneEvent.Performance) = event.value.let {
+            Perf(it.cpu, it.gpu, it.memory, it.disk, it.netDown.toLong(), it.netUp.toLong())
+        }
+
+        private fun processes(event: PhoneEvent.Processes) = Processes(
+            event.items.map { ProcessInfo(it.pid.toInt(), it.startedAt.toLong(), it.name, it.cpu, it.memory.toLong()) },
+        )
 
         fun reason(error: LinkException) = when (error) {
             is LinkException.Version -> "컴퓨터와 버전이 다릅니다. 두 앱을 최신 버전으로 업데이트하세요"

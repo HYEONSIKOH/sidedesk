@@ -1,5 +1,6 @@
 package io.github.hyeonsikoh.sidedesk.link
 
+import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import java.util.concurrent.atomic.AtomicReference
 
@@ -14,6 +15,11 @@ class LinkOwner {
     val state = MutableStateFlow<LinkState>(LinkState.Waiting)
     val answer = AtomicReference<Boolean?>(null)
     @Volatile var lastName: String? = null
+    val perf = MutableStateFlow<Perf?>(null)
+    val processes = MutableStateFlow<Processes?>(null)
+    val killResults = MutableSharedFlow<KillResult>(extraBufferCapacity = 64)
+    val subscription = AtomicReference(Subscription.NONE)
+    private val kills = LinkedHashMap<Long, KillCommand>()
 
     private class Holder(val via: Via, var computer: ByteArray?, val close: () -> Unit, val generation: Int)
 
@@ -72,6 +78,29 @@ class LinkOwner {
             if (generation != mine) return
             state.value = next
         }
+    }
+
+    @Synchronized
+    fun kill(command: KillCommand) {
+        kills[command.commandId] = command
+    }
+
+    @Synchronized
+    fun pendingKills(): List<KillCommand> = kills.values.toList()
+
+    /** 받은 값은 지금 연결 것만 받는다. */
+    fun receivedPerf(mine: Int, value: Perf) = synchronized(this) {
+        if (generation == mine) perf.value = value
+    }
+
+    fun receivedProcesses(mine: Int, value: Processes) = synchronized(this) {
+        if (generation == mine) processes.value = value
+    }
+
+    /** 명령 결과는 어느 연결로 왔든 버리지 않는다. */
+    fun receivedKill(result: KillResult) {
+        val known = synchronized(this) { kills.remove(result.commandId) != null }
+        if (known) killResults.tryEmit(result)
     }
 
     @Synchronized

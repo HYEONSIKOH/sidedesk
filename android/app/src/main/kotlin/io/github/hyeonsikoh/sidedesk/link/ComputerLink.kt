@@ -1,6 +1,7 @@
 package io.github.hyeonsikoh.sidedesk.link
 
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
 
 sealed interface LinkState {
@@ -23,7 +24,20 @@ interface ComputerLink {
     /** 블루투스를 쓸 수 없는 이유. USB 는 그대로 쓴다. */
     val bluetoothProblem: StateFlow<String?> get() = NO_PROBLEM
 
+    /** 마지막으로 받은 값. 끊겨도 지우지 않는다. */
+    val perf: StateFlow<Perf?>
+
+    val processes: StateFlow<Processes?>
+
+    val killResults: SharedFlow<KillResult>
+
     fun start()
+
+    /** 연결이 바뀌어도 마지막 구독을 다시 보낸다. */
+    fun subscribe(subscription: Subscription)
+
+    /** 결과가 올 때까지 다시 이어질 때마다 같은 번호로 보낸다. */
+    fun kill(command: KillCommand)
 
     fun stop()
 

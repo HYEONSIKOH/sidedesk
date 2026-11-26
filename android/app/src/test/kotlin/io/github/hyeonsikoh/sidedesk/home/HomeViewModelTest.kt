@@ -1,10 +1,9 @@
 package io.github.hyeonsikoh.sidedesk.home
 
-import io.github.hyeonsikoh.sidedesk.link.ComputerLink
-import io.github.hyeonsikoh.sidedesk.link.LinkState
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
-import kotlinx.coroutines.flow.MutableStateFlow
+import io.github.hyeonsikoh.sidedesk.link.FakeLink
+import io.github.hyeonsikoh.sidedesk.link.LinkState
 import kotlinx.coroutines.test.UnconfinedTestDispatcher
 import kotlinx.coroutines.test.resetMain
 import kotlinx.coroutines.test.setMain
@@ -15,20 +14,6 @@ import org.junit.Test
 
 @OptIn(ExperimentalCoroutinesApi::class)
 class HomeViewModelTest {
-    private class FakeLink : ComputerLink {
-        override val state = MutableStateFlow<LinkState>(LinkState.Waiting)
-
-        override fun start() = Unit
-
-        override fun stop() = Unit
-
-        val answers = mutableListOf<Boolean>()
-
-        override fun answer(same: Boolean) {
-            answers += same
-        }
-    }
-
     private val link = FakeLink()
 
     @Before
