@@ -12,20 +12,15 @@ protocol ComputerLink: AnyObject {
     func stop()
 }
 
+/// 아이폰 연결은 아직 없다(설계 6단계).
 @MainActor
 func makeLink() -> any ComputerLink {
-    #if DEBUG && targetEnvironment(simulator)
-    DevLink()
-    #else
     NoLink()
-    #endif
 }
 
-#if !(DEBUG && targetEnvironment(simulator))
 private final class NoLink: ComputerLink {
     let state = LinkState.waiting
 
     func start() {}
     func stop() {}
 }
-#endif
