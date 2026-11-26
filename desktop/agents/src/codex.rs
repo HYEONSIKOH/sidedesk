@@ -118,8 +118,9 @@ impl Codex {
         let today = now
             .duration_since(SystemTime::UNIX_EPOCH)
             .map_or(0, |d| d.as_secs() / 86_400);
-        for back in 0..DAYS {
-            let (y, m, d) = civil(today.saturating_sub(back) as i64);
+        // Codex 는 폴더 날짜를 현지 시각으로 쓴다. UTC 날짜보다 하루 앞(UTC+14 까지)부터 본다.
+        for back in 0..=DAYS {
+            let (y, m, d) = civil((today + 1).saturating_sub(back) as i64);
             let folder = base.join(format!("{y:04}/{m:02}/{d:02}"));
             let Ok(files) = std::fs::read_dir(&folder) else {
                 continue;
@@ -215,7 +216,8 @@ impl Session {
         let title = name
             .cloned()
             .filter(|title| !title.is_empty())
-            .unwrap_or_else(|| project.clone());
+            .or_else(|| Some(project.clone()).filter(|p| !p.is_empty()))
+            .unwrap_or_else(|| "Codex".to_owned());
         SessionFacts {
             key: format!("codex:{id}"),
             tool: AiTool::Codex,
@@ -243,10 +245,15 @@ fn first_cwd(path: &Path) -> Option<String> {
     let mut reader = std::io::BufReader::new(file.take(FIRST_LINE));
     let mut line = Vec::new();
     reader.read_until(b'\n', &mut line).ok()?;
-    let line: Line = serde_json::from_slice(&line).ok()?;
-    (line.kind.as_deref() == Some("session_meta"))
-        .then_some(line.payload?.cwd)
-        .flatten()
+    if let Ok(parsed) = serde_json::from_slice::<Line>(&line) {
+        return (parsed.kind.as_deref() == Some("session_meta"))
+            .then_some(parsed.payload?.cwd)
+            .flatten();
+    }
+    // 첫 줄이 상한보다 길어 잘렸으면 작업 폴더 글자만 찾는다.
+    let at = line.windows(7).position(|w| w == b"\"cwd\":\"")? + 7;
+    let end = line[at..].iter().position(|b| *b == b'"')? + at;
+    String::from_utf8(line[at..end].to_vec()).ok()
 }
 
 /// 1970-01-01 부터 날 수 → (년, 월, 일)
@@ -347,6 +354,51 @@ mod tests {
         assert_eq!(one(&mut codex).phase, Phase::TurnEnded);
         home.write(&[START, ABORT]);
         assert_eq!(one(&mut codex).phase, Phase::Stopped);
+    }
+
+    #[test]
+    fn a_folder_dated_ahead_of_utc_is_seen() {
+        let root =
+            std::env::temp_dir().join(format!("sidedesk-codex-ahead-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let today = SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .unwrap()
+            .as_secs()
+            / 86_400;
+        // 한국 새벽처럼 현지 날짜가 UTC 보다 하루 앞선 폴더
+        let (y, m, d) = civil(today as i64 + 1);
+        let folder = root.join(format!("sessions/{y:04}/{m:02}/{d:02}"));
+        std::fs::create_dir_all(&folder).unwrap();
+        std::fs::write(
+            folder.join(format!("rollout-2026-11-28T03-00-00-{ID}.jsonl")),
+            format!("{META}\n{START}\n"),
+        )
+        .unwrap();
+        let mut codex = Codex::new(root.clone());
+        assert_eq!(one(&mut codex).phase, Phase::Working);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn a_huge_first_line_still_gives_the_folder() {
+        let home = Home::new("huge");
+        let meta = format!(
+            r#"{{"timestamp":"t","type":"session_meta","payload":{{"cwd":"/work/tool","base_instructions":"{}"}}}}"#,
+            "x".repeat(2 * 1024 * 1024)
+        );
+        home.write(&[&meta, START]);
+        let mut codex = Codex::new(home.root.clone());
+        assert_eq!(one(&mut codex).project, "tool");
+        assert_eq!(rollout_id(&home.log()).as_deref(), Some(ID));
+    }
+
+    #[test]
+    fn no_folder_falls_back_to_the_tool_name() {
+        let home = Home::new("nameless");
+        home.write(&[START]);
+        let mut codex = Codex::new(home.root.clone());
+        assert_eq!(one(&mut codex).title, "Codex");
     }
 
     #[test]

@@ -238,6 +238,8 @@ fn window() -> Result<(), String> {
     thread::spawn(|| context.hub.run_weather());
     thread::spawn(|| context.hub.run_ai());
     thread::spawn(|| context.hub.run_forge());
+    // 창을 닫으면 돌고 있는 gh, glab 을 끝내고 나간다.
+    sidedesk_window::on_exit(|| context.hub.stop());
     thread::spawn(move || {
         let _lock = lock;
         let usb = AdbLinks::default();

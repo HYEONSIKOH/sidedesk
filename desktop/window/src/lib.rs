@@ -5,4 +5,4 @@ mod json;
 mod view;
 
 pub use board::{Board, Computer};
-pub use view::open;
+pub use view::{on_exit, open};

@@ -73,6 +73,13 @@ fn theme(mode: &str) -> Option<Theme> {
 }
 
 /// 설정 창을 띄운다. 창을 닫으면 프로세스를 끝낸다(연결 스레드를 기다리지 않는다).
+/// 창을 닫아 프로그램이 끝나기 직전에 부를 일(돌고 있는 외부 프로그램 정리 등)
+static ON_EXIT: std::sync::OnceLock<Box<dyn Fn() + Send + Sync>> = std::sync::OnceLock::new();
+
+pub fn on_exit(work: impl Fn() + Send + Sync + 'static) {
+    let _ = ON_EXIT.set(Box::new(work));
+}
+
 /// `mode_file` 에 고른 화면 모드를 저장한다.
 pub fn open(board: &'static Board, mode_file: PathBuf) -> Result<(), String> {
     let saved = std::fs::read_to_string(&mode_file)
@@ -174,7 +181,12 @@ pub fn open(board: &'static Board, mode_file: PathBuf) -> Result<(), String> {
             Event::WindowEvent {
                 event: WindowEvent::CloseRequested,
                 ..
-            } => std::process::exit(0),
+            } => {
+                if let Some(work) = ON_EXIT.get() {
+                    work();
+                }
+                std::process::exit(0)
+            }
             _ => {}
         }
     })

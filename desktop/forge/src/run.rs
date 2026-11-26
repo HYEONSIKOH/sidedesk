@@ -4,6 +4,7 @@ use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -28,6 +29,8 @@ pub struct System {
     timeout: Duration,
     home: PathBuf,
     child: Mutex<Option<Child>>,
+    /// 끄는 중. 이 뒤의 실행은 바로 돌아온다.
+    stopped: AtomicBool,
 }
 
 impl System {
@@ -36,6 +39,7 @@ impl System {
             timeout,
             home,
             child: Mutex::new(None),
+            stopped: AtomicBool::new(false),
         }
     }
 
@@ -52,6 +56,13 @@ impl Runner for System {
             stdout: Vec::new(),
             stderr: Vec::new(),
         };
+        if self.stopped.load(Ordering::SeqCst) {
+            // 끄는 중이면 새로 띄우지 않는다(실패로 본다).
+            return Ran {
+                started: true,
+                ..not_started
+            };
+        }
         // 작업 폴더가 저장소면 그 원격을 따라가지 않게 홈에서 돌린다.
         let spawned = Command::new(program)
             .args(args)
@@ -70,7 +81,16 @@ impl Runner for System {
         // 파이프가 차서 막히지 않게 끝까지 읽는다.
         let out = child.stdout.take().map(drain);
         let err = child.stderr.take().map(drain);
-        *self.lock() = Some(child);
+        {
+            let mut slot = self.lock();
+            // 띄우는 사이 stop 이 왔으면 바로 끝낸다.
+            if self.stopped.load(Ordering::SeqCst) {
+                let _ = child.kill();
+                let _ = child.wait();
+            } else {
+                *slot = Some(child);
+            }
+        }
         let start = Instant::now();
         let code = loop {
             let mut slot = self.lock();
@@ -103,6 +123,7 @@ impl Runner for System {
     }
 
     fn stop(&self) {
+        self.stopped.store(true, Ordering::SeqCst);
         if let Some(mut child) = self.lock().take() {
             let _ = child.kill();
             let _ = child.wait();
@@ -189,6 +210,11 @@ mod tests {
         let ran = worker.join().unwrap();
         assert_eq!(ran.code, None);
         assert!(start.elapsed() < Duration::from_secs(1));
+        // 끈 뒤에는 새로 띄우지 않는다.
+        let start = Instant::now();
+        let ran = runner.run(Path::new("/bin/sleep"), &["5"]);
+        assert!(ran.started && ran.code.is_none());
+        assert!(start.elapsed() < Duration::from_millis(500));
     }
 
     #[test]

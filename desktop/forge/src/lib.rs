@@ -4,7 +4,7 @@
 mod run;
 
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use serde_json::Value;
@@ -20,8 +20,10 @@ const GITLAB_QUERY: &str = "query { currentUser { reviewRequestedMergeRequests(s
 
 pub struct Forgery {
     runner: Arc<dyn Runner>,
-    gh: Option<PathBuf>,
-    glab: Option<PathBuf>,
+    /// 없으면 받을 때마다 다시 찾는다(켠 뒤에 설치해도 보이게).
+    home: Option<PathBuf>,
+    gh: Mutex<Option<PathBuf>>,
+    glab: Mutex<Option<PathBuf>>,
 }
 
 impl Forgery {
@@ -29,19 +31,36 @@ impl Forgery {
     pub fn system(home: PathBuf) -> Self {
         let gh = locate("gh", &home);
         let glab = locate("glab", &home);
-        Self::with(
-            Arc::new(System::new(home, Duration::from_secs(20))),
+        let mut forgery = Self::with(
+            Arc::new(System::new(home.clone(), Duration::from_secs(20))),
             gh,
             glab,
-        )
+        );
+        forgery.home = Some(home);
+        forgery
     }
 
     pub fn with(runner: Arc<dyn Runner>, gh: Option<PathBuf>, glab: Option<PathBuf>) -> Self {
-        Self { runner, gh, glab }
+        Self {
+            runner,
+            home: None,
+            gh: Mutex::new(gh),
+            glab: Mutex::new(glab),
+        }
+    }
+
+    fn find(&self, slot: &Mutex<Option<PathBuf>>, name: &str) -> Option<PathBuf> {
+        let mut slot = slot.lock().unwrap_or_else(|lock| lock.into_inner());
+        if slot.is_none()
+            && let Some(home) = &self.home
+        {
+            *slot = locate(name, home);
+        }
+        slot.clone()
     }
 
     fn github(&self) -> ForgeCounts {
-        let Some(gh) = &self.gh else {
+        let Some(gh) = &self.find(&self.gh, "gh") else {
             return state(ForgeState::Missing);
         };
         let search = self.runner.run(
@@ -89,7 +108,7 @@ impl Forgery {
     }
 
     fn gitlab(&self) -> ForgeCounts {
-        let Some(glab) = &self.glab else {
+        let Some(glab) = &self.find(&self.glab, "glab") else {
             return state(ForgeState::Missing);
         };
         let ran = self.runner.run(

@@ -18,6 +18,8 @@ use crate::{clean, folder_name};
 const RECENT: Duration = Duration::from_secs(6 * 3600);
 /// 기록 폴더를 다시 훑는 간격
 const RESCAN: Duration = Duration::from_secs(30);
+/// 기록이 아직 없는 새 세션을 다시 찾는 간격
+const LOOK_AGAIN: Duration = Duration::from_secs(5);
 
 #[derive(Deserialize)]
 struct LiveFile {
@@ -102,6 +104,8 @@ pub struct Claude {
     root: PathBuf,
     sessions: HashMap<String, Session>,
     scanned: Option<Instant>,
+    /// 기록 파일이 아직 없는 떠 있는 세션을 다시 찾은 때
+    looked: HashMap<String, Instant>,
 }
 
 impl Claude {
@@ -110,6 +114,7 @@ impl Claude {
             root,
             sessions: HashMap::new(),
             scanned: None,
+            looked: HashMap::new(),
         }
     }
 
@@ -120,11 +125,24 @@ impl Claude {
             self.scanned = Some(Instant::now());
             self.scan(now);
         }
+        self.looked.retain(|id, _| live.contains_key(id));
         for id in live.keys() {
-            if !self.sessions.contains_key(id)
-                && let Some(path) = self.find(id)
+            if self.sessions.contains_key(id)
+                || self
+                    .looked
+                    .get(id)
+                    .is_some_and(|at| at.elapsed() < LOOK_AGAIN)
             {
-                self.add(id.clone(), path);
+                continue;
+            }
+            match self.find(id) {
+                Some(path) => {
+                    self.looked.remove(id);
+                    self.add(id.clone(), path);
+                }
+                None => {
+                    self.looked.insert(id.clone(), Instant::now());
+                }
             }
         }
         let mut facts = Vec::new();
@@ -283,6 +301,11 @@ impl Session {
         }
         let marker = match (line.kind.as_deref(), line.subtype.as_deref()) {
             (Some("user"), _) => {
+                // 도구 결과는 그 안의 글자와 상관없이 일하는 중이다.
+                if line.message.as_ref().is_some_and(Message::has_tool_result) {
+                    self.marker = Marker::Busy;
+                    return;
+                }
                 // 로컬 명령(/model 등)과 숨은 줄은 답을 부르지 않는다.
                 if line.meta
                     || contains(raw, b"<command-name>")
@@ -354,6 +377,11 @@ impl Session {
 }
 
 impl Message {
+    fn has_tool_result(&self) -> bool {
+        matches!(&self.content, Some(Content::Parts(parts))
+            if parts.iter().any(|part| part.kind.as_deref() == Some("tool_result")))
+    }
+
     fn calls_tool(&self) -> bool {
         matches!(&self.content, Some(Content::Parts(parts))
             if parts.iter().any(|part| part.kind.as_deref() == Some("tool_use")))
@@ -489,6 +517,17 @@ mod tests {
         assert_eq!(one(&mut claude).phase, Phase::TurnEnded);
         // 하위 작업 줄은 건너뛴다.
         home.write("s1", &[SIDE]);
+        assert_eq!(one(&mut claude).phase, Phase::TurnEnded);
+    }
+
+    #[test]
+    fn markers_inside_tool_results_do_not_count() {
+        let home = Home::new("inside");
+        let tricky = r#"{"type":"user","message":{"role":"user","content":[{"type":"tool_result","content":"<command-name>x</command-name> [Request interrupted"}]}}"#;
+        home.write("s1", &[USER, TOOL, tricky]);
+        home.live("s1", "idle");
+        let mut claude = Claude::new(home.root.clone());
+        // 결과가 왔으니 허락 대기가 아니고, 멈춤도 아니다.
         assert_eq!(one(&mut claude).phase, Phase::TurnEnded);
     }
 

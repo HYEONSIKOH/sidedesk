@@ -16,6 +16,8 @@ pub struct Tail {
     /// 아직 줄 바꿈이 오지 않은 끝 조각
     carry: Vec<u8>,
     seen: bool,
+    /// 같은 이름으로 새로 쓰였는지 보려는 파일 번호(유닉스)
+    inode: u64,
     pub modified: Option<SystemTime>,
 }
 
@@ -29,7 +31,8 @@ impl Tail {
         if self.seen && len == self.offset {
             return Ok(Vec::new());
         }
-        if len < self.offset {
+        let inode = inode(&meta);
+        if len < self.offset || (self.seen && inode != self.inode) {
             *self = Self {
                 modified: self.modified,
                 ..Self::default()
@@ -51,6 +54,7 @@ impl Tail {
         file.take(len - start).read_to_end(&mut bytes)?;
         self.offset = start + bytes.len() as u64;
         self.seen = true;
+        self.inode = inode;
         let mut data = std::mem::take(&mut self.carry);
         data.extend_from_slice(&bytes);
         let mut lines: Vec<Vec<u8>> = data.split(|b| *b == b'\n').map(<[u8]>::to_vec).collect();
@@ -62,6 +66,16 @@ impl Tail {
         lines.retain(|line| !line.is_empty());
         Ok(lines)
     }
+}
+
+#[cfg(unix)]
+fn inode(meta: &std::fs::Metadata) -> u64 {
+    std::os::unix::fs::MetadataExt::ino(meta)
+}
+
+#[cfg(not(unix))]
+fn inode(_meta: &std::fs::Metadata) -> u64 {
+    0
 }
 
 /// 바이트 안에 글자가 있는지(줄을 해석하기 전에 거르는 데 쓴다)
@@ -99,6 +113,14 @@ mod tests {
         // 파일이 새로 쓰이면 처음부터
         std::fs::write(&path, b"x\n").unwrap();
         assert_eq!(tail.read(&path).unwrap(), [b"x".to_vec()]);
+        // 같은 이름의 더 큰 새 파일로 바꿔치기돼도 처음부터
+        let other = path.with_extension("new");
+        std::fs::write(&other, b"one\ntwo\nthree\n").unwrap();
+        std::fs::rename(&other, &path).unwrap();
+        assert_eq!(
+            tail.read(&path).unwrap(),
+            [b"one".to_vec(), b"two".to_vec(), b"three".to_vec()]
+        );
         let _ = std::fs::remove_file(&path);
     }
 

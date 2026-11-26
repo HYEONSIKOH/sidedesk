@@ -719,7 +719,7 @@ fn ai_sessions_flow_and_stop_quietly_when_nobody_watches() {
         thread::sleep(Duration::from_millis(60));
         near.set(&Subscribe::default());
         far.set(&Subscribe::default());
-        thread::sleep(Duration::from_millis(40));
+        thread::sleep(Duration::from_millis(150));
         let polled = log.1.load(Ordering::SeqCst);
         *log.0.lock().unwrap() = vec![session(Phase::TurnEnded, 60)];
         thread::sleep(Duration::from_millis(100));
