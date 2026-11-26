@@ -63,8 +63,8 @@ mod tests {
     #[test]
     fn reads_commands() {
         assert_eq!(
-            command(r#"{"pair":"R3CN704E5EX"}"#),
-            Some(("pair".into(), "R3CN704E5EX".into()))
+            command(r#"{"pair":"SERIAL00001"}"#),
+            Some(("pair".into(), "SERIAL00001".into()))
         );
         assert_eq!(
             command(r#"{"answer":true}"#),
