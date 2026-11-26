@@ -194,7 +194,8 @@ mod tests {
         let ran = system(Duration::from_millis(200)).run(Path::new("/bin/sleep"), &["5"]);
         assert_eq!(ran.code, None);
         assert!(ran.started);
-        assert!(start.elapsed() < Duration::from_secs(2));
+        // 5초짜리를 기다리지 않았는지만 본다. 느린 CI 서버를 생각해 넉넉히.
+        assert!(start.elapsed() < Duration::from_secs(4));
     }
 
     #[test]
@@ -209,12 +210,12 @@ mod tests {
         runner.stop();
         let ran = worker.join().unwrap();
         assert_eq!(ran.code, None);
-        assert!(start.elapsed() < Duration::from_secs(1));
+        assert!(start.elapsed() < Duration::from_secs(3));
         // 끈 뒤에는 새로 띄우지 않는다.
         let start = Instant::now();
         let ran = runner.run(Path::new("/bin/sleep"), &["5"]);
         assert!(ran.started && ran.code.is_none());
-        assert!(start.elapsed() < Duration::from_millis(500));
+        assert!(start.elapsed() < Duration::from_secs(3));
     }
 
     #[test]

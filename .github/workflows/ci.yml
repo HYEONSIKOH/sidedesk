@@ -1,0 +1,147 @@
+name: CI
+
+on:
+  push:
+    branches: [main, develop, "feature/**"]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.head_ref || github.ref_name }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  mac:
+    name: macOS (cargo)
+    runs-on: macos-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@39008827e6b4319a349e9a42dfc90579dd25f1ca # stable
+        with:
+          toolchain: stable
+          components: clippy
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+      - run: cargo clippy --workspace --all-targets -- -D warnings
+      - run: cargo test --workspace --no-fail-fast
+
+  windows:
+    name: Windows (cargo)
+    runs-on: windows-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@39008827e6b4319a349e9a42dfc90579dd25f1ca # stable
+        with:
+          toolchain: stable
+          components: clippy
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+      - run: cargo clippy --workspace --all-targets -- -D warnings
+      - run: cargo test --workspace --no-fail-fast
+      - name: 윈도우 전용 시험(자격 증명 관리자, 인터넷, 설정 창)
+        run: |
+          cargo test -p sidedesk-windows -- --ignored windows_only_ --nocapture
+          cargo test -p sidedesk-window -- --ignored windows_only_ --nocapture
+      - name: 수집기 걸린 시간
+        run: cargo test -p sidedesk-windows -- values_are_in_range lists_this_process --nocapture
+      - run: cargo build --release -p sidedesk
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sidedesk-windows
+          path: target/release/sidedesk.exe
+          retention-days: 7
+
+  android:
+    name: Android
+    runs-on: macos-latest
+    timeout-minutes: 40
+    env:
+      NDK_VERSION: 27.2.12479018
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+          cache: gradle
+      - uses: dtolnay/rust-toolchain@39008827e6b4319a349e9a42dfc90579dd25f1ca # stable
+        with:
+          toolchain: stable
+          targets: aarch64-linux-android
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+      - name: NDK
+        run: |
+          ndk="$ANDROID_HOME/ndk/$NDK_VERSION"
+          if [ ! -d "$ndk" ]; then
+            yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "ndk;$NDK_VERSION" > /dev/null
+          fi
+          echo "ANDROID_NDK_HOME=$ndk" >> "$GITHUB_ENV"
+      - name: Gradle
+        working-directory: android
+        run: ./gradlew --no-daemon testDebugUnitTest assembleDebug
+
+  ios:
+    name: iOS (시뮬레이터)
+    runs-on: macos-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@39008827e6b4319a349e9a42dfc90579dd25f1ca # stable
+        with:
+          toolchain: stable
+          targets: aarch64-apple-ios,aarch64-apple-ios-sim
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+      # 첫 실행(Xcode 26.6)에서 통과한 판으로 고정한다. 서버 이미지에서 빠지면 여기서 멈춘다.
+      - name: 도구
+        run: |
+          xcode=$(ls -d /Applications/Xcode_26.6*.app | head -1)
+          test -n "$xcode" || { echo "Xcode 26.6 이 서버에 없음"; ls -d /Applications/Xcode*.app; exit 1; }
+          echo "DEVELOPER_DIR=$xcode/Contents/Developer" >> "$GITHUB_ENV"
+          DEVELOPER_DIR="$xcode/Contents/Developer" xcodebuild -version
+          command -v xcodegen > /dev/null || brew install xcodegen
+      - name: 공용 코어
+        run: scripts/build-ios.sh
+      - name: 프로젝트
+        working-directory: ios
+        run: xcodegen
+      # 서버 이미지마다 시뮬레이터가 다르므로 이름을 박지 않고, 가장 새 iOS 런타임의 첫 아이폰을 고른다.
+      - name: 시뮬레이터
+        run: |
+          id=$(xcrun simctl list devices available -j | python3 -c '
+          import json, re, sys
+          devices = json.load(sys.stdin)["devices"]
+          def version(runtime):
+              found = re.search(r"iOS-(\d+)-(\d+)", runtime)
+              return tuple(map(int, found.groups())) if found else None
+          runtimes = sorted((version(r), r) for r in devices if version(r) and version(r) >= (18, 0))
+          for _, runtime in reversed(runtimes):
+              phones = [d for d in devices[runtime] if d["name"].startswith("iPhone")]
+              if phones:
+                  print(phones[0]["udid"], runtime, phones[0]["name"], file=sys.stderr)
+                  print(phones[0]["udid"])
+                  break
+          ')
+          echo "SIM=$id" >> "$GITHUB_ENV"
+          xcrun simctl boot "$id" || true
+      - name: 빌드
+        id: build
+        working-directory: ios
+        run: xcodebuild build-for-testing -project SideDesk.xcodeproj -scheme SideDesk -destination "id=$SIM" -derivedDataPath "$RUNNER_TEMP/dd" -quiet
+      - name: 시험
+        working-directory: ios
+        run: xcodebuild test-without-building -project SideDesk.xcodeproj -scheme SideDesk -destination "id=$SIM" -derivedDataPath "$RUNNER_TEMP/dd"
+      - name: 화면 찍기
+        if: always() && steps.build.outcome == 'success'
+        run: scripts/shoot-ios.sh "$SIM" "$RUNNER_TEMP/dd/Build/Products/Debug-iphonesimulator/SideDesk.app" "$RUNNER_TEMP/shots"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: ios-screenshots
+          path: ${{ runner.temp }}/shots
+          retention-days: 7
+          if-no-files-found: ignore

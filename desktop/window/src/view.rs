@@ -1,5 +1,5 @@
 use std::borrow::Cow;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use tao::dpi::LogicalSize;
 use tao::event::{Event, StartCause, WindowEvent};
@@ -10,7 +10,7 @@ use tao::window::{Theme, Window, WindowBuilder};
 use tray_icon::menu::{Menu, MenuEvent, MenuId, MenuItem};
 use tray_icon::{Icon, TrayIcon, TrayIconBuilder};
 use wry::http::{Response, header::CONTENT_TYPE};
-use wry::{WebView, WebViewBuilder};
+use wry::{WebContext, WebView, WebViewBuilder};
 
 use crate::board::Board;
 
@@ -60,6 +60,9 @@ enum Change {
     Ready,
     /// 메뉴 막대(트레이) 메뉴
     Menu(MenuId),
+    /// 시험이 화면에서 읽은 글자
+    #[cfg(all(test, target_os = "windows"))]
+    Read(String),
 }
 
 /// 화면 모드. 자동은 컴퓨터 설정을 따른다.
@@ -101,16 +104,19 @@ pub fn with_music(panel: &'static crate::MusicPanel) {
     let _ = MUSIC.set(panel);
 }
 
-/// 창 닫기: 띄운 것(창과 웹뷰)을 버린다. 다시 열 길(메뉴 막대 아이콘)이 없으면 끝내야 하니 true.
+/// 창과 화면. 필드 순서대로 놓이므로 화면이 자료 폴더 설정과 창보다 먼저 사라진다.
+struct Parts {
+    webview: WebView,
+    /// 화면이 사는 동안 살아 있어야 한다.
+    _context: WebContext,
+    window: Window,
+    board: &'static Board,
+}
+
+/// 창 닫기: 띄운 것(화면, 자료 폴더 설정, 창)을 버린다. 다시 열 길(메뉴 막대 아이콘)이 없으면 끝내야 하니 true.
 fn close<T>(shown: &mut Option<T>, can_reopen: bool) -> bool {
     drop(shown.take());
     !can_reopen
-}
-
-/// 띄운 설정 창. 필드 순서대로 버려지므로 웹뷰가 창보다 먼저 버려진다.
-struct Shown {
-    webview: WebView,
-    window: Window,
 }
 
 /// 메뉴 막대 아이콘: 둥근 네모(폰) 테두리
@@ -132,102 +138,36 @@ fn tray_icon() -> Option<Icon> {
     Icon::from_rgba(rgba, SIDE, SIDE).ok()
 }
 
-/// 지금 값을 화면에 처음 그린다(창을 새로 열 때마다).
-fn paint_all(proxy: &EventLoopProxy<Change>, board: &'static Board) {
-    let _ = proxy.send_event(Change::Render(board.snapshot()));
-    if let Some(panel) = SHORTCUTS.get() {
-        let _ = proxy.send_event(Change::Script(format!(
-            "renderShortcuts({})",
-            panel.snapshot()
-        )));
+fn make_tray(open_item: &MenuItem, quit_item: &MenuItem) -> Option<TrayIcon> {
+    let menu = Menu::new();
+    let _ = menu.append(open_item);
+    let _ = menu.append(quit_item);
+    let mut builder = TrayIconBuilder::new()
+        .with_tooltip("SideDesk")
+        .with_menu(Box::new(menu));
+    if let Some(icon) = tray_icon() {
+        // 맥은 템플릿이라 메뉴 막대 밝기에 맞춰 색이 바뀐다.
+        #[cfg(target_os = "macos")]
+        {
+            builder = builder.with_icon_templated(icon);
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            builder = builder.with_icon(icon);
+        }
     }
-    if let Some(panel) = MUSIC.get() {
-        let _ = proxy.send_event(Change::Script(format!("renderMusic({})", panel.snapshot())));
-    }
+    builder.build().ok()
 }
 
-fn show(
-    target: &EventLoopWindowTarget<Change>,
-    proxy: EventLoopProxy<Change>,
-    board: &'static Board,
-    saved: &'static str,
-) -> Result<Shown, String> {
-    let builder = WindowBuilder::new()
-        .with_title("SideDesk 설정")
-        .with_inner_size(LogicalSize::new(1120.0, 760.0))
-        .with_min_inner_size(LogicalSize::new(820.0, 560.0))
-        .with_theme(theme(saved));
-    // 맥은 제목 줄을 감추고 화면 위쪽 막대가 그 자리를 대신한다.
-    #[cfg(target_os = "macos")]
-    let builder = builder
-        .with_titlebar_transparent(true)
-        .with_title_hidden(true)
-        .with_fullsize_content_view(true);
-    let window = builder
-        .build(target)
-        .map_err(|error| format!("창을 열지 못함: {error}"))?;
-    let builder = WebViewBuilder::new()
-        .with_custom_protocol(SCHEME.to_owned(), |_id, request| {
-            let (kind, body) =
-                asset(request.uri().path()).unwrap_or(("text/plain; charset=utf-8", b"not found"));
-            Response::builder()
-                .header(CONTENT_TYPE, kind)
-                .body(Cow::Borrowed(body))
-                .expect("응답")
-        })
-        .with_initialization_script(format!(
-            "document.documentElement.dataset.mode = '{saved}';\
-             document.documentElement.dataset.theme = '{saved}' === 'auto' \
-             ? (matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light') : '{saved}';{}",
-            if cfg!(target_os = "macos") {
-                "document.documentElement.classList.add('mac');"
-            } else {
-                ""
-            }
-        ))
-        .with_ipc_handler(move |request| {
-            let body = request.body();
-            if body == "drag" {
-                let _ = proxy.send_event(Change::Drag);
-            } else if let Some(chosen) = body.strip_prefix("mode:").and_then(mode) {
-                let _ = proxy.send_event(Change::Mode(chosen));
-            } else if body.trim() == r#"{"ready":true}"# {
-                let _ = proxy.send_event(Change::Ready);
-            } else if !SHORTCUTS.get().is_some_and(|panel| panel.command(body))
-                && !MUSIC.get().is_some_and(|panel| panel.command(body))
-            {
-                board.command(body);
-            }
-        })
-        .with_url(START);
-    // 윈도우 WebView2 는 처음 테마를 따로 정해야 첫 화면이 고른 모드로 뜬다.
-    #[cfg(target_os = "windows")]
-    let builder = {
-        use wry::WebViewBuilderExtWindows;
-        builder.with_theme(match saved {
-            "light" => wry::Theme::Light,
-            "dark" => wry::Theme::Dark,
-            _ => wry::Theme::Auto,
-        })
-    };
-    let webview = builder
-        .build(&window)
-        .map_err(|error| format!("화면을 열지 못함: {error}"))?;
-    #[cfg(target_os = "macos")]
-    unified_title(&window);
-    Ok(Shown { webview, window })
-}
-
-/// 설정 창을 띄우고 메뉴 막대(트레이)에 상주한다. 창을 닫으면 창과 웹뷰만 버리고
-/// 메뉴의 "설정 열기"로 새로 만든다. "끝내기"로 프로세스를 끝낸다(연결 스레드를 기다리지 않는다).
-/// `mode_file` 에 고른 화면 모드를 저장한다.
-pub fn open(board: &'static Board, mode_file: PathBuf) -> Result<(), String> {
+/// 설정 창을 띄우고 메뉴 막대(윈도우는 시스템 트레이)에 상주한다. 창을 닫으면 창과 화면만 버리고
+/// 메뉴의 "설정 열기"로 같은 자료 폴더로 새로 만든다. "끝내기"로 프로세스를 끝낸다(연결 스레드를 기다리지 않는다).
+/// `mode_file` 에 고른 화면 모드를 저장한다. `data_folder` 는 윈도우 WebView2 가 자료를 두는 곳이다.
+pub fn open(board: &'static Board, mode_file: PathBuf, data_folder: PathBuf) -> Result<(), String> {
     let mut saved = std::fs::read_to_string(&mode_file)
         .ok()
         .and_then(|text| mode(&text))
         .unwrap_or("auto");
     let event_loop = EventLoopBuilder::<Change>::with_user_event().build();
-    let proxy = event_loop.create_proxy();
     if let Some(panel) = SHORTCUTS.get() {
         let proxy = event_loop.create_proxy();
         panel.on_change(move |snapshot| {
@@ -254,9 +194,16 @@ pub fn open(board: &'static Board, mode_file: PathBuf) -> Result<(), String> {
             }
         })));
     }
+    let proxy = event_loop.create_proxy();
     let open_item = MenuItem::new("설정 열기", true, None);
     let quit_item = MenuItem::new("끝내기", true, None);
-    let mut shown = Some(show(&event_loop, proxy.clone(), board, saved)?);
+    let mut shown = Some(build(
+        &event_loop,
+        proxy.clone(),
+        board,
+        saved,
+        &data_folder,
+    )?);
     let mut tray: Option<TrayIcon> = None;
     let quit = || {
         if let Some(work) = ON_EXIT.get() {
@@ -264,105 +211,296 @@ pub fn open(board: &'static Board, mode_file: PathBuf) -> Result<(), String> {
         }
         std::process::exit(0)
     };
-
     event_loop.run(move |event, target, flow| {
         *flow = ControlFlow::Wait;
-        match event {
-            // 맥은 이벤트 루프가 돈 뒤에 메뉴 막대 아이콘을 만들어야 한다.
-            Event::NewEvents(StartCause::Init) => {
-                let menu = Menu::new();
-                let _ = menu.append(&open_item);
-                let _ = menu.append(&quit_item);
-                let mut builder = TrayIconBuilder::new()
-                    .with_tooltip("SideDesk")
-                    .with_menu(Box::new(menu));
-                if let Some(icon) = tray_icon() {
-                    // 맥은 템플릿이라 메뉴 막대 밝기에 맞춰 색이 바뀐다.
-                    #[cfg(target_os = "macos")]
-                    {
-                        builder = builder.with_icon_templated(icon);
-                    }
-                    #[cfg(not(target_os = "macos"))]
-                    {
-                        builder = builder.with_icon(icon);
-                    }
-                }
-                tray = builder.build().ok();
-            }
-            Event::UserEvent(Change::Menu(id)) => {
-                if id == *quit_item.id() {
-                    drop(tray.take());
-                    quit();
-                } else if id == *open_item.id() {
-                    match &shown {
-                        Some(now) => now.window.set_focus(),
-                        None => shown = show(target, proxy.clone(), board, saved).ok(),
-                    }
-                }
-            }
-            // 맥 Dock 아이콘을 눌렀을 때
-            Event::Reopen { .. } if shown.is_none() => {
-                shown = show(target, proxy.clone(), board, saved).ok();
-            }
-            Event::UserEvent(Change::Ready) => paint_all(&proxy, board),
-            Event::UserEvent(Change::Render(snapshot)) => {
-                if let Some(now) = &shown {
-                    let _ = now.webview.evaluate_script(&format!("render({snapshot})"));
-                }
-            }
-            Event::UserEvent(Change::Script(script)) => {
-                if let Some(now) = &shown {
-                    let _ = now.webview.evaluate_script(&script);
-                }
-            }
-            Event::UserEvent(Change::Drag) => {
-                if let Some(now) = &shown {
-                    let _ = now.window.drag_window();
-                }
-            }
-            Event::UserEvent(Change::Mode(chosen)) => {
-                saved = chosen;
-                let _ = std::fs::write(&mode_file, chosen);
-                let Some(now) = &shown else {
-                    return;
-                };
-                now.window.set_theme(theme(chosen));
-                #[cfg(target_os = "windows")]
-                {
-                    use wry::WebViewExtWindows;
-                    let _ = now.webview.set_theme(match chosen {
-                        "light" => wry::Theme::Light,
-                        "dark" => wry::Theme::Dark,
-                        _ => wry::Theme::Auto,
-                    });
-                }
-                let _ = now.webview.evaluate_script(&format!(
-                    "document.documentElement.dataset.mode = '{chosen}'; showMode();"
-                ));
-            }
-            // 창을 닫으면 웹뷰와 창만 버린다(웹뷰 도우미 프로세스도 끝난다).
-            Event::WindowEvent {
-                event: WindowEvent::CloseRequested,
-                ..
-            } => {
-                if close(&mut shown, tray.is_some()) {
-                    quit();
-                }
-            }
+        match &event {
             // Dock 의 종료, 로그아웃처럼 창 닫기를 거치지 않고 끝날 때
             Event::LoopDestroyed => {
                 if let Some(work) = ON_EXIT.get() {
                     work();
                 }
+                return;
             }
+            // 맥은 이벤트 루프가 돈 뒤에 메뉴 막대 아이콘을 만들어야 한다.
+            Event::NewEvents(StartCause::Init) => {
+                tray = make_tray(&open_item, &quit_item);
+                return;
+            }
+            Event::UserEvent(Change::Menu(id)) => {
+                if id == quit_item.id() {
+                    drop(tray.take());
+                    quit();
+                } else if id == open_item.id() {
+                    match &shown {
+                        Some(parts) => parts.window.set_focus(),
+                        None => {
+                            shown = build(target, proxy.clone(), board, saved, &data_folder).ok();
+                        }
+                    }
+                }
+                return;
+            }
+            // 맥 Dock 아이콘을 눌렀을 때
+            Event::Reopen { .. } => {
+                if shown.is_none() {
+                    shown = build(target, proxy.clone(), board, saved, &data_folder).ok();
+                }
+                return;
+            }
+            Event::UserEvent(Change::Mode(chosen)) => saved = chosen,
             _ => {}
+        }
+        let Some(parts) = &shown else {
+            return;
+        };
+        if handle(parts, event, &mode_file) && close(&mut shown, tray.is_some()) {
+            quit();
         }
     })
 }
 
-#[cfg(test)]
+/// 창과 화면을 만든다. 다시 열 때도 같은 `data_folder` 로 만든다.
+fn build(
+    target: &EventLoopWindowTarget<Change>,
+    ipc: EventLoopProxy<Change>,
+    board: &'static Board,
+    saved: &'static str,
+    data_folder: &Path,
+) -> Result<Parts, String> {
+    let builder = WindowBuilder::new()
+        .with_title("SideDesk 설정")
+        .with_inner_size(LogicalSize::new(1120.0, 760.0))
+        .with_min_inner_size(LogicalSize::new(820.0, 560.0))
+        .with_theme(theme(saved));
+    // 맥은 제목 줄을 감추고 화면 위쪽 막대가 그 자리를 대신한다.
+    #[cfg(target_os = "macos")]
+    let builder = builder
+        .with_titlebar_transparent(true)
+        .with_title_hidden(true)
+        .with_fullsize_content_view(true);
+    let window = builder
+        .build(target)
+        .map_err(|error| format!("창을 열지 못함: {error}"))?;
+    // 윈도우 WebView2 는 자료 폴더를 기본으로 실행 파일 옆에 만든다. 쓰기 금지 폴더에서도 뜨게 설정 폴더에 둔다.
+    // 맥은 이 값을 쓰지 않는다.
+    let mut context = WebContext::new(Some(data_folder.to_path_buf()));
+    let builder = WebViewBuilder::new_with_web_context(&mut context)
+        .with_custom_protocol(SCHEME.to_owned(), |_id, request| {
+            let (kind, body) =
+                asset(request.uri().path()).unwrap_or(("text/plain; charset=utf-8", b"not found"));
+            Response::builder()
+                .header(CONTENT_TYPE, kind)
+                .body(Cow::Borrowed(body))
+                .expect("응답")
+        })
+        .with_initialization_script(format!(
+            "document.documentElement.dataset.mode = '{saved}';\
+             document.documentElement.dataset.theme = '{saved}' === 'auto' \
+             ? (matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light') : '{saved}';{}",
+            if cfg!(target_os = "macos") {
+                "document.documentElement.classList.add('mac');"
+            } else {
+                ""
+            }
+        ))
+        .with_ipc_handler(move |request| {
+            let body = request.body();
+            if body == "drag" {
+                let _ = ipc.send_event(Change::Drag);
+            } else if let Some(chosen) = body.strip_prefix("mode:").and_then(mode) {
+                let _ = ipc.send_event(Change::Mode(chosen));
+            } else if body.trim() == r#"{"ready":true}"# {
+                let _ = ipc.send_event(Change::Ready);
+            } else if !SHORTCUTS.get().is_some_and(|panel| panel.command(body))
+                && !MUSIC.get().is_some_and(|panel| panel.command(body))
+            {
+                board.command(body);
+            }
+        })
+        .with_url(START);
+    // 윈도우 WebView2 는 처음 테마를 따로 정해야 첫 화면이 고른 모드로 뜬다.
+    #[cfg(target_os = "windows")]
+    let builder = {
+        use wry::WebViewBuilderExtWindows;
+        builder.with_theme(match saved {
+            "light" => wry::Theme::Light,
+            "dark" => wry::Theme::Dark,
+            _ => wry::Theme::Auto,
+        })
+    };
+    let webview = builder
+        .build(&window)
+        .map_err(|error| format!("화면을 열지 못함: {error}"))?;
+
+    #[cfg(target_os = "macos")]
+    unified_title(&window);
+
+    Ok(Parts {
+        webview,
+        _context: context,
+        window,
+        board,
+    })
+}
+
+/// 사건 하나를 처리한다. 창을 닫으라는 사건이면 true.
+fn handle(parts: &Parts, event: Event<'_, Change>, mode_file: &Path) -> bool {
+    let Parts {
+        webview,
+        window,
+        board,
+        ..
+    } = parts;
+    match event {
+        // 창을 새로 열 때마다 지금 값을 처음 그린다.
+        Event::UserEvent(Change::Ready) => {
+            let _ = webview.evaluate_script(&format!("render({})", board.snapshot()));
+            if let Some(panel) = SHORTCUTS.get() {
+                let _ = webview.evaluate_script(&format!("renderShortcuts({})", panel.snapshot()));
+            }
+            if let Some(panel) = MUSIC.get() {
+                let _ = webview.evaluate_script(&format!("renderMusic({})", panel.snapshot()));
+            }
+        }
+        Event::UserEvent(Change::Render(snapshot)) => {
+            let _ = webview.evaluate_script(&format!("render({snapshot})"));
+        }
+        Event::UserEvent(Change::Script(script)) => {
+            let _ = webview.evaluate_script(&script);
+        }
+        Event::UserEvent(Change::Drag) => {
+            let _ = window.drag_window();
+        }
+        Event::UserEvent(Change::Mode(chosen)) => {
+            window.set_theme(theme(chosen));
+            #[cfg(target_os = "windows")]
+            {
+                use wry::WebViewExtWindows;
+                let _ = webview.set_theme(match chosen {
+                    "light" => wry::Theme::Light,
+                    "dark" => wry::Theme::Dark,
+                    _ => wry::Theme::Auto,
+                });
+            }
+            let _ = webview.evaluate_script(&format!(
+                "document.documentElement.dataset.mode = '{chosen}'; showMode();"
+            ));
+            let _ = std::fs::write(mode_file, chosen);
+        }
+        Event::WindowEvent {
+            event: WindowEvent::CloseRequested,
+            ..
+        } => return true,
+        _ => {}
+    }
+    false
+}
+
+#[cfg(all(test, target_os = "windows"))]
 mod tests {
+    use std::sync::Mutex;
+    use std::time::{Duration, Instant};
+
+    use sidedesk_core::{Identity, KEY_LEN};
+    use sidedesk_domain::{Keys, PairRequests, Paired, PortError};
+    use tao::event::StartCause;
+    use tao::platform::run_return::EventLoopExtRunReturn;
+    use tao::platform::windows::EventLoopBuilderExtWindows;
+
     use super::*;
+    use crate::board::Computer;
+
+    struct NoKeys;
+
+    impl Keys for NoKeys {
+        fn identity(&self) -> Result<Identity, PortError> {
+            Ok(Identity::generate())
+        }
+        fn trusted(&self) -> Result<Vec<Paired>, PortError> {
+            Ok(Vec::new())
+        }
+        fn trust(&self, _: [u8; KEY_LEN], _: &str, _: &str) -> Result<(), PortError> {
+            Ok(())
+        }
+        fn update(&self, _: [u8; KEY_LEN], _: &str, _: &str) -> Result<(), PortError> {
+            Ok(())
+        }
+        fn forget(&self, _: [u8; KEY_LEN]) -> Result<(), PortError> {
+            Ok(())
+        }
+    }
+
+    /// 창을 띄우고, 화면이 그려진 뒤 컴퓨터 이름 칸의 글자를 읽어 맞춘다.
+    #[test]
+    #[ignore = "화면 세션에 창을 띄운다. CI 윈도우 작업에서 돌린다"]
+    fn windows_only_the_window_opens_and_shows_the_computer_name() {
+        let name = "시험-PC";
+        let board: &'static Board = Box::leak(Box::new(Board::new(
+            Computer {
+                name: name.to_owned(),
+                version: "0.0.0".to_owned(),
+                key: [7; KEY_LEN],
+            },
+            Box::leak(Box::new(NoKeys)),
+            Box::leak(Box::<PairRequests>::default()),
+        )));
+        let folder = std::env::temp_dir().join(format!("sidedesk-view-{}", std::process::id()));
+        let mode_file = folder.join("mode.txt");
+        let mut event_loop = EventLoopBuilder::<Change>::with_user_event()
+            .with_any_thread(true)
+            .build();
+        let parts = build(
+            &event_loop,
+            event_loop.create_proxy(),
+            board,
+            "auto",
+            &folder.join("WebView2"),
+        )
+        .unwrap();
+        let reader = event_loop.create_proxy();
+        let read: Mutex<Option<String>> = Mutex::new(None);
+        let started = Instant::now();
+        let limit = started + Duration::from_secs(60);
+        event_loop.run_return(|event, _, flow| {
+            *flow = ControlFlow::WaitUntil(limit);
+            match event {
+                Event::NewEvents(StartCause::ResumeTimeReached { .. }) => {
+                    *flow = ControlFlow::Exit;
+                }
+                Event::UserEvent(Change::Read(text)) => {
+                    *read.lock().unwrap() = Some(text);
+                    *flow = ControlFlow::Exit;
+                }
+                // 화면이 다 뜨면 지금 값을 그리고(handle) 이어서 읽는다.
+                Event::UserEvent(Change::Ready) => {
+                    handle(&parts, event, &mode_file);
+                    let reader = reader.clone();
+                    let _ = parts.webview.evaluate_script_with_callback(
+                        "document.getElementById('computer-name').textContent",
+                        move |text| {
+                            let _ = reader.send_event(Change::Read(text));
+                        },
+                    );
+                }
+                other => {
+                    handle(&parts, other, &mode_file);
+                }
+            }
+        });
+        eprintln!("창이 뜨고 글자를 읽기까지 {:?}", started.elapsed());
+        drop(parts);
+        let _ = std::fs::remove_dir_all(&folder);
+        let read = read
+            .into_inner()
+            .unwrap()
+            .expect("60초 안에 화면을 읽지 못함");
+        assert_eq!(read, format!("\"{name}\""));
+    }
+}
+
+#[cfg(test)]
+mod close_tests {
+    use super::close;
     use std::sync::Arc;
     use std::sync::atomic::{AtomicUsize, Ordering};
 

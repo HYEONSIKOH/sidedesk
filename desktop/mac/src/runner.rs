@@ -135,7 +135,8 @@ mod tests {
         );
         let start = Instant::now();
         assert!(quick.run(&["5"], false).is_some_and(|(ok, _)| !ok));
-        assert!(start.elapsed() < Duration::from_secs(2));
+        // 5초짜리를 기다리지 않았는지만 본다. 느린 CI 서버를 생각해 넉넉히.
+        assert!(start.elapsed() < Duration::from_secs(4));
         let runner = Arc::new(Runner::new(
             PathBuf::from("/bin/sleep"),
             std::env::temp_dir(),
@@ -149,7 +150,7 @@ mod tests {
         let start = Instant::now();
         runner.stop();
         let _ = worker.join().unwrap();
-        assert!(start.elapsed() < Duration::from_secs(1));
+        assert!(start.elapsed() < Duration::from_secs(3));
         assert!(runner.run(&["1"], false).is_none());
     }
 

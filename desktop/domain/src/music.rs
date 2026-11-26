@@ -777,8 +777,9 @@ mod tests {
         )
     }
 
+    /// 느린 CI 서버를 생각해 5ms 씩 최대 20초 기다린다.
     fn wait_until(done: impl Fn() -> bool) {
-        for _ in 0..400 {
+        for _ in 0..4000 {
             if done() {
                 return;
             }
@@ -833,8 +834,18 @@ mod tests {
             jukebox.set_wants(1, true, true);
             jukebox.set_wants(2, true, false);
             wait_until(|| fake.reads.load(Ordering::SeqCst) >= 1);
-            thread::sleep(Duration::from_millis(60));
-            let (now, art, volume, _) = jukebox.take(1);
+            // 곡, 그림, 볼륨이 다 쌓일 때까지 모은다(고정 시간 대신).
+            let (mut now, mut art, mut volume) = (None, None, None);
+            for _ in 0..4000 {
+                let (n, a, v, _) = jukebox.take(1);
+                now = n.or(now);
+                art = a.or(art);
+                volume = v.or(volume);
+                if now.is_some() && art.is_some() && volume.is_some() {
+                    break;
+                }
+                thread::sleep(Duration::from_millis(5));
+            }
             let now = now.unwrap();
             assert_eq!(now.artwork, 5);
             assert_eq!(now.title.chars().count(), 200);
@@ -982,7 +993,8 @@ mod tests {
         std::thread::scope(|scope| {
             scope.spawn(|| jukebox.run());
             wait_until(|| jukebox.lock().queue.is_empty());
-            thread::sleep(Duration::from_millis(30));
+            // 꺼낸 명령을 다 처리할 틈. 느린 CI 서버를 생각해 넉넉히.
+            thread::sleep(Duration::from_millis(300));
             jukebox.stop();
         });
         let (_, _, _, results) = jukebox.take(1);

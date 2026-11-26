@@ -398,7 +398,32 @@ fn alive(pid: i32) -> bool {
     pid > 0 && unsafe { libc::kill(pid, 0) } == 0
 }
 
-#[cfg(not(unix))]
+/// 끝 번호(STILL_ACTIVE = 259)로 보면 259 로 끝난 프로세스를 산 것으로 잘못 보므로, 끝났다는 신호를 기다려 본다.
+#[cfg(windows)]
+fn alive(pid: i32) -> bool {
+    use windows_sys::Win32::Foundation::{CloseHandle, WAIT_TIMEOUT};
+    use windows_sys::Win32::System::Threading::{
+        OpenProcess, PROCESS_SYNCHRONIZE, WaitForSingleObject,
+    };
+    let Ok(pid) = u32::try_from(pid) else {
+        return false;
+    };
+    if pid == 0 {
+        return false;
+    }
+    // SAFETY: 기다리기 권한으로 열고, 기다리지 않고 한 번 본 뒤 닫는다.
+    unsafe {
+        let process = OpenProcess(PROCESS_SYNCHRONIZE, 0, pid);
+        if process.is_null() {
+            return false;
+        }
+        let running = WaitForSingleObject(process, 0) == WAIT_TIMEOUT;
+        CloseHandle(process);
+        running
+    }
+}
+
+#[cfg(not(any(unix, windows)))]
 fn alive(_pid: i32) -> bool {
     false
 }
