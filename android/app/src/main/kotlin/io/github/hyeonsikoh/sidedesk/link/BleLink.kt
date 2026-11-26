@@ -91,7 +91,7 @@ class BleLink(
             return say("블루투스 연결을 열지 못해 USB 로만 연결합니다")
         }
         server = opened
-        // 맥이 붙을 때 GATT 를 살피므로 빈 서비스 하나를 둔다.
+        // 사전 확인에서 GATT 서버가 없을 때 맥 붙기가 끝나지 않은 적이 있어 빈 서비스 하나를 둔다(원인은 확실하지 않음).
         gatt = context.getSystemService(BluetoothManager::class.java)
             .openGattServer(context, object : BluetoothGattServerCallback() {
                 override fun onConnectionStateChange(device: BluetoothDevice, status: Int, newState: Int) {
@@ -122,7 +122,10 @@ class BleLink(
             override fun onStartFailure(errorCode: Int) {
                 Log.w(TAG, "알림 신호 실패 $errorCode")
                 if (withName && errorCode == ADVERTISE_FAILED_DATA_TOO_LARGE) {
-                    synchronized(this@BleLink) { if (running && server != null) advertise(advertiser, data, false) }
+                    synchronized(this@BleLink) {
+                        // 닫았다 다시 연 뒤 늦게 온 옛 실패는 무시한다.
+                        if (advertising === this && running && server != null) advertise(advertiser, data, false)
+                    }
                     return
                 }
                 problem.value = "블루투스 알림 신호를 내지 못해 USB 로만 연결합니다"

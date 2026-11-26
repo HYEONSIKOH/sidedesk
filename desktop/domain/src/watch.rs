@@ -183,7 +183,8 @@ fn keep_ble(links: &dyn PhoneLinks, context: &Context, phone: &Phone, quit: &Ato
                 }
             }
             Err(error) => {
-                if last_failure.as_ref() != Some(&error) {
+                // 이미 멈춘 작업(사라진 주소)은 알리지 않는다.
+                if !quit.load(Ordering::Relaxed) && last_failure.as_ref() != Some(&error) {
                     context.report.note(id, Note::Lost(error.0.clone()));
                     last_failure = Some(error);
                 }

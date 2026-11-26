@@ -26,6 +26,8 @@ use sidedesk_domain::{Conn, Link, Phone, PhoneLinks, PortError, Received};
 
 /// 이만큼 알림 신호가 안 보이면 목록에서 뺀다(붙어 있는 기기는 빼지 않는다).
 const GONE: Duration = Duration::from_secs(5);
+/// 붙기를 시작하려면 이 안에 알림 신호가 보였어야 한다.
+const FRESH: Duration = Duration::from_secs(2);
 /// 다른 앱의 블루투스 연결이 같은 기기를 잡고 있으면 붙기가 끝나지 않는다.
 const CONNECT_LIMIT: Duration = Duration::from_secs(10);
 const CHANNEL_LIMIT: Duration = Duration::from_secs(5);
@@ -33,7 +35,8 @@ const READ_WAIT: Duration = Duration::from_millis(250);
 const WRITE_LIMIT: Duration = Duration::from_secs(5);
 const PREFIX: &str = "ble:";
 
-/// 한 스레드가 쥐고 있다가 다른 스레드로 넘기기만 하는 CoreBluetooth 객체(기기, 채널, 스트림).
+/// 한 스레드가 쥐고 있다가 다른 스레드로 넘기는 CoreBluetooth 객체(기기, 채널, 스트림).
+/// 빌린 참조를 `Manager::on_queue` 로 잠깐 넘기기도 한다(부른 쪽이 끝날 때까지 기다린다).
 /// 동시에 두 스레드가 쓰지 않는다.
 struct Sendable<T>(T);
 // SAFETY: 위 설명대로 한 번에 한 스레드만 쓴다. 넘기는 것만 허용하고 Sync 는 붙이지 않는다.
@@ -300,6 +303,7 @@ unsafe impl Send for Manager {}
 unsafe impl Sync for Manager {}
 
 impl Manager {
+    /// 큐 안에서 돌린다. 큐에서 도는 콜백 안에서는 부르지 않는다(exec_sync 를 다시 들어가면 멈춘다).
     fn on_queue(&self, work: impl FnOnce(&CBCentralManager, &Delegate)) {
         struct Job<F>(F);
         // SAFETY: 작업은 exec_sync 가 끝나기 전에 큐에서 한 번 돌고 끝난다. 그동안 부른 스레드는 기다린다.
@@ -313,14 +317,15 @@ impl Manager {
 
     /// 붙기를 시작한다. 처음 붙는 것이면 찾기를 멈춘다(찾는 중에는 붙기가 끝나지 않는 일이 있다).
     fn begin(&self, hub: &Hub, peripheral: &CBPeripheral) {
-        let first = {
-            let mut state = hub.lock();
-            state.connecting += 1;
-            state.connecting == 1
-        };
         let peripheral = Sendable(peripheral);
         self.on_queue(|central, delegate| {
             let peripheral = &peripheral;
+            // 수 세기와 찾기 멈춤을 같은 큐 작업에서 해 순서가 뒤집히지 않게 한다.
+            let first = {
+                let mut state = hub.lock();
+                state.connecting += 1;
+                state.connecting == 1
+            };
             // SAFETY: 이 관리자가 찾은 기기에 대리자를 두고 붙는다.
             unsafe {
                 if first {
@@ -336,14 +341,16 @@ impl Manager {
 
     /// 붙기가 끝났다(성공이든 실패든). 붙는 중인 것이 없으면 찾기를 다시 켠다.
     fn end(&self, hub: &Hub) {
-        let idle = {
-            let mut state = hub.lock();
-            state.connecting = state.connecting.saturating_sub(1);
-            state.connecting == 0 && state.problem.is_none()
-        };
-        if idle {
-            self.on_queue(|central, _| scan(central));
-        }
+        self.on_queue(|central, _| {
+            let idle = {
+                let mut state = hub.lock();
+                state.connecting = state.connecting.saturating_sub(1);
+                state.connecting == 0 && state.problem.is_none()
+            };
+            if idle {
+                scan(central);
+            }
+        });
     }
 
     fn cancel(&self, peripheral: &CBPeripheral) {
@@ -479,9 +486,11 @@ impl PhoneLinks for BleLinks {
         let (tx, steps) = mpsc::channel();
         let (peripheral, psm, ticket) = {
             let mut state = self.hub.lock();
+            // 주소가 바뀌어 사라진 기기에 10초 동안 매달리지 않는다(살아 있는 기기는 자주 보인다).
             let seen = state
                 .seen
                 .get(id)
+                .filter(|seen| seen.last.elapsed() < FRESH)
                 .ok_or_else(|| PortError::new("블루투스에서 기기가 보이지 않습니다"))?;
             let peripheral = seen.peripheral.0.clone();
             let psm = seen.psm;

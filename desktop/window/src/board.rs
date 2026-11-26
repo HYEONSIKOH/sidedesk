@@ -453,7 +453,13 @@ impl Report for Board {
                 Link::Ble => "블루투스 신호가 사라짐",
             };
             for id in gone {
-                state.status.insert(id, Status::Lost(reason.to_owned()));
+                // 블루투스 id 는 주소가 바뀔 때마다 새로 생기므로, 등록 줄이 가리키지 않는 옛 id 는 지운다.
+                let pointed = state.seen.values().any(|seen| *seen == id);
+                if link == Link::Ble && !pointed {
+                    state.status.remove(&id);
+                } else {
+                    state.status.insert(id, Status::Lost(reason.to_owned()));
+                }
             }
             if let Some(pairing) = &state.pairing
                 && !phones.iter().any(|phone| phone.id == pairing.id)

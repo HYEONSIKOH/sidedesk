@@ -27,14 +27,16 @@ class PhoneLink(context: Context, private val keys: KeyFiles) : ComputerLink {
     private var listener: Listener? = null
 
     override fun start() {
+        owner.pause(false)
         if (listener == null) listener = Listener().also { acceptor.execute(it) }
         bluetooth.start()
     }
 
     override fun stop() {
+        owner.pause(true)
+        bluetooth.stop()
         listener?.close()
         listener = null
-        bluetooth.stop()
     }
 
     override fun answer(same: Boolean) = owner.answer.set(same)

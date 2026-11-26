@@ -19,6 +19,13 @@ class LinkOwner {
 
     private var generation = 0
     private var current: Holder? = null
+    /** 앱이 뒤로 갔다. 확인 중이던 블루투스 접속이 이어받지 못하게 한다. */
+    private var paused = false
+
+    @Synchronized
+    fun pause(value: Boolean) {
+        paused = value
+    }
 
     @Synchronized
     fun takeUsb(close: () -> Unit): Int {
@@ -32,6 +39,7 @@ class LinkOwner {
     /** 이어받았으면 세대 번호, 졌으면 null */
     @Synchronized
     fun takeBluetooth(computer: ByteArray, close: () -> Unit): Int? {
+        if (paused) return null
         val now = current
         if (now != null) {
             if (now.via == Via.Usb) return null
