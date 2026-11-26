@@ -3,7 +3,7 @@ package io.github.hyeonsikoh.sidedesk.rest
 import io.github.hyeonsikoh.sidedesk.link.AlertKind
 
 /** 앱이 앞에 있을 때 화면을 켜 둘지 */
-enum class KeepOn(val label: String) { Always("늘"), Charging("충전 중"), Never("안 함") }
+enum class KeepOn(val label: String) { Always("늘"), Charging("충전 중일 때만"), Never("안 함") }
 
 /** 손을 안 댄 뒤 쉴 때까지. null 은 쉬지 않음 */
 enum class RestAfter(val label: String, val millis: Long?) {

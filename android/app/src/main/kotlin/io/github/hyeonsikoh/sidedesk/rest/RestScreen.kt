@@ -1,5 +1,6 @@
 package io.github.hyeonsikoh.sidedesk.rest
 
+import io.github.hyeonsikoh.sidedesk.BuildConfig
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.tween
@@ -114,7 +115,7 @@ fun RestSettings(panel: RestPanel, modifier: Modifier = Modifier) {
     Column(modifier.verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(6.dp)) {
         Line("켜 두기") { KeepOn.entries.forEach { Chip(it.label, it == s.keepOn) { panel.setKeepOn(it) } } }
         Line("쉬기") { RestAfter.entries.forEach { Chip(it.label, it == s.restAfter) { panel.setRestAfter(it) } } }
-        Line("알림에 깨우기") {
+        Line("알림이 오면\n깨우기") {
             Chip("켬", s.wakeOnAlert) { panel.setWakeOnAlert(true) }
             Chip("끔", !s.wakeOnAlert) { panel.setWakeOnAlert(false) }
         }
@@ -122,13 +123,16 @@ fun RestSettings(panel: RestPanel, modifier: Modifier = Modifier) {
         if (!panel.canSetStrength) {
             Text("이 폰은 세기를 바꿀 수 없습니다", color = Palette.muted, fontSize = fit(11.dp), modifier = Modifier.padding(start = 4.dp))
         }
+        // 컴퓨터와 버전이 다르다는 안내를 받았을 때 자기 버전을 볼 곳
+        Text("SideDesk ${BuildConfig.VERSION_NAME}", color = Palette.muted, fontSize = fit(11.dp), modifier = Modifier.padding(start = 4.dp))
     }
 }
 
 @Composable
 private fun Line(label: String, chips: @Composable () -> Unit) {
     Row(verticalAlignment = Alignment.CenterVertically) {
-        Text(label, color = Palette.muted, fontSize = fit(12.dp), maxLines = 1, modifier = Modifier.width(84.dp))
+        // 긴 이름(알림이 오면 깨우기)은 낱말 사이에서 두 줄로 나눠 적는다(한글은 글자 사이에서 끊기므로).
+        Text(label, color = Palette.muted, fontSize = fit(12.dp), lineHeight = fit(14.dp), maxLines = 2, modifier = Modifier.width(84.dp).padding(end = 6.dp))
         Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(6.dp)) { chips() }
     }
 }

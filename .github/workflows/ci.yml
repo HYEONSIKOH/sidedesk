@@ -62,7 +62,8 @@ jobs:
           exit 0
       - uses: actions/upload-artifact@v4
         with:
-          name: sidedesk-windows
+          # 개발용: 경로 바꾸기와 비밀값 검사를 거치지 않았다. 배포 파일은 release.yml(SD-12 뒤)
+          name: sidedesk-windows-dev
           path: |
             target/release/sidedesk.exe
             target/release/sidedesk-cli.exe
@@ -122,7 +123,7 @@ jobs:
           # 매 프레임 시계(.animation, AnimationTimelineSchedule), 정해진 간격 시계(.periodic, PeriodicTimelineSchedule,
           # Timer.publish), 끝없는 애니메이션(.repeatForever)을 찾는다. 줄을 나눠 쓴 TimelineView( 도 잡는다.
           # 보기용 값(Debug)은 디버그 빌드에만 있어 뺀다.
-          if grep -rnE 'TimelineView\(\s*$|TimelineView\(\.animation|AnimationTimelineSchedule|\.animation\(minimumInterval|PeriodicTimelineSchedule|\.periodic\(|Timer\.publish\(every:|\.repeatForever' --exclude-dir=Debug ios/App; then
+          if grep -rnE 'TimelineView\([[:space:]]*$|TimelineView\(\.animation|AnimationTimelineSchedule|\.animation\(minimumInterval|PeriodicTimelineSchedule|\.periodic\(|Timer\.publish\(every:|\.repeatForever' --exclude-dir=Debug ios/App; then
             echo "ios/App 에 매 프레임 또는 1초 타이머가 있습니다(MinuteSchedule, MusicTicks 를 쓰세요)"
             exit 1
           fi
