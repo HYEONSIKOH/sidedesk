@@ -213,7 +213,9 @@ fn pair() -> Result<(), String> {
     }
     let (links, phone) = match phones.as_slice() {
         [one] => one,
-        [] => return Err("연결된 기기가 없음".to_owned()),
+        // 한쪽(맥이면 늘 있는 usbmuxd)만 되고 기기가 없으면, 안 된 쪽의 이유(adb 꺼짐 등)를 같이 보인다.
+        [] if errors.is_empty() => return Err("연결된 기기가 없음".to_owned()),
+        [] => return Err(format!("연결된 기기가 없음 ({})", errors.join("; "))),
         _ => return Err("기기를 하나만 꽂고 다시 실행".to_owned()),
     };
     let mut conn = links.connect(&phone.id).map_err(|e| e.0)?;

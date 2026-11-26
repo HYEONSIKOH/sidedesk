@@ -194,7 +194,8 @@ impl PhoneLinks for UsbmuxLinks {
         *self.lock() = list;
         let mut last = self.phones();
         changed(last.clone());
-        // 바뀔 때만 오므로 시간 제한을 두지 않는다.
+        // 바뀔 때만 오므로 시간 제한을 두지 않는다(adb `watch` 와 같음). 그래서 `keep_connected` 의
+        // stop 은 다음 알림이나 usbmuxd 가 끊길 때 본다. 지금 앱은 stop 을 쓰지 않는다.
         let mut stream = self.open(None)?;
         send(stream.as_mut(), 2, &request("Listen", &[]))?;
         match result(&receive(stream.as_mut())?)? {
@@ -450,13 +451,13 @@ impl<'a> Reader<'a> {
         }
     }
 
-    /// `</name>` 까지의 글자
-    fn text_until(&mut self, name: &str) -> Option<String> {
+    /// `</name>` 까지의 글자(엔티티를 풀기 전)
+    fn raw_until(&mut self, name: &str) -> Option<&'a str> {
         let close = format!("</{name}>");
         let end = self.rest.find(&close)?;
         let raw = &self.rest[..end];
         self.rest = &self.rest[end + close.len()..];
-        unescape(raw)
+        Some(raw)
     }
 
     fn value(&mut self, depth: usize) -> Option<Value> {
@@ -495,7 +496,8 @@ impl<'a> Reader<'a> {
                     let name = if key.empty {
                         String::new()
                     } else {
-                        self.text_until("key")?
+                        let raw = self.raw_until("key")?;
+                        unescape(raw).unwrap_or_else(|| raw.to_owned())
                     };
                     let value = self.value(depth + 1)?;
                     entries.push((name, value));
@@ -514,13 +516,17 @@ impl<'a> Reader<'a> {
                     items.push(self.value_of(next, depth + 1)?);
                 }
             }
-            "string" => Some(Value::Text(self.text_until("string")?)),
-            "integer" => Some(Value::Integer(
-                self.text_until("integer")?.trim().parse().ok()?,
-            )),
+            // 읽지 못하는 값 하나(모르는 엔티티, i64 를 넘는 수) 때문에 메시지 전체를 버리지 않는다.
+            "string" => Some(unescape(self.raw_until("string")?).map_or(Value::Other, Value::Text)),
+            "integer" => Some(
+                self.raw_until("integer")?
+                    .trim()
+                    .parse()
+                    .map_or(Value::Other, Value::Integer),
+            ),
             name => {
                 // 모르는 값은 닫는 태그까지 건너뛴다(같은 이름이 안에 겹치지 않는 값만 온다).
-                self.text_until(name)?;
+                self.raw_until(name)?;
                 Some(Value::Other)
             }
         }
@@ -733,10 +739,19 @@ mod tests {
     }
 
     #[test]
+    fn one_unreadable_value_does_not_spoil_the_message() {
+        let text = "<plist><dict><key>Big</key><integer>99999999999999999999</integer>\
+            <key>Odd</key><string>&#65;</string><key>N</key><integer>4</integer></dict></plist>";
+        let value = plist(text).unwrap();
+        assert_eq!(value.get("Big"), Some(&Value::Other));
+        assert_eq!(value.get("Odd"), Some(&Value::Other));
+        assert_eq!(value.get("N").and_then(Value::integer), Some(4));
+    }
+
+    #[test]
     fn refuses_broken_or_too_deep_plists() {
         assert!(plist("<plist><dict><key>a</key>").is_none());
-        assert!(plist("<plist><integer>x</integer></plist>").is_none());
-        assert!(plist("<plist><string>&bogus;</string></plist>").is_none());
+        assert!(plist("<plist><dict><key>a</key><string>x</string></plist>").is_none());
         assert!(plist("<plist><dict><string>a</string></dict></plist>").is_none());
         let deep = format!(
             "<plist>{}{}</plist>",
