@@ -9,6 +9,12 @@ bundle=io.github.hyeonsikoh.sidedesk
 mkdir -p "$out"
 xcrun simctl bootstatus "$sim" -b > /dev/null
 xcrun simctl install "$sim" "$app"
+# 상태 줄을 늘 같게 둔다.
+xcrun simctl status_bar "$sim" override --time 9:41 --batteryState charged --batteryLevel 100 \
+    --wifiBars 3 --cellularMode notSupported > /dev/null 2>&1 || true
+# 부팅 직후 뜨는 시스템 알림(Apple Intelligence 안내 등)이 사라지도록 한 번 띄워 두고 기다린 뒤 버린다.
+xcrun simctl launch "$sim" "$bundle" -demo YES > /dev/null
+sleep 25
 
 shot() {
     name=$1
