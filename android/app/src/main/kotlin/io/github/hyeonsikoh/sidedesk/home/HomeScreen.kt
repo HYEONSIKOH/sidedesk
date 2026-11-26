@@ -44,6 +44,14 @@ fun HomeScreen(state: HomeState, onAnswer: (Boolean) -> Unit) {
                                 modifier = Modifier.padding(top = 8.dp),
                             )
                         }
+                        state.notice?.let {
+                            Text(
+                                text = it,
+                                style = MaterialTheme.typography.bodySmall,
+                                textAlign = TextAlign.Center,
+                                modifier = Modifier.padding(top = 16.dp).alpha(0.6f),
+                            )
+                        }
                     }
                 }
             }
