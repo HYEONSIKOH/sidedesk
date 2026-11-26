@@ -12,7 +12,8 @@ import org.junit.Test
 
 class LinkOwnerTest {
     private var now = 0L
-    private val owner = LinkOwner { now }
+    private var elapsed = 0L
+    private val owner = LinkOwner(nanos = { now }, elapsed = { elapsed })
     private val mac = byteArrayOf(1)
     private val other = byteArrayOf(2)
     private val build = KillCommand(7, 10, 100)
@@ -211,7 +212,9 @@ class LinkOwnerTest {
     @Test
     fun stampsNowPlayingWithThePhoneClock() {
         val mine = connect(mac)
-        now = 7_000_000_000
+        // 받은 때는 깊은 잠도 세는 부팅 뒤 시각으로 적는다(단조 nanos 가 아님).
+        now = 1
+        elapsed = 7_000
         owner.receivedNowPlaying(mine, song)
         assertEquals(7_000L, owner.nowPlaying.value!!.receivedAt)
     }

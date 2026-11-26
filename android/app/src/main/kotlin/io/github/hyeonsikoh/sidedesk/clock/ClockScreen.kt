@@ -1,6 +1,7 @@
 package io.github.hyeonsikoh.sidedesk.clock
 
 import androidx.compose.foundation.Canvas
+import io.github.hyeonsikoh.sidedesk.ui.Track
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
@@ -23,6 +24,9 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.collectAsState
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.layout.LayoutCoordinates
 import androidx.compose.ui.geometry.Rect
@@ -77,17 +81,30 @@ import kotlin.math.sin
 private const val DIM = 0.4f
 private val DAYS = listOf("일", "월", "화", "수", "목", "금", "토")
 
-/** 1초마다 시각을 다시 읽는다. 시험에서는 고정 시각을 넘긴다. */
+/**
+ * 분이 바뀔 때마다 시각을 다시 읽는다. 시계는 시와 분만 보이고 초침이 없어 1분이면 된다.
+ * AI 지난 시간도 이 시각을 써서 "지금"에서 "1분"으로 넘어가는 때가 최대 59초 늦을 수 있다.
+ * delay 는 깊은 잠 동안 흐르지 않으므로, 화면이 보이게 될 때(START)마다 곧바로 다시 읽고 다시 건다.
+ * 안 보이는 동안은 읽지 않는다.
+ */
 @Composable
 fun rememberNow(now: () -> Long): Long {
     var value by remember { mutableLongStateOf(now()) }
-    LaunchedEffect(now) {
-        while (true) {
-            delay(1_000 - value % 1_000)
+    val started = rememberStarted()
+    LaunchedEffect(now, started) {
+        while (started) {
             value = now()
+            delay(60_000 - value % 60_000)
         }
     }
     return value
+}
+
+/** 화면(생명주기)이 STARTED 이상인지. 바뀔 때만 다시 구성된다. */
+@Composable
+fun rememberStarted(): Boolean {
+    val state by LocalLifecycleOwner.current.lifecycle.currentStateFlow.collectAsState()
+    return state.isAtLeast(Lifecycle.State.STARTED)
 }
 
 private fun calendar(millis: Long) = Calendar.getInstance(Locale.KOREA).apply { timeInMillis = millis }
@@ -113,6 +130,7 @@ private fun Modifier.sunAnchor(): Modifier {
 /** 홈 큰 화면. 고른 모양 하나와, 그 모양의 기준 묶음 뒤에서 시각 따라 움직이는 동그라미 */
 @Composable
 fun HomeBig(clock: ClockState, now: Long, modifier: Modifier = Modifier, resting: Boolean = false) {
+    Track("home-big")
     var frame by remember { mutableStateOf<LayoutCoordinates?>(null) }
     var anchor by remember(clock.face) { mutableStateOf<Rect?>(null) }
     BoxWithConstraints(modifier.fillMaxSize().onGloballyPositioned { frame = it }) {
@@ -488,6 +506,7 @@ internal fun overviewGrid(width: Float, height: Float, gap: Float): Pair<Int, In
 /** 다른 화면을 볼 때의 홈 작은 칸. 시각, 하늘 아이콘, 기온, 받은 곳 */
 @Composable
 fun HomeTile(clock: ClockState, now: Long, modifier: Modifier) {
+    Track("home-tile")
     BoxWithConstraints(modifier.clip(RoundedCornerShape(20.dp)).background(Palette.side).padding(horizontal = 8.dp, vertical = 6.dp)) {
         // 좁은 세로에서 칸이 셋이면 칸이 100dp 남짓이라, 시각과 기온이 함께 들어가게 너비에 맞춘다.
         val timeSize = fit(min(24f, maxWidth.value * 0.2f).dp)

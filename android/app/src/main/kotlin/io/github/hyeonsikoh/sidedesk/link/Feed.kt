@@ -103,7 +103,7 @@ enum class MusicPlayer { None, Music, Spotify, System }
 
 /**
  * 지금 재생 중인 곡. player 가 None 이면 곡이 없다.
- * receivedAt 은 이 값을 받은 폰의 단조 시각(밀리초)이다. 진행 바는 이것을 기준으로 폰이 스스로 움직인다.
+ * receivedAt 은 이 값을 받은 폰의 부팅 뒤 시각(elapsedRealtime, 밀리초)이다. 진행 바는 이것을 기준으로 폰이 스스로 움직인다.
  */
 data class NowPlaying(
     val player: MusicPlayer,

@@ -336,7 +336,7 @@ fn window() -> Result<(), String> {
         let panel = sidedesk_window::ShortcutsPanel::new(Arc::clone(deck), help);
         sidedesk_window::with_shortcuts(Box::leak(Box::new(panel)));
     }
-    // 창을 닫으면 돌고 있는 gh, glab 을 끝내고 나간다.
+    // 끝내기(메뉴 막대)나 로그아웃 때 돌고 있는 gh, glab 을 끝내고 나간다.
     sidedesk_window::on_exit(|| context.hub.stop());
     thread::spawn(move || {
         let _lock = lock;
