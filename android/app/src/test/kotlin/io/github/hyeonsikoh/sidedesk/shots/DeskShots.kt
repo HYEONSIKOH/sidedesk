@@ -18,7 +18,18 @@ import androidx.compose.ui.unit.dp
 import com.github.takahirom.roborazzi.captureRoboImage
 import org.junit.Rule
 import org.junit.rules.RuleChain
+import io.github.hyeonsikoh.sidedesk.ai.AiScreenState
+import io.github.hyeonsikoh.sidedesk.ai.ForgeTab
 import io.github.hyeonsikoh.sidedesk.clock.ClockState
+import io.github.hyeonsikoh.sidedesk.desk.AiPart
+import io.github.hyeonsikoh.sidedesk.link.AiAlert
+import io.github.hyeonsikoh.sidedesk.link.AiSession
+import io.github.hyeonsikoh.sidedesk.link.AiState
+import io.github.hyeonsikoh.sidedesk.link.AiTool
+import io.github.hyeonsikoh.sidedesk.link.AlertKind
+import io.github.hyeonsikoh.sidedesk.link.Forge
+import io.github.hyeonsikoh.sidedesk.link.ForgeCounts
+import io.github.hyeonsikoh.sidedesk.link.ForgeState
 import io.github.hyeonsikoh.sidedesk.clock.Face
 import io.github.hyeonsikoh.sidedesk.clock.PickActions
 import io.github.hyeonsikoh.sidedesk.desk.ClockPart
@@ -74,6 +85,31 @@ class DeskShots(private val device: String, private val width: Int, private val 
         )
         private val NONE = DeskActions({}, {}, {}, {}, {}, {}, {}, {})
         private val PICK = PickActions({}, {}, {})
+        private const val MINUTE = 60_000L
+
+        private fun ai(id: String, title: String, project: String, state: AiState, ago: Long, tool: AiTool = AiTool.ClaudeCode, open: Boolean = true) =
+            AiSession(id, tool, title, project, state, NOW - ago * MINUTE, open)
+
+        val SESSIONS = listOf(
+            ai("1", "로그인 화면", "sidedesk", AiState.Working, 0),
+            ai("2", "테스트 실행", "vtm-3-0", AiState.Working, 4, AiTool.Codex),
+            ai("3", "문서 정리", "docs", AiState.Done, 12),
+            ai("4", "검색 개선", "ti", AiState.Done, 35),
+            ai("5", "오류 수정", "be", AiState.Done, 60, open = false),
+            ai("6", "번역", "fe", AiState.Done, 120, AiTool.Codex),
+        )
+        private val waiting = ai("1", "로그인 화면", "sidedesk", AiState.Waiting, 1)
+        val MANY = SESSIONS.take(2) + ai("9", "아주 긴 세션 제목이 칸을 넘어가는 경우", "long-project-name", AiState.Working, 2) +
+            (10..18).map { ai("$it", "세션 $it", "p$it", if (it == 13) AiState.Unknown else AiState.Done, it * 10L) }
+
+        private fun counts(state: ForgeState) = ForgeCounts(state, 0, 0, 0)
+
+        val AI = AiScreenState(
+            sessions = SESSIONS,
+            busy = 2,
+            forge = Forge(ForgeCounts(ForgeState.Ok, 0, 0, 2), ForgeCounts(ForgeState.SignedOut, 0, 0, 0)),
+        )
+        val ALERT = AiAlert(7, "3", "문서 정리", AlertKind.Done, NOW)
         private const val SHOT = "shot"
     }
 
@@ -111,12 +147,12 @@ class DeskShots(private val device: String, private val width: Int, private val 
         ClockState(face = face, theme = theme, picking = picking, via = if (dimmed) null else Via.Usb, weather = weather, weatherDimmed = dimmed)
 
     /** 기기 크기의 판에 그린다. 글자 배율은 Density 로 바꾼다. */
-    private fun shot(name: String, theme: Theme, desk: DeskState, clock: ClockState, scale: Float = 1f) {
+    private fun shot(name: String, theme: Theme, desk: DeskState, clock: ClockState, scale: Float = 1f, ai: AiScreenState = AI) {
         current = {
             val density = LocalDensity.current
             CompositionLocalProvider(LocalDensity provides Density(density.density, scale)) {
                 Box(Modifier.requiredSize(width.dp, height.dp).testTag(SHOT)) {
-                    SideDeskTheme(theme) { DeskScreen(desk, ClockPart(clock, { NOW }, {}, {}, {}, PICK), NONE) }
+                    SideDeskTheme(theme) { DeskScreen(desk, ClockPart(clock, { NOW }, {}, {}, {}, PICK), NONE, AiPart(ai) {}) }
                 }
             }
         }
@@ -135,6 +171,16 @@ class DeskShots(private val device: String, private val width: Int, private val 
             shot("home-kma-rain", theme, desk(), clock(Face.Weather, theme, weather = RAIN_KMA))
             shot("home-lost", theme, desk(dimmed = true), clock(Face.Overview, theme, dimmed = true))
             shot("perf", theme, desk(Screen.Perf), clock(theme = theme))
+            shot("ai", theme, desk(Screen.Ai), clock(theme = theme))
+            shot("ai-waiting", theme, desk(Screen.Ai), clock(theme = theme), ai = AI.copy(sessions = listOf(waiting) + SESSIONS.drop(1), waiting = true))
+            shot("ai-empty", theme, desk(Screen.Ai), clock(theme = theme), ai = AiScreenState(sessions = emptyList(), busy = 0))
+            shot("ai-many", theme, desk(Screen.Ai), clock(theme = theme), ai = AI.copy(sessions = MANY, busy = 3))
+            shot("ai-gitlab-signed-out", theme, desk(Screen.Ai), clock(theme = theme), ai = AI.copy(tab = ForgeTab.GitLab))
+            shot("ai-forge-missing", theme, desk(Screen.Ai), clock(theme = theme), ai = AI.copy(forge = Forge(counts(ForgeState.Missing), counts(ForgeState.Failed))))
+            shot("ai-lost", theme, desk(Screen.Ai, dimmed = true), clock(theme = theme, dimmed = true), ai = AI.copy(dimmed = true))
+            shot("ai-alert-card", theme, desk(Screen.Ai), clock(theme = theme), ai = AI.copy(alert = ALERT))
+            shot("home-ai-alert", theme, desk(), clock(theme = theme), ai = AI.copy(alert = ALERT))
+            shot("home-ai-idle", theme, desk(), clock(theme = theme), ai = AiScreenState(sessions = emptyList(), busy = 0))
             shot("processes", theme, desk(Screen.Processes), clock(theme = theme))
         }
     }
@@ -147,6 +193,8 @@ class DeskShots(private val device: String, private val width: Int, private val 
                 shot("font${scale}-home-${face.name.lowercase()}", Theme.Dark, desk(), clock(face, Theme.Dark), scale)
             }
             shot("font$scale-perf", Theme.Dark, desk(Screen.Perf), clock(theme = Theme.Dark), scale)
+            shot("font$scale-ai", Theme.Dark, desk(Screen.Ai), clock(theme = Theme.Dark), scale)
+            shot("font$scale-home-ai-alert", Theme.Dark, desk(), clock(theme = Theme.Dark), scale, AI.copy(alert = ALERT))
             shot("font$scale-home-picking", Theme.Dark, desk(), clock(Face.Digits, Theme.Dark, picking = true), scale)
         }
     }

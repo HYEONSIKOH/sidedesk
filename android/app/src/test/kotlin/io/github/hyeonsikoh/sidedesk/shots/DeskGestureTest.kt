@@ -13,7 +13,9 @@ import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performTouchInput
 import androidx.compose.ui.test.swipeLeft
 import androidx.compose.ui.test.swipeRight
+import io.github.hyeonsikoh.sidedesk.ai.AiScreenState
 import io.github.hyeonsikoh.sidedesk.clock.ClockState
+import io.github.hyeonsikoh.sidedesk.desk.AiPart
 import io.github.hyeonsikoh.sidedesk.clock.Face
 import io.github.hyeonsikoh.sidedesk.clock.PickActions
 import io.github.hyeonsikoh.sidedesk.desk.BIG
@@ -56,7 +58,13 @@ class DeskGestureTest {
         compose.mainClock.autoAdvance = false
     }
 
-    private fun show(clock: ClockState, big: Screen = Screen.Home, dimmed: Boolean = false) {
+    private fun show(
+        clock: ClockState,
+        big: Screen = Screen.Home,
+        dimmed: Boolean = false,
+        ai: AiScreenState = AiScreenState(),
+        desk: DeskState = DeskState(big = big, dimmed = dimmed),
+    ) {
         val actions = DeskActions(
             show = { calls += "show $it" },
             next = { calls += "next" },
@@ -78,7 +86,7 @@ class DeskGestureTest {
         }
         compose.setContent {
             CompositionLocalProvider(LocalUriHandler provides links) {
-                SideDeskTheme(Theme.Dark) { DeskScreen(DeskState(big = big, dimmed = dimmed), part, actions) }
+                SideDeskTheme(Theme.Dark) { DeskScreen(desk, part, actions, AiPart(ai) {}) }
             }
         }
         compose.mainClock.advanceTimeBy(100)
@@ -145,6 +153,35 @@ class DeskGestureTest {
         settle()
         assertEquals(listOf("done"), calls)
         assertEquals(false, compose.activity.isFinishing)
+    }
+
+    @Test
+    fun tappingTheAiTileOpensTheAiScreen() {
+        show(ClockState(), ai = AiScreenState(busy = 2))
+        compose.onNodeWithText("AI").performClick()
+        settle()
+        assertEquals(listOf("done", "show Ai"), calls)
+    }
+
+    @Test
+    fun anAlertShowsOnTheTileWithoutChangingTheScreen() {
+        show(ClockState(), ai = AiScreenState(busy = 1, alert = DeskShots.ALERT))
+        compose.onNodeWithText("문서 정리").assertExists()
+        compose.onNodeWithText("작업 끝남").assertExists()
+        compose.onNodeWithText("11월 25일 수요일").assertExists()
+        assertEquals(emptyList<String>(), calls)
+    }
+
+    @Test
+    fun anAlertKeepsTheKillConfirmOpen() {
+        val process = DeskShots.ROWS.first()
+        show(
+            ClockState(),
+            ai = AiScreenState(busy = 1, alert = DeskShots.ALERT),
+            desk = DeskState(big = Screen.Processes, rows = DeskShots.ROWS, asking = process),
+        )
+        compose.onNodeWithText("빌드를 끝낼까요?").assertExists()
+        compose.onNodeWithText("작업 끝남").assertExists()
     }
 
     @Test
