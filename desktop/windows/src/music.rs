@@ -17,6 +17,8 @@ use windows::Storage::Streams::{DataReader, IRandomAccessStreamReference};
 use crate::com::speaker;
 use crate::image::{SOURCE_LIMIT, shrink};
 
+/// 한 곡의 그림을 얻으려고 해 보는 횟수
+const ART_TRIES: u8 = 3;
 /// 세션 관리자를 못 열었으면 이만큼 뒤에 다시 연다.
 const RETRY: Duration = Duration::from_secs(60);
 /// 1601-01-01 부터 1970-01-01 까지(100ns 단위)
@@ -36,6 +38,8 @@ struct State {
     failed_at: Option<Instant>,
     /// 그림을 마지막으로 보낸 곡
     art_key: Option<String>,
+    /// 그림을 못 얻은 곡과 그 시도 횟수(깨진 썸네일을 읽을 때마다 다시 풀지 않게)
+    art_tries: Option<(String, u8)>,
     watching: Option<Watching>,
 }
 
@@ -171,8 +175,15 @@ impl Player for WindowsPlayer {
         }
         // 플레이어는 보통 제목을 먼저 알리고 그림을 뒤에 채운다. 그림을 얻었을 때만 "보냄"으로 적어,
         // 아직 없으면 다음 읽기에서 다시 본다(domain 은 같은 곡의 늦은 그림도 받는다).
-        let sent = lock(&self.state).art_key.as_deref() == Some(track.key.as_str());
-        let picture = if sent {
+        let skip = {
+            let state = lock(&self.state);
+            state.art_key.as_deref() == Some(track.key.as_str())
+                || state
+                    .art_tries
+                    .as_ref()
+                    .is_some_and(|(key, tries)| key == &track.key && *tries >= ART_TRIES)
+        };
+        let picture = if skip {
             None
         } else {
             reference
@@ -180,9 +191,19 @@ impl Player for WindowsPlayer {
                 .and_then(thumbnail)
                 .and_then(|bytes| shrink(&bytes))
         };
+        let mut state = lock(&self.state);
         if picture.is_some() {
-            lock(&self.state).art_key = Some(track.key.clone());
+            state.art_key = Some(track.key.clone());
+            state.art_tries = None;
+        } else if !skip {
+            // 썸네일이 깨졌거나 너무 크거나 못 푸는 꼴이면 몇 번만 다시 해 본다.
+            let tries = match &state.art_tries {
+                Some((key, tries)) if key == &track.key => tries + 1,
+                _ => 1,
+            };
+            state.art_tries = Some((track.key.clone(), tries));
         }
+        drop(state);
         // 세션이 바뀌었으면 알림도 새 세션으로 옮긴다.
         self.follow(&session);
         Ok((track, picture))

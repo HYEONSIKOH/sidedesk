@@ -360,7 +360,8 @@ const WINDOWS_RUNNABLE: [&str; 39] = [
 pub fn windows_path_problem(path: &str, pathext: &str) -> Option<&'static str> {
     let slashed = path.replace('/', "\\");
     // 받는 꼴은 드라이브 글자로 시작하는 전체 경로(`C:\..`) 하나. 나머지(UNC, `\\?\`, `\??\`, 장치 경로,
-    // 상대 경로)는 모두 받지 않는다. 연결된 네트워크 드라이브(`Z:`)는 드라이브 글자라 받는다.
+    // 상대 경로)는 모두 받지 않는다. 연결된 네트워크 드라이브(`Z:`)는 글자 검사는 지나지만,
+    // check_path 의 실제 경로 검사에서 `\\?\UNC\..` 로 풀려 막힌다.
     let rest = match slashed.as_bytes() {
         [drive, b':', b'\\', ..] if drive.is_ascii_alphabetic() => &slashed[2..],
         [b'\\', ..] => return Some("네트워크 경로와 장치 경로는 열 수 없습니다"),
@@ -720,7 +721,8 @@ mod tests {
             );
         }
         // 짧은 8.3 이름도 실제 이름으로 풀어 거른다(그 드라이브가 짧은 이름을 만들 때만).
-        let long = file("longer-script-name.cmd");
+        // 짧은 이름에서 확장자가 바뀌는 파일(`ASETTI~1.SET`)이라 실제 경로 검사를 탄다.
+        let long = file("a.settingcontent-ms");
         let wide: Vec<u16> = long.to_str().unwrap().encode_utf16().chain([0]).collect();
         let mut short = vec![0u16; 1024];
         // SAFETY: 널 끝 경로와 그 길이의 버퍼
