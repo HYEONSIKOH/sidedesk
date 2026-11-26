@@ -200,6 +200,8 @@ struct Inner {
     pictures: VecDeque<Picture>,
     volume: Option<Volume>,
     queue: VecDeque<Queued>,
+    /// 지금 실행 중인 명령 번호와 그동안 같은 번호로 온 구독자
+    running: Option<(u64, Vec<u64>)>,
     done: HashMap<u64, CommandResult>,
     done_order: VecDeque<u64>,
     dirty: bool,
@@ -334,6 +336,14 @@ impl Jukebox {
                 .find(|q| q.command.request_id == command.request_id)
             {
                 queued.waiters.push(subscriber);
+                return;
+            }
+            if let Some((_, waiters)) = inner
+                .running
+                .as_mut()
+                .filter(|(id, _)| *id == command.request_id)
+            {
+                waiters.push(subscriber);
                 return;
             }
         }
@@ -611,6 +621,7 @@ impl Jukebox {
             }
             return;
         }
+        inner.running = Some((queued.command.request_id, Vec::new()));
         drop(inner);
         let outcome = panic::catch_unwind(AssertUnwindSafe(|| self.player.command(action)))
             .unwrap_or_else(|_| Err(PortError::new("실행하지 못했습니다")))
@@ -623,7 +634,8 @@ impl Jukebox {
         }
         let done = result(queued.command.request_id, outcome);
         Self::remember(&mut inner, done.clone());
-        for waiter in queued.waiters {
+        let late = inner.running.take().map(|(_, w)| w).unwrap_or_default();
+        for waiter in queued.waiters.into_iter().chain(late) {
             Self::deliver(&mut inner, waiter, done.clone());
         }
     }
@@ -651,6 +663,8 @@ mod tests {
     struct Fake {
         reads: AtomicUsize,
         commands: AtomicUsize,
+        /// 명령 실행에 걸리는 시간(밀리초)
+        slow: AtomicUsize,
         watching: Mutex<Option<Changed>>,
         track: Mutex<Option<(Track, Option<Picture>)>>,
     }
@@ -667,6 +681,9 @@ mod tests {
         }
         fn command(&self, _: MusicAction) -> Result<(), PortError> {
             self.commands.fetch_add(1, Ordering::SeqCst);
+            thread::sleep(Duration::from_millis(
+                self.slow.load(Ordering::SeqCst) as u64
+            ));
             Ok(())
         }
         fn watch(&self, changed: Option<Changed>) {
@@ -896,6 +913,33 @@ mod tests {
         let (now, art, _, _) = jukebox.take(3);
         assert_eq!(now.unwrap().artwork, 0);
         assert!(art.is_none());
+    }
+
+    #[test]
+    fn the_same_command_arriving_while_it_runs_runs_once() {
+        let (jukebox, fake, _) = jukebox();
+        fake.slow.store(300, Ordering::SeqCst);
+        jukebox.join(1, ART_LIMIT);
+        jukebox.join(2, ART_LIMIT);
+        let worker = {
+            let jukebox = Arc::clone(&jukebox);
+            thread::spawn(move || jukebox.run())
+        };
+        let play = MusicCommand {
+            request_id: 9,
+            action: MusicAction::PlayPause as i32,
+            level: 0,
+        };
+        jukebox.enqueue(1, &play);
+        wait_until(|| fake.commands.load(Ordering::SeqCst) == 1);
+        // 실행 중에 같은 번호가 다시 온다(다른 연결로 다시 보냄).
+        jukebox.enqueue(2, &play);
+        wait_until(|| !jukebox.take(2).3.is_empty() || fake.commands.load(Ordering::SeqCst) > 1);
+        thread::sleep(Duration::from_millis(100));
+        assert_eq!(fake.commands.load(Ordering::SeqCst), 1);
+        assert_eq!(jukebox.take(1).3.len(), 1);
+        jukebox.stop();
+        worker.join().unwrap();
     }
 
     #[test]
