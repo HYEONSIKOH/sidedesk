@@ -13,6 +13,8 @@ struct LinkSnapshot: Sendable, Equatable {
     var volume: Volume?
     /// 해시로 기억한 앨범 그림(jpeg). 마지막 8장
     var artworks: [UInt64: Data] = [:]
+    /// 잠금 안에서 바꿀 때마다 올린다. 발행은 잠금 밖이라, 늦게 도착한 옛 값을 화면이 버리게 한다.
+    var version = 0
 }
 
 /// 지금 화면을 쓰는 연결 하나를 정한다. USB 와 블루투스 받는 쪽이 같이 쓴다(안드로이드 `LinkOwner` 와 같은 규칙).
@@ -105,7 +107,9 @@ final class LinkOwner: @unchecked Sendable {
     /// 바꾼 뒤 화면으로 보낸다.
     private func changing(_ work: () -> Bool) {
         let next: LinkSnapshot? = locked {
-            work() ? snapshot : nil
+            guard work() else { return nil }
+            snapshot.version += 1
+            return snapshot
         }
         if let next {
             publish(next)
@@ -216,7 +220,10 @@ final class LinkOwner: @unchecked Sendable {
     }
 
     private func publishNow() {
-        publish(locked { snapshot })
+        publish(locked {
+            snapshot.version += 1
+            return snapshot
+        })
     }
 
     func release(_ mine: Int) {

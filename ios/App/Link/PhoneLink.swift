@@ -22,6 +22,9 @@ final class PhoneLink: ComputerLink {
         let owner = LinkOwner(
             publish: { snapshot in
                 onMain {
+                    // 잠금 밖에서 발행하므로 순서가 뒤바뀔 수 있다. 더 새 값만 넣는다.
+                    guard snapshot.version > feed.version else { return }
+                    feed.version = snapshot.version
                     // 같은 값을 다시 넣으면 Observation 이 보는 화면을 다시 그리므로 바뀐 것만 넣는다.
                     if feed.state != snapshot.state { feed.state = snapshot.state }
                     if let perf = snapshot.perf, perf != feed.perf || feed.perf == nil {

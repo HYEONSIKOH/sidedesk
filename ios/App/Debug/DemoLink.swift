@@ -69,7 +69,7 @@
             feed.shortcuts = [
                 Shortcut(id: 1, name: "터미널", icon: "terminal", color: "slate", toggle: .none, system: false),
                 Shortcut(id: 2, name: "다운로드", icon: "folder", color: "green", toggle: .none, system: false),
-                Shortcut(id: 3, name: "Xcode", icon: "code", color: "purple", toggle: .none, system: false),
+                Shortcut(id: 3, name: "편집기", icon: "code", color: "purple", toggle: .none, system: false),
                 Shortcut(id: 4, name: "브라우저", icon: "browser", color: "orange", toggle: .none, system: false),
                 Shortcut(id: 5, name: "계산기", icon: "calculator", color: "teal", toggle: .none, system: false),
                 Shortcut(id: 6, name: "", icon: "activity", color: "olive", toggle: .none, system: false),
@@ -93,15 +93,15 @@
                 source: .openMeteo
             )
             feed.processes = [
-                ComputerProcess(pid: 101, startedAt: 1, name: "Xcode", cpu: 48.2, memoryBytes: 3_400_000_000),
-                ComputerProcess(pid: 102, startedAt: 1, name: "Google Chrome", cpu: 22.5, memoryBytes: 2_100_000_000),
+                ComputerProcess(pid: 101, startedAt: 1, name: "편집기", cpu: 48.2, memoryBytes: 3_400_000_000),
+                ComputerProcess(pid: 102, startedAt: 1, name: "브라우저", cpu: 22.5, memoryBytes: 2_100_000_000),
                 ComputerProcess(pid: 103, startedAt: 1, name: "빌드", cpu: 11.8, memoryBytes: 820_000_000),
-                ComputerProcess(pid: 104, startedAt: 1, name: "Slack", cpu: 6.1, memoryBytes: 640_000_000),
+                ComputerProcess(pid: 104, startedAt: 1, name: "메신저", cpu: 6.1, memoryBytes: 640_000_000),
                 ComputerProcess(pid: 105, startedAt: 1, name: "터미널", cpu: 3.4, memoryBytes: 120_000_000),
-                ComputerProcess(pid: 106, startedAt: 1, name: "Finder", cpu: 1.2, memoryBytes: 210_000_000),
+                ComputerProcess(pid: 106, startedAt: 1, name: "파일", cpu: 1.2, memoryBytes: 210_000_000),
                 ComputerProcess(pid: 107, startedAt: 1, name: "음악", cpu: 0.9, memoryBytes: 180_000_000),
-                ComputerProcess(pid: 108, startedAt: 1, name: "WindowServer", cpu: 7.3, memoryBytes: 460_000_000),
-                ComputerProcess(pid: 109, startedAt: 1, name: "Docker", cpu: 4.4, memoryBytes: 1_500_000_000),
+                ComputerProcess(pid: 108, startedAt: 1, name: "화면 서버", cpu: 7.3, memoryBytes: 460_000_000),
+                ComputerProcess(pid: 109, startedAt: 1, name: "컨테이너", cpu: 4.4, memoryBytes: 1_500_000_000),
                 ComputerProcess(pid: 110, startedAt: 1, name: "메모", cpu: 0.2, memoryBytes: 90_000_000),
             ]
         }

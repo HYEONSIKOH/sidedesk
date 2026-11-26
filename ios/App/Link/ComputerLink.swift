@@ -25,6 +25,8 @@ final class LinkFeed {
     /// 블루투스 상태를 알게 됐다(권한 창이 닫혔다). 위치 안내는 그 뒤에 띄운다.
     var bluetoothDecided = false
 
+    /// 마지막으로 넣은 연결 값의 번호(PhoneLink 가 쓴다)
+    @ObservationIgnored var version = 0
     @ObservationIgnored private var perfListeners: [(Perf) -> Void] = []
     @ObservationIgnored private var resultListeners: [(CommandResult) -> Void] = []
     @ObservationIgnored private var alertListeners: [(AiAlert) -> Void] = []

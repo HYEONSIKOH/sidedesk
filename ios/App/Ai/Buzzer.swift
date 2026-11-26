@@ -63,9 +63,10 @@ final class PhoneBuzzer: Buzzer {
         if engine == nil {
             guard let made = try? CHHapticEngine() else { return }
             made.playsHapticsOnly = true
-            // 시스템이 엔진을 멈추거나 되살리면 다시 켠다.
-            made.resetHandler = { [weak made] in try? made?.start() }
-            made.stoppedHandler = { [weak made] _ in try? made?.start() }
+            // 처리기는 엔진 안의 큐에서 불린다. 거기서 다시 켜지 않고(앱이 멈춘 까닭으로 섰을 때 뒤에서 켜지 않게),
+            // 울릴 때마다 켜 둔다. 이미 켜져 있으면 아무 일도 하지 않는다.
+            made.resetHandler = { @Sendable in }
+            made.stoppedHandler = { @Sendable _ in }
             engine = made
         }
         try? engine?.start()
@@ -86,6 +87,7 @@ final class PhoneBuzzer: Buzzer {
     private func play(_ kind: AlertKind?) {
         let strength = vibration()
         guard let engine, let pulses = hapticPulses(kind, strength) else { return }
+        try? engine.start()
         let events = pulses.map { pulse in
             CHHapticEvent(
                 eventType: .hapticContinuous,

@@ -79,6 +79,31 @@ struct FeatureOwnerTests {
         #expect(other.shortcuts == nil, "블루투스로 다른 컴퓨터")
     }
 
+    @Test func theSameComputerKeepsItsListAndTrackAcrossReconnects() {
+        let owner = owner()
+        let first = connected(owner)
+        owner.receivedShortcuts(first, book: 1, [shortcut(1)])
+        owner.receivedNowPlaying(first, track())
+        owner.release(first)
+        #expect(!owner.runShortcut(RunShortcut(commandId: 1, shortcutId: 1)), "끊긴 뒤에는 단축키를 안 보냄")
+        #expect(!owner.music(MusicCommand(commandId: 2, action: .next)), "끊긴 뒤에는 음악 명령을 안 보냄")
+        _ = connected(owner)
+        #expect(owner.shortcuts?.count == 1, "같은 컴퓨터면 목록이 남음")
+        #expect(owner.nowPlaying != nil)
+        #expect(owner.runShortcut(RunShortcut(commandId: 3, shortcutId: 1)))
+    }
+
+    @Test func publishedSnapshotsAreNumberedInOrder() {
+        let versions = Versions()
+        let owner = LinkOwner(clock: { 0 }, publish: versions.add)
+        let mine = connected(owner)
+        owner.receivedShortcuts(mine, book: 1, [shortcut(1)])
+        owner.receivedNowPlaying(mine, track())
+        let seen = versions.all
+        #expect(seen == seen.sorted())
+        #expect(Set(seen).count == seen.count, "번호가 겹치지 않음")
+    }
+
     @Test func musicGoesOnlyToTheComputerOfTheTrack() {
         let owner = owner()
         let mine = connected(owner)
@@ -185,5 +210,24 @@ struct FeatureConnectionTests {
         #expect(session.music.map(\.0) == [6])
         #expect(session.music.first?.1 == .playPause)
         #expect(session.killed == [7])
+    }
+}
+
+final class Versions: @unchecked Sendable {
+    private let lock = NSLock()
+    private var items: [Int] = []
+
+    var all: [Int] {
+        lock.lock()
+        defer { lock.unlock() }
+        return items
+    }
+
+    var add: @Sendable (LinkSnapshot) -> Void {
+        { [self] snapshot in
+            lock.lock()
+            items.append(snapshot.version)
+            lock.unlock()
+        }
     }
 }

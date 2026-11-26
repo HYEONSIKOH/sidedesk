@@ -42,6 +42,7 @@ func alertText(_ kind: AlertKind) -> String {
 @Observable
 final class AiModel {
     static let showFor: Duration = .seconds(4)
+    @ObservationIgnored private let showFor: Duration
     nonisolated static let lateMillis: Int64 = 30_000
     nonisolated static let quietMillis: Int64 = 2_000
 
@@ -59,7 +60,13 @@ final class AiModel {
     @ObservationIgnored private var alertListeners: [(AiAlert, Bool) -> Void] = []
     @ObservationIgnored private var clearedListeners: [() -> Void] = []
 
-    init(link: any ComputerLink, buzzer: any Buzzer, now: @escaping () -> Int64 = { Int64(Date().timeIntervalSince1970 * 1000) }) {
+    init(
+        link: any ComputerLink,
+        buzzer: any Buzzer,
+        now: @escaping () -> Int64 = { Int64(Date().timeIntervalSince1970 * 1000) },
+        showFor: Duration = AiModel.showFor
+    ) {
+        self.showFor = showFor
         self.link = link
         self.buzzer = buzzer
         self.now = now
@@ -117,8 +124,9 @@ final class AiModel {
             listener(alert, late)
         }
         clearing?.cancel()
+        let wait = showFor
         clearing = Task { [weak self] in
-            try? await Task.sleep(for: Self.showFor)
+            try? await Task.sleep(for: wait)
             guard !Task.isCancelled, let self, self.alert == alert else { return }
             self.alert = nil
             for listener in clearedListeners {

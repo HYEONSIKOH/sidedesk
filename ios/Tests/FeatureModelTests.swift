@@ -39,6 +39,17 @@ struct AiModelTests {
         #expect(heard.map(\.1) == [false, false, true])
     }
 
+    @Test func alertDisappearsAfterItsTime() async throws {
+        let ai = AiModel(link: link, buzzer: buzzer, now: { 0 }, showFor: .milliseconds(20))
+        var cleared = 0
+        ai.onCleared { cleared += 1 }
+        link.feed.emit(AiAlert(id: 1, sessionId: "a", title: "t", kind: .done, at: 0))
+        #expect(ai.alert != nil)
+        try await Task.sleep(for: .milliseconds(300))
+        #expect(ai.alert == nil)
+        #expect(cleared == 1)
+    }
+
     @Test func forgeTabsAndText() {
         let ai = AiModel(link: link, buzzer: buzzer)
         link.feed.forge = Forge(github: ForgeCounts(state: .ok, reviews: 1, mine: 2, notices: 60), gitlab: ForgeCounts(state: .missing, reviews: 0, mine: 0, notices: 0))
@@ -166,6 +177,15 @@ struct MusicModelTests {
         #expect(music.dragging == nil)
     }
 
+    @Test func negativeVolumeBecomesZero() {
+        let music = MusicModel(link: link, buzzer: buzzer, newCommandId: { 1 }, clock: { 10_000 })
+        link.feed.state = .connected(name: nil, via: .usb)
+        link.feed.volume = Volume(available: true, level: 10, muted: false, settable: true)
+        music.dragVolume(-5)
+        #expect(music.level == 0)
+        #expect(link.musicCommands.last?.level == 0)
+    }
+
     @Test func lostConnectionFreezesTheBar() {
         let music = MusicModel(link: link, buzzer: buzzer, newCommandId: { 1 }, clock: { 5_000 })
         music.connectionChanged(connected: false)
@@ -241,6 +261,7 @@ struct RestModelTests {
     @Test func keepOnRulesAndBattery() {
         #expect(keepScreenOn(.always, charging: false, percent: 50))
         #expect(!keepScreenOn(.always, charging: false, percent: 14))
+        #expect(keepScreenOn(.always, charging: false, percent: 15), "15% 는 켜 둠")
         #expect(keepScreenOn(.always, charging: true, percent: 5))
         #expect(keepScreenOn(.always, charging: false, percent: nil), "모르면 100 으로 봄")
         #expect(!keepScreenOn(.charging, charging: false, percent: 100))
@@ -255,6 +276,9 @@ struct RestModelTests {
         #expect(hapticPulses(nil, .weak)?.first?.length == 0.02)
         #expect(hapticPulses(.done, .off) == nil)
         #expect(abs(Vibration.normal.intensity - 160 / 255) < 0.001)
+        #expect(abs(Vibration.weak.intensity - 80 / 255) < 0.001)
+        #expect(Vibration.strong.intensity == 1)
+        #expect(hapticPulses(.waiting, .normal)?.last?.start == 0.18, "두 번째는 0.18초 뒤")
     }
 }
 
