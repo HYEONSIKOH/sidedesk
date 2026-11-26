@@ -18,7 +18,9 @@ use sidedesk_link::AdbLinks;
 use sidedesk_mac::{MacGet, MacKeychain, MacMeter, MacName as Name, MacProcesses};
 use sidedesk_window::{Board, Computer};
 #[cfg(target_os = "windows")]
-use sidedesk_windows::{WindowsMeter, WindowsName as Name, WindowsProcesses, WindowsSecrets};
+use sidedesk_windows::{
+    WinGet, WindowsMeter, WindowsName as Name, WindowsProcesses, WindowsSecrets,
+};
 
 use crate::prefs::WeatherPrefs;
 use crate::store::FileKeys;
@@ -82,13 +84,13 @@ fn collectors() -> Hub {
 #[cfg(target_os = "windows")]
 fn collectors() -> Hub {
     Hub::new(
-        Box::new(WindowsMeter),
-        Box::new(WindowsProcesses),
+        Box::new(WindowsMeter::default()),
+        Box::new(WindowsProcesses::default()),
         Cadence::default(),
     )
 }
 
-/// 맥은 날씨를 받고, 윈도우는 받지 않는다(설정 창에 "받지 않음").
+/// 날씨는 운영체제의 HTTP(맥 NSURLSession, 윈도우 WinHTTP)로 받고 키는 운영체제 보관소에 둔다.
 #[cfg(target_os = "macos")]
 fn hub(folder: &Path) -> (Hub, Arc<WeatherPrefs>) {
     let get: Arc<dyn sidedesk_weather::Get> = Arc::new(MacGet::default());
@@ -107,12 +109,18 @@ fn hub(folder: &Path) -> (Hub, Arc<WeatherPrefs>) {
 
 #[cfg(target_os = "windows")]
 fn hub(folder: &Path) -> (Hub, Arc<WeatherPrefs>) {
+    let get: Arc<dyn sidedesk_weather::Get> = Arc::new(WinGet::default());
     let prefs = Arc::new(WeatherPrefs::new(
         folder.join("weather.txt"),
-        Box::new(WindowsSecrets),
-        None,
+        Box::new(WindowsSecrets::default()),
+        Some(Arc::clone(&get)),
     ));
-    (collectors(), prefs)
+    let weather = sidedesk_weather::Chooser::new(prefs.clone(), get);
+    let hub = collectors().with_weather(
+        Box::new(weather),
+        sidedesk_domain::WeatherCadence::default(),
+    );
+    (hub, prefs)
 }
 
 fn run() -> Result<(), String> {
@@ -199,6 +207,7 @@ fn window() -> Result<(), String> {
     let folder = store::folder().map_err(|e| e.0)?;
     let lock = store::lock(&folder).map_err(|e| e.0)?;
     let mode_file = folder.join("mode.txt");
+    let data_folder = folder.join("WebView2");
     let (hub, prefs) = hub(&folder);
     let prefs: &'static WeatherPrefs = Box::leak(Box::new(prefs));
     let keys: &'static FileKeys = Box::leak(Box::new(FileKeys::new(folder)));
@@ -239,7 +248,13 @@ fn window() -> Result<(), String> {
             sidedesk_domain::Source::of(sidedesk_domain::Link::Ble),
             Some("블루투스를 쓰려면 SideDesk.app 으로 실행하세요".to_owned()),
         );
+        // 윈도우에는 BLE L2CAP 채널을 여는 공개 API 가 없다.
+        #[cfg(target_os = "windows")]
+        board.link(
+            sidedesk_domain::Source::of(sidedesk_domain::Link::Ble),
+            Some("윈도우에서는 블루투스를 아직 지원하지 않습니다".to_owned()),
+        );
         keep_connected(&[&usb], context, &AtomicBool::new(false));
     });
-    sidedesk_window::open(board, mode_file)
+    sidedesk_window::open(board, mode_file, data_folder)
 }
