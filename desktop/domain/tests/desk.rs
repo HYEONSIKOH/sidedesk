@@ -291,8 +291,20 @@ impl Report for Computer {
 /// 폰 세션을 400ms 돌린다. Ready 가 되면 구독하고 같은 종료 명령을 두 번 보낸다.
 /// `forget` 이면 명령을 보내기 직전에 컴퓨터에서 등록을 해제한다.
 fn talk(forget: bool) -> (Result<Ended, ServeError>, Vec<Body>, Counts) {
+    talk_with(forget, None)
+}
+
+/// `deck` 이 있으면 종료 대신 단축키 1번 실행 명령을 보낸다.
+fn talk_with(
+    forget: bool,
+    deck: Option<Arc<sidedesk_domain::Deck>>,
+) -> (Result<Ended, ServeError>, Vec<Body>, Counts) {
     let counts = Counts::default();
-    let hub = hub(&counts);
+    let book = deck.as_ref().map(|_| 77);
+    let hub = match deck {
+        Some(deck) => hub(&counts).with_shortcuts(deck),
+        None => hub(&counts),
+    };
     let phone_identity = Identity::generate();
     let computer = Computer {
         identity: Identity::generate(),
@@ -355,9 +367,19 @@ fn talk(forget: bool) -> (Result<Ended, ServeError>, Vec<Body>, Counts) {
                             pid: 42,
                             started_at: 1_000,
                         };
-                        // 끊긴 줄 알고 다시 보낸 명령
-                        session.send(Body::KillProcess(kill.clone())).unwrap();
-                        session.send(Body::KillProcess(kill)).unwrap();
+                        if let Some(book) = book {
+                            let run = sidedesk_core::RunShortcut {
+                                request_id: 5,
+                                shortcut_id: 1,
+                                book,
+                            };
+                            session.send(Body::RunShortcut(run.clone())).unwrap();
+                            session.send(Body::RunShortcut(run)).unwrap();
+                        } else {
+                            // 끊긴 줄 알고 다시 보낸 명령
+                            session.send(Body::KillProcess(kill.clone())).unwrap();
+                            session.send(Body::KillProcess(kill)).unwrap();
+                        }
                     }
                     Event::Message(body) => got.push(body),
                     _ => {}
@@ -733,4 +755,75 @@ fn ai_sessions_flow_and_stop_quietly_when_nobody_watches() {
         hub.stop();
     });
     assert!(forge.1.load(Ordering::SeqCst));
+}
+
+/// 단축키 하나(주소 열기)를 든 장부와 부른 횟수
+fn url_deck() -> (Arc<sidedesk_domain::Deck>, Arc<AtomicUsize>) {
+    struct Store;
+    impl sidedesk_domain::ShortcutStore for Store {
+        fn load(&self) -> Result<(sidedesk_domain::Saved, Option<String>), PortError> {
+            let mut saved = sidedesk_domain::Saved::new(77);
+            saved.items.push(sidedesk_domain::Shortcut {
+                id: 1,
+                name: "열기".into(),
+                icon: "browser".into(),
+                color: "orange".into(),
+                action: sidedesk_domain::Action::Url {
+                    url: "https://example.com".into(),
+                },
+            });
+            saved.next_id = 2;
+            Ok((saved, None))
+        }
+        fn save(&self, _: &sidedesk_domain::Saved) -> Result<(), PortError> {
+            Ok(())
+        }
+    }
+    struct Runs(Arc<AtomicUsize>);
+    impl sidedesk_domain::Launcher for Runs {
+        fn run(&self, _: &sidedesk_domain::Action) -> Result<(), PortError> {
+            self.0.fetch_add(1, Ordering::SeqCst);
+            Ok(())
+        }
+        fn toggle(&self, _: &sidedesk_domain::Action) -> Option<bool> {
+            None
+        }
+        fn can_send_keys(&self) -> bool {
+            true
+        }
+    }
+    let runs = Arc::new(AtomicUsize::new(0));
+    (
+        sidedesk_domain::Deck::new(Box::new(Store), Arc::new(Runs(Arc::clone(&runs)))),
+        runs,
+    )
+}
+
+#[test]
+fn a_shortcut_runs_once_over_the_link() {
+    let (deck, runs) = url_deck();
+    let (ended, got, _) = talk_with(false, Some(deck));
+    assert_eq!(ended, Ok(Ended::Stopped));
+    let results: Vec<_> = got
+        .iter()
+        .filter_map(|body| match body {
+            Body::CommandResult(result) => Some(result.clone()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(results.len(), 2, "{got:?}");
+    assert!(results.iter().all(|r| r.ok && r.request_id == 5));
+    assert_eq!(runs.load(Ordering::SeqCst), 1);
+}
+
+#[test]
+fn a_forgotten_phone_cannot_run_shortcuts() {
+    let (deck, runs) = url_deck();
+    let (ended, got, _) = talk_with(true, Some(deck));
+    assert_eq!(ended, Err(ServeError::Forgotten));
+    assert_eq!(runs.load(Ordering::SeqCst), 0);
+    assert!(
+        !got.iter()
+            .any(|body| matches!(body, Body::CommandResult(_)))
+    );
 }
