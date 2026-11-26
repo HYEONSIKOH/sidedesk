@@ -91,6 +91,13 @@ pub fn with_shortcuts(panel: &'static crate::ShortcutsPanel) {
     let _ = SHORTCUTS.set(panel);
 }
 
+/// 일반 칸의 음악 안내
+static MUSIC: std::sync::OnceLock<&'static crate::MusicPanel> = std::sync::OnceLock::new();
+
+pub fn with_music(panel: &'static crate::MusicPanel) {
+    let _ = MUSIC.set(panel);
+}
+
 /// 창과 화면. 필드 순서대로 놓이므로 화면이 자료 폴더 설정과 창보다 먼저 사라진다.
 struct Parts {
     webview: WebView,
@@ -139,6 +146,12 @@ fn build(
             let _ = proxy.send_event(Change::Script(format!("renderShortcuts({snapshot})")));
         });
     }
+    if let Some(panel) = MUSIC.get() {
+        let proxy = event_loop.create_proxy();
+        panel.on_change(move |snapshot| {
+            let _ = proxy.send_event(Change::Script(format!("renderMusic({snapshot})")));
+        });
+    }
     board.on_change(move |snapshot| {
         let _ = proxy.send_event(Change::Render(snapshot));
     });
@@ -185,7 +198,9 @@ fn build(
                 let _ = ipc.send_event(Change::Drag);
             } else if let Some(chosen) = body.strip_prefix("mode:").and_then(mode) {
                 let _ = ipc.send_event(Change::Mode(chosen));
-            } else if !SHORTCUTS.get().is_some_and(|panel| panel.command(body)) {
+            } else if !SHORTCUTS.get().is_some_and(|panel| panel.command(body))
+                && !MUSIC.get().is_some_and(|panel| panel.command(body))
+            {
                 board.command(body);
             }
         })

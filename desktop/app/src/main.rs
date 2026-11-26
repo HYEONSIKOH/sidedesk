@@ -16,11 +16,15 @@ use sidedesk_domain::{
 };
 use sidedesk_link::{AdbLinks, UsbmuxLinks};
 #[cfg(target_os = "macos")]
-use sidedesk_mac::{MacGet, MacKeychain, MacLauncher, MacMeter, MacName as Name, MacProcesses};
+use sidedesk_mac::{
+    MacGet, MacKeychain, MacLauncher, MacMeter, MacName as Name, MacPlayer, MacProcesses,
+    MacSpeaker,
+};
 use sidedesk_window::{Board, Computer};
 #[cfg(target_os = "windows")]
 use sidedesk_windows::{
-    WinGet, WindowsLauncher, WindowsMeter, WindowsName as Name, WindowsProcesses, WindowsSecrets,
+    WinGet, WindowsLauncher, WindowsMeter, WindowsName as Name, WindowsPlayer, WindowsProcesses,
+    WindowsSecrets, WindowsSpeaker,
 };
 
 use crate::prefs::WeatherPrefs;
@@ -125,7 +129,20 @@ fn hub(folder: &Path) -> (Hub, Arc<WeatherPrefs>, Help) {
             .unwrap_or_default(),
     ));
     let deck = sidedesk_domain::Deck::new(Box::new(ShortcutsFile::new(folder)), launcher.clone());
-    (hub.with_shortcuts(deck), prefs, launcher)
+    let home = std::env::var_os("HOME")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_default();
+    let cache = home.join("Library/Caches/SideDesk");
+    let jukebox = sidedesk_domain::Jukebox::new(
+        Box::new(MacPlayer::new(home, cache)),
+        Box::new(MacSpeaker),
+        sidedesk_domain::MusicCadence::default(),
+    );
+    (
+        hub.with_shortcuts(deck).with_music(Arc::new(jukebox)),
+        prefs,
+        launcher,
+    )
 }
 
 #[cfg(target_os = "windows")]
@@ -143,7 +160,16 @@ fn hub(folder: &Path) -> (Hub, Arc<WeatherPrefs>, Help) {
     );
     let launcher = Arc::new(WindowsLauncher);
     let deck = sidedesk_domain::Deck::new(Box::new(ShortcutsFile::new(folder)), launcher.clone());
-    (hub.with_shortcuts(deck), prefs, launcher)
+    let jukebox = sidedesk_domain::Jukebox::new(
+        Box::new(WindowsPlayer),
+        Box::new(WindowsSpeaker),
+        sidedesk_domain::MusicCadence::default(),
+    );
+    (
+        hub.with_shortcuts(deck).with_music(Arc::new(jukebox)),
+        prefs,
+        launcher,
+    )
 }
 
 /// 아이폰 USB. 맥은 usbmuxd 유닉스 소켓, 윈도우는 애플 장치 서비스(127.0.0.1:27015)에 접속만 한다.
@@ -177,6 +203,7 @@ fn run() -> Result<(), String> {
         scope.spawn(|| hub.run_ai());
         scope.spawn(|| hub.run_forge());
         scope.spawn(|| hub.run_shortcuts());
+        scope.spawn(|| hub.run_music());
         keep_connected(
             &[&AdbLinks::default(), &iphones()],
             &context,
@@ -288,6 +315,14 @@ fn window() -> Result<(), String> {
     thread::spawn(|| context.hub.run_ai());
     thread::spawn(|| context.hub.run_forge());
     thread::spawn(|| context.hub.run_shortcuts());
+    thread::spawn(|| context.hub.run_music());
+    if let Some(jukebox) = context.hub.music() {
+        let opener = Arc::clone(&help);
+        let panel = sidedesk_window::MusicPanel::new(Arc::clone(jukebox), move || {
+            opener.open_automation_settings()
+        });
+        sidedesk_window::with_music(Box::leak(Box::new(panel)));
+    }
     if let Some(deck) = context.hub.shortcuts() {
         let panel = sidedesk_window::ShortcutsPanel::new(Arc::clone(deck), help);
         sidedesk_window::with_shortcuts(Box::leak(Box::new(panel)));

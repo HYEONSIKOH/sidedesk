@@ -58,6 +58,12 @@ import io.github.hyeonsikoh.sidedesk.ai.AiScreenState
 import io.github.hyeonsikoh.sidedesk.ai.AiTile
 import io.github.hyeonsikoh.sidedesk.ai.ForgeTab
 import io.github.hyeonsikoh.sidedesk.clock.ClockState
+import io.github.hyeonsikoh.sidedesk.rest.RestPanel
+import io.github.hyeonsikoh.sidedesk.music.MusicActions
+import io.github.hyeonsikoh.sidedesk.music.MusicBig
+import io.github.hyeonsikoh.sidedesk.music.MusicState
+import io.github.hyeonsikoh.sidedesk.music.MusicTile
+import io.github.hyeonsikoh.sidedesk.music.rememberTicks
 import io.github.hyeonsikoh.sidedesk.shortcut.ShortcutBig
 import io.github.hyeonsikoh.sidedesk.shortcut.ShortcutState
 import io.github.hyeonsikoh.sidedesk.shortcut.ShortcutTile
@@ -109,6 +115,13 @@ class ShortcutPart(val state: ShortcutState, val press: (Int) -> Unit) {
     }
 }
 
+/** 음악 쪽 상태와 할 일. clock 은 진행 바를 움직이는 단조 시각(밀리초) */
+class MusicPart(val state: MusicState, val clock: () -> Long, val actions: MusicActions) {
+    companion object {
+        val EMPTY = MusicPart(MusicState(), { 0L }, MusicActions({}, {}, {}, {}, {}))
+    }
+}
+
 /** 시계 쪽 상태와 할 일. 홈 큰 화면, 홈 작은 칸, 고르기에 쓴다. */
 class ClockPart(
     val state: ClockState,
@@ -119,6 +132,10 @@ class ClockPart(
     val actions: PickActions,
     /** 블루투스를 쓸 수 없는 이유. USB 는 된다. */
     val notice: String? = null,
+    /** 고르기 판의 쉬기 설정 */
+    val rest: RestPanel? = null,
+    /** 고르기 판을 쉬기 설정부터 열지(그림 시험용) */
+    val restOpen: Boolean = false,
 )
 
 @Composable
@@ -128,13 +145,14 @@ fun DeskScreen(
     actions: DeskActions,
     ai: AiPart = AiPart.EMPTY,
     shortcuts: ShortcutPart = ShortcutPart.EMPTY,
+    music: MusicPart = MusicPart.EMPTY,
     modal: Confirm? = null,
     /** 안내 창 답. true 확인, false 취소 버튼, null 바깥 누르기나 뒤로 가기 */
     onModal: (Boolean?) -> Unit = {},
 ) {
     val shown = state.asking?.let(::killConfirm) ?: modal
     Box(Modifier.fillMaxSize().background(Palette.ground)) {
-        Content(state, clock, ai, shortcuts, actions, Modifier.behindModal(shown != null))
+        Content(state, clock, ai, shortcuts, music, actions, Modifier.behindModal(shown != null))
         ConfirmModal(
             shown,
             onConfirm = { if (state.asking != null) actions.confirmKill() else onModal(true) },
@@ -153,23 +171,29 @@ private fun killConfirm(process: ProcessInfo) = Confirm(
 )
 
 @Composable
-private fun Content(state: DeskState, clock: ClockPart, ai: AiPart, shortcuts: ShortcutPart, actions: DeskActions, modifier: Modifier) {
+private fun Content(state: DeskState, clock: ClockPart, ai: AiPart, shortcuts: ShortcutPart, music: MusicPart, actions: DeskActions, modifier: Modifier) {
     val now = rememberNow(clock.now)
+    val ticks = rememberTicks(music.clock)
+    val parts = Parts(clock, ai, shortcuts, music, ticks)
     BoxWithConstraints(modifier.fillMaxSize().safeDrawingPadding().padding(12.dp)) {
         val wide = maxWidth >= maxHeight
         if (wide) {
             Row(Modifier.fillMaxSize(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                Big(state, clock, ai, shortcuts, now, actions, Modifier.weight(1f).fillMaxHeight())
+                Big(state, parts, now, actions, Modifier.weight(1f).fillMaxHeight())
                 Column(Modifier.width(132.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                    SmallTiles(state, clock, ai, shortcuts, now, actions, Modifier.fillMaxWidth().weight(1f, fill = false).height(72.dp))
+                    SmallTiles(state, state.small, parts, now, actions, Modifier.fillMaxWidth().weight(1f, fill = false).height(72.dp))
                 }
             }
         } else {
             Column(Modifier.fillMaxSize(), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                    SmallTiles(state, clock, ai, shortcuts, now, actions, Modifier.weight(1f).height(72.dp))
+                // 작은 칸이 다섯이면 한 줄에 넣기에 좁아 두 줄(위 셋, 아래 둘)로 나눈다.
+                val rows = if (state.small.size > 4) state.small.chunked(3) else listOf(state.small)
+                rows.forEach { row ->
+                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                        SmallTiles(state, row, parts, now, actions, Modifier.weight(1f).height(72.dp))
+                    }
                 }
-                Big(state, clock, ai, shortcuts, now, actions, Modifier.weight(1f).fillMaxWidth())
+                Big(state, parts, now, actions, Modifier.weight(1f).fillMaxWidth())
             }
         }
     }
@@ -184,26 +208,35 @@ const val BIG = "big"
 /** 끊기면 컴퓨터에서 온 값만 흐리게 한다. 시계는 흐리지 않는다. */
 private fun Modifier.dim(dimmed: Boolean) = alpha(if (dimmed) 0.4f else 1f)
 
+private class Parts(val clock: ClockPart, val ai: AiPart, val shortcuts: ShortcutPart, val music: MusicPart, val ticks: Long)
+
 @Composable
-private fun SmallTiles(state: DeskState, clock: ClockPart, ai: AiPart, shortcuts: ShortcutPart, now: Long, actions: DeskActions, tile: Modifier) {
+private fun SmallTiles(state: DeskState, screens: List<Screen>, parts: Parts, now: Long, actions: DeskActions, tile: Modifier) {
+    val clock = parts.clock
+    val ai = parts.ai
+    val shortcuts = parts.shortcuts
     // 고르는 중에 작은 칸을 누르면 고르기를 닫고 그 화면으로 간다.
     fun go(screen: Screen) {
         clock.actions.done()
         actions.show(screen)
     }
-    state.small.forEach { screen ->
+    screens.forEach { screen ->
         when (screen) {
             Screen.Home -> HomeTile(clock.state, now, tile.clickable { go(Screen.Home) })
             Screen.Ai -> AiTile(ai.state, tile.clickable { go(Screen.Ai) })
             Screen.Perf -> CpuTile(state.perf?.cpu, tile.clickable { go(Screen.Perf) }.dim(state.dimmed))
             Screen.Processes -> TopProcessTile(state.rows.firstOrNull(), tile.clickable { go(Screen.Processes) }.dim(state.dimmed))
             Screen.Shortcuts -> ShortcutTile(shortcuts.state, tile.clickable { go(Screen.Shortcuts) })
+            Screen.Music -> MusicTile(parts.music.state, parts.ticks, parts.music.actions, tile.clickable { go(Screen.Music) })
         }
     }
 }
 
 @Composable
-private fun Big(state: DeskState, clock: ClockPart, ai: AiPart, shortcuts: ShortcutPart, now: Long, actions: DeskActions, modifier: Modifier) {
+private fun Big(state: DeskState, parts: Parts, now: Long, actions: DeskActions, modifier: Modifier) {
+    val clock = parts.clock
+    val ai = parts.ai
+    val shortcuts = parts.shortcuts
     val home = state.big == Screen.Home
     val picking = home && clock.state.picking
     val swipe = with(LocalDensity.current) { 60.dp.toPx() }
@@ -234,13 +267,14 @@ private fun Big(state: DeskState, clock: ClockPart, ai: AiPart, shortcuts: Short
             Screen.Perf -> PerfScreen(state, Modifier.dim(state.dimmed))
             Screen.Processes -> ProcessScreen(state, actions, Modifier.dim(state.dimmed))
             Screen.Shortcuts -> ShortcutBig(shortcuts.state, shortcuts.press)
+            Screen.Music -> MusicBig(parts.music.state, parts.ticks, parts.music.actions)
         }
         if (home && !picking) {
             clock.notice?.let {
                 Text(it, color = Palette.muted, fontSize = 12.sp, textAlign = TextAlign.Center, modifier = Modifier.align(Alignment.TopCenter))
             }
         }
-        if (picking) Picker(clock.state, clock.actions, Modifier.align(Alignment.BottomCenter).fillMaxWidth())
+        if (picking) Picker(clock.state, clock.actions, Modifier.align(Alignment.BottomCenter).fillMaxWidth(), clock.rest, clock.restOpen)
         state.notice?.let { notice ->
             LaunchedEffect(notice) {
                 delay(4_000)
@@ -481,9 +515,9 @@ private fun CpuTile(cpu: Float?, modifier: Modifier) {
             }
         } else {
             Row(Modifier.fillMaxSize().padding(horizontal = 14.dp), verticalAlignment = Alignment.CenterVertically) {
-                Text("CPU", color = Palette.ink, fontSize = 12.sp)
+                Text("CPU", color = Palette.ink, fontSize = fit(12.dp), maxLines = 1)
                 Spacer(Modifier.weight(1f))
-                Percent(cpu, 26.sp)
+                Percent(cpu, fit(26.dp))
             }
         }
     }
@@ -501,12 +535,12 @@ private fun TopProcessTile(top: ProcessInfo?, modifier: Modifier) {
             Text(
                 top?.name ?: "프로세스",
                 color = Palette.ink,
-                fontSize = if (narrow) fit(12.dp) else 14.sp,
+                fontSize = fit(if (narrow) 12.dp else 14.dp),
                 fontWeight = FontWeight.Medium,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
             )
-            Text(top?.let { "%.1f%%".format(it.cpu) } ?: "-", color = Palette.muted, fontSize = if (narrow) fit(11.dp) else 12.sp, maxLines = 1)
+            Text(top?.let { "%.1f%%".format(it.cpu) } ?: "-", color = Palette.muted, fontSize = fit(if (narrow) 11.dp else 12.dp), maxLines = 1)
         }
     }
 }

@@ -425,7 +425,11 @@ impl Session {
                 | Body::AiAlert(_)
                 | Body::Forge(_)
                 | Body::Shortcuts(_)
-                | Body::RunShortcut(_)),
+                | Body::RunShortcut(_)
+                | Body::NowPlaying(_)
+                | Body::Artwork(_)
+                | Body::Volume(_)
+                | Body::MusicCommand(_)),
             ) => {
                 self.events.push_back(Event::Message(body));
                 Ok(())
@@ -681,6 +685,26 @@ mod tests {
         pair.pump().unwrap();
         assert_eq!(pair.phone_events.last(), Some(&Event::Message(result)));
         assert!(pair.phone.is_ready());
+    }
+
+    #[test]
+    fn the_biggest_artwork_fits_in_one_frame() {
+        let (computer, phone) = keys();
+        let mut pair = known(&computer, &phone);
+        let art = |size: usize| {
+            Body::Artwork(crate::Artwork {
+                hash: u64::MAX,
+                jpeg: vec![0xff; size],
+            })
+        };
+        // 그림 상한 60KB 는 Envelope 와 암호 꼬리를 더해도 한 프레임 안이다.
+        pair.computer.send(art(60 * 1024)).unwrap();
+        pair.pump().unwrap();
+        assert!(matches!(
+            pair.phone_events.last(),
+            Some(Event::Message(Body::Artwork(a))) if a.jpeg.len() == 60 * 1024
+        ));
+        assert!(pair.computer.send(art(MAX_BODY)).is_err());
     }
 
     #[test]

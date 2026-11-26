@@ -2,9 +2,11 @@
 
 mod board;
 mod json;
+mod music;
 mod shortcuts;
 mod view;
 
 pub use board::{Board, Computer};
+pub use music::MusicPanel;
 pub use shortcuts::ShortcutsPanel;
-pub use view::{on_exit, open, with_shortcuts};
+pub use view::{on_exit, open, with_music, with_shortcuts};

@@ -136,7 +136,18 @@ fn run(
     loop {
         if let Some(subscriber) = &subscriber {
             for body in subscriber.take() {
+                // 그림은 커서 다른 값과 따로 보낸다(블루투스 한 번의 쓰기를 작게).
+                let big = matches!(body, Body::Artwork(_));
+                if big {
+                    let before = session.take_output();
+                    if !before.is_empty() {
+                        conn.send(&before)?;
+                    }
+                }
                 session.send(body)?;
+                if big {
+                    conn.send(&session.take_output())?;
+                }
             }
         }
         let output = session.take_output();
@@ -166,7 +177,7 @@ fn run(
                         id,
                     });
                     peer = Some(key);
-                    subscriber = Some(context.hub.join());
+                    subscriber = Some(context.hub.join_over(phone.link));
                     fill_record(context, phone, key);
                     let computer_name = context.name.read()?;
                     session.send(Body::Hello(Hello { computer_name }))?;
@@ -187,6 +198,14 @@ fn run(
                 Event::Message(Body::Location(location)) => {
                     if let Some(subscriber) = &subscriber {
                         subscriber.place(&location);
+                    }
+                }
+                Event::Message(Body::MusicCommand(command)) => {
+                    if let Some(subscriber) = &subscriber {
+                        if !is_trusted(context, peer)? {
+                            return Err(ServeError::Forgotten);
+                        }
+                        subscriber.music(&command);
                     }
                 }
                 Event::Message(Body::RunShortcut(command)) => {

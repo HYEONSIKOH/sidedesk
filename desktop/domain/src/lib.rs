@@ -1,6 +1,7 @@
 mod ai;
 mod deck;
 mod hub;
+mod music;
 mod port;
 mod serve;
 mod shortcut;
@@ -10,6 +11,10 @@ mod weather;
 pub use ai::AiCadence;
 pub use deck::{ANSWER_WITHIN, Deck, MAX_RUNNING, TOGGLE_EVERY};
 pub use hub::{Cadence, Hub, Subscriber};
+pub use music::{
+    ART_LIMIT, BLE_ART_LIMIT, Changed, Jukebox, Level, MusicCadence, Picture, Player, Speaker,
+    Track,
+};
 pub use port::{
     Active, Choice, ComputerName, Conn, Forges, KeyCheck, Keys, Link, Meter, Note, PairRequests,
     Paired, Phase, Phone, PhoneLinks, Place, PortError, ProcessTable, Prompt, Received, Report,

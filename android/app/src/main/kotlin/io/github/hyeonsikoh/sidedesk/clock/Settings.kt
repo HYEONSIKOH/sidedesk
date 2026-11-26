@@ -8,6 +8,12 @@ interface Settings {
     var theme: String?
     /** 위치 안내를 한 번 보였는지 */
     var askedLocation: Boolean
+
+    /** 쉴 때 화면 설정(SD-11). 모르는 값이면 기본값으로 읽는다. */
+    var keepOn: String?
+    var restAfter: String?
+    var wakeOnAlert: Boolean
+    var vibration: String?
 }
 
 class PrefsSettings(context: Context) : Settings {
@@ -24,4 +30,20 @@ class PrefsSettings(context: Context) : Settings {
     override var askedLocation: Boolean
         get() = prefs.getBoolean("askedLocation", false)
         set(value) = prefs.edit().putBoolean("askedLocation", value).apply()
+
+    override var keepOn: String?
+        get() = prefs.getString("keepOn", null)
+        set(value) = prefs.edit().putString("keepOn", value).apply()
+
+    override var restAfter: String?
+        get() = prefs.getString("restAfter", null)
+        set(value) = prefs.edit().putString("restAfter", value).apply()
+
+    override var wakeOnAlert: Boolean
+        get() = prefs.getBoolean("wakeOnAlert", false)
+        set(value) = prefs.edit().putBoolean("wakeOnAlert", value).apply()
+
+    override var vibration: String?
+        get() = prefs.getString("vibration", null)
+        set(value) = prefs.edit().putString("vibration", value).apply()
 }

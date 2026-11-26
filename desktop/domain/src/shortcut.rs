@@ -379,6 +379,8 @@ pub trait ShortcutHelp: Send + Sync {
     }
     /// 손쉬운 사용 설정을 연다.
     fn open_key_settings(&self) {}
+    /// 자동화(다른 앱 제어) 설정을 연다.
+    fn open_automation_settings(&self) {}
 }
 
 #[cfg(test)]

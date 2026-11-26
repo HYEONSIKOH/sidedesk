@@ -17,6 +17,10 @@ import io.github.hyeonsikoh.sidedesk.ai.AiScreenState
 import io.github.hyeonsikoh.sidedesk.clock.ClockState
 import io.github.hyeonsikoh.sidedesk.desk.AiPart
 import io.github.hyeonsikoh.sidedesk.desk.ShortcutPart
+import io.github.hyeonsikoh.sidedesk.desk.MusicPart
+import io.github.hyeonsikoh.sidedesk.music.MusicActions
+import io.github.hyeonsikoh.sidedesk.music.MusicState
+import androidx.compose.ui.test.onNodeWithContentDescription
 import io.github.hyeonsikoh.sidedesk.shortcut.ShortcutState
 import io.github.hyeonsikoh.sidedesk.clock.Face
 import io.github.hyeonsikoh.sidedesk.clock.PickActions
@@ -66,6 +70,7 @@ class DeskGestureTest {
         dimmed: Boolean = false,
         ai: AiScreenState = AiScreenState(),
         keys: ShortcutState = DeskShots.KEYS,
+        music: MusicState = DeskShots.SONG,
         desk: DeskState = DeskState(big = big, dimmed = dimmed),
     ) {
         val actions = DeskActions(
@@ -89,7 +94,14 @@ class DeskGestureTest {
         }
         compose.setContent {
             CompositionLocalProvider(LocalUriHandler provides links) {
-                SideDeskTheme(Theme.Dark) { DeskScreen(desk, part, actions, AiPart(ai) {}, ShortcutPart(keys) { calls += "press $it" }) }
+                SideDeskTheme(Theme.Dark) { DeskScreen(
+                    desk,
+                    part,
+                    actions,
+                    AiPart(ai) {},
+                    ShortcutPart(keys) { calls += "press $it" },
+                    MusicPart(music, { DeskShots.NOW_MS }, MusicActions({ calls += "playPause" }, { calls += "next" }, { calls += "previous" }, { calls += "volume $it" }, { calls += "release" })),
+                ) }
             }
         }
         compose.mainClock.advanceTimeBy(100)
@@ -211,6 +223,26 @@ class DeskGestureTest {
         settle()
         // 확인 창(판이나 뒤 배경)이 누르기를 받아 단축키는 눌리지 않는다.
         assertEquals(false, calls.contains("press 3"))
+    }
+
+    @Test
+    fun theMusicTileButtonPlaysAndTheRestOpensMusic() {
+        show(ClockState())
+        compose.onNodeWithContentDescription("재생 또는 멈춤").performClick()
+        settle()
+        assertEquals(listOf("playPause"), calls)
+        compose.onNodeWithText("여름 바다").performClick()
+        settle()
+        assertEquals(listOf("playPause", "done", "show Music"), calls)
+    }
+
+    @Test
+    fun theMusicScreenButtonsSendCommands() {
+        show(ClockState(), big = Screen.Music)
+        compose.onNodeWithContentDescription("다음 곡").performClick()
+        compose.onNodeWithContentDescription("이전 곡").performClick()
+        settle()
+        assertEquals(listOf("next", "previous"), calls)
     }
 
     @Test
