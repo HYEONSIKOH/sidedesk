@@ -958,7 +958,11 @@ fn a_rotated_bluetooth_address_does_not_add_a_second_connection() {
     let new = Switch::new(Link::Ble, second(), phone_key, computer);
     new.unplug();
     run_links(&[&old, &new], &world, || {
-        thread::sleep(Duration::from_millis(800));
+        // 느린 CI 서버를 생각해 고정 시간 대신 옛 주소로 붙을 때까지 기다린다.
+        let deadline = std::time::Instant::now() + Duration::from_secs(20);
+        while connected_on(&world, "ble:1") == 0 && std::time::Instant::now() < deadline {
+            thread::sleep(Duration::from_millis(50));
+        }
         new.plug(second());
         thread::sleep(Duration::from_millis(1500));
     });
