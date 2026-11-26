@@ -29,6 +29,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.scale
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
@@ -146,7 +147,7 @@ private fun Key(item: Shortcut, size: Dp, onClick: () -> Unit) {
         val named = item.name.isNotBlank()
         val art = Modifier.padding(bottom = if (named) size * 0.12f else 0.dp)
         when {
-            on -> Glyph(item.icon, item.name, Palette.ground, art.size(size * 0.5f))
+            on -> Glyph(item.icon, item.name, onColor(color), art.size(size * 0.5f))
             item.system -> Glyph(item.icon, item.name, color, art.size(size * 0.5f))
             else -> Box(
                 art.size(size * if (named) 0.6f else 0.74f).clip(RoundedCornerShape(size * 0.16f)).background(color),
@@ -158,7 +159,7 @@ private fun Key(item: Shortcut, size: Dp, onClick: () -> Unit) {
         if (named) {
             Text(
                 item.name,
-                color = if (on) Palette.ground else Palette.muted,
+                color = if (on) onColor(color).copy(alpha = 0.8f) else Palette.muted,
                 fontSize = fit(min(12f, size.value * 0.12f).dp),
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
@@ -168,6 +169,9 @@ private fun Key(item: Shortcut, size: Dp, onClick: () -> Unit) {
         }
     }
 }
+
+/** 켜진 칸의 그림 색. 테마가 아니라 바탕 밝기로 정한다(노란 바탕이면 두 테마 모두 어두운 그림). */
+fun onColor(background: Color): Color = if (background.luminance() > 0.4f) Color(0xFF1A1D22) else Color.White
 
 /** 작은 칸(시안 .mdeck). 앞 네 개의 그림을 작게 놓는다. 좁으면 2×2 */
 @Composable
@@ -199,7 +203,7 @@ private fun Mini(item: Shortcut, size: Dp) {
         Glyph(item.icon, item.name, color, Modifier.size(size))
     } else {
         Box(Modifier.size(size).clip(RoundedCornerShape(size * 0.22f)).background(color), contentAlignment = Alignment.Center) {
-            Glyph(item.icon, item.name, if (item.toggle == Toggle.On) Palette.ground else Color.White, Modifier.size(size * 0.62f))
+            Glyph(item.icon, item.name, if (item.toggle == Toggle.On) onColor(color) else Color.White, Modifier.size(size * 0.62f))
         }
     }
 }

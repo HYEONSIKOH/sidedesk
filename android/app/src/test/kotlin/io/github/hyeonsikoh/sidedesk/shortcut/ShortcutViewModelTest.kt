@@ -129,6 +129,12 @@ class ShortcutViewModelTest {
     }
 
     @Test
+    fun picksTheGlyphColorByTheBackground() {
+        assertEquals(androidx.compose.ui.graphics.Color(0xFF1A1D22), onColor(shortcutColor("sand")))
+        assertEquals(androidx.compose.ui.graphics.Color.White, onColor(shortcutColor("slate")))
+    }
+
+    @Test
     fun laysOutTheGrid() {
         assertEquals(Grid(4, 3, (800f - 36f) / 4, false).columns, gridOf(800f, 400f, 11).columns)
         val wide = gridOf(800f, 400f, 11)
