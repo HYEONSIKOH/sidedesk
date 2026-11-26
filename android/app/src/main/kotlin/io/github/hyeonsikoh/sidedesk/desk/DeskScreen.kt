@@ -53,10 +53,22 @@ import androidx.compose.ui.unit.TextUnit
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import io.github.hyeonsikoh.sidedesk.link.ProcessInfo
-import io.github.hyeonsikoh.sidedesk.link.Topic
+import io.github.hyeonsikoh.sidedesk.clock.ClockState
+import io.github.hyeonsikoh.sidedesk.clock.HomeBig
+import io.github.hyeonsikoh.sidedesk.clock.HomeExtras
+import io.github.hyeonsikoh.sidedesk.clock.HomeTile
+import io.github.hyeonsikoh.sidedesk.clock.PickActions
+import io.github.hyeonsikoh.sidedesk.clock.Picker
+import io.github.hyeonsikoh.sidedesk.clock.rememberNow
+import androidx.compose.foundation.gestures.detectHorizontalDragGestures
+import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.testTag
 import io.github.hyeonsikoh.sidedesk.ui.Confirm
 import io.github.hyeonsikoh.sidedesk.ui.ConfirmModal
 import io.github.hyeonsikoh.sidedesk.ui.Palette
+import io.github.hyeonsikoh.sidedesk.ui.fit
 import io.github.hyeonsikoh.sidedesk.ui.behindModal
 import kotlinx.coroutines.delay
 import java.text.SimpleDateFormat
@@ -66,7 +78,9 @@ import kotlin.math.PI
 import kotlin.math.sin
 
 class DeskActions(
-    val show: (Topic) -> Unit,
+    val show: (Screen) -> Unit,
+    val next: () -> Unit,
+    val previous: () -> Unit,
     val sortBy: (Sort) -> Unit,
     val ask: (ProcessInfo) -> Unit,
     val cancel: () -> Unit,
@@ -74,11 +88,28 @@ class DeskActions(
     val dismissNotice: () -> Unit,
 )
 
+/** 시계 쪽 상태와 할 일. 홈 큰 화면, 홈 작은 칸, 고르기에 쓴다. */
+class ClockPart(
+    val state: ClockState,
+    val now: () -> Long,
+    val pick: () -> Unit,
+    val nextFace: () -> Unit,
+    val previousFace: () -> Unit,
+    val actions: PickActions,
+    /** 블루투스를 쓸 수 없는 이유. USB 는 된다. */
+    val notice: String? = null,
+)
+
 @Composable
-fun DeskScreen(state: DeskState, actions: DeskActions) {
+fun DeskScreen(state: DeskState, clock: ClockPart, actions: DeskActions, modal: Confirm? = null, onModal: (Boolean) -> Unit = {}) {
+    val shown = state.asking?.let(::killConfirm) ?: modal
     Box(Modifier.fillMaxSize().background(Palette.ground)) {
-        Content(state, actions, Modifier.behindModal(state.asking != null))
-        ConfirmModal(state.asking?.let(::killConfirm), actions.confirmKill, actions.cancel)
+        Content(state, clock, actions, Modifier.behindModal(shown != null))
+        ConfirmModal(
+            shown,
+            onConfirm = { if (state.asking != null) actions.confirmKill() else onModal(true) },
+            onDismiss = { if (state.asking != null) actions.cancel() else onModal(false) },
+        )
     }
 }
 
@@ -91,46 +122,91 @@ private fun killConfirm(process: ProcessInfo) = Confirm(
 )
 
 @Composable
-private fun Content(state: DeskState, actions: DeskActions, modifier: Modifier) {
+private fun Content(state: DeskState, clock: ClockPart, actions: DeskActions, modifier: Modifier) {
+    val now = rememberNow(clock.now)
     BoxWithConstraints(modifier.fillMaxSize().safeDrawingPadding().padding(12.dp)) {
         val wide = maxWidth >= maxHeight
-        val content = Modifier.alpha(if (state.dimmed) 0.4f else 1f)
         if (wide) {
-            Row(content.fillMaxSize(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                Big(state, actions, Modifier.weight(1f).fillMaxHeight())
+            Row(Modifier.fillMaxSize(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                Big(state, clock, now, actions, Modifier.weight(1f).fillMaxHeight())
                 Column(Modifier.width(132.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                    SmallTiles(state, actions, Modifier.fillMaxWidth().height(72.dp))
+                    SmallTiles(state, clock, now, actions, Modifier.fillMaxWidth().height(72.dp))
                 }
             }
         } else {
-            Column(content.fillMaxSize(), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+            Column(Modifier.fillMaxSize(), verticalArrangement = Arrangement.spacedBy(12.dp)) {
                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                    SmallTiles(state, actions, Modifier.weight(1f).height(72.dp))
+                    SmallTiles(state, clock, now, actions, Modifier.weight(1f).height(72.dp))
                 }
-                Big(state, actions, Modifier.weight(1f).fillMaxWidth())
+                Big(state, clock, now, actions, Modifier.weight(1f).fillMaxWidth())
             }
         }
     }
 }
 
+/** 큰 화면 판. 시험에서 찾는다. */
+const val BIG = "big"
+
+/** 끊기면 컴퓨터에서 온 값만 흐리게 한다. 시계는 흐리지 않는다. */
+private fun Modifier.dim(dimmed: Boolean) = alpha(if (dimmed) 0.4f else 1f)
+
 @Composable
-private fun SmallTiles(state: DeskState, actions: DeskActions, tile: Modifier) {
-    ClockTile(tile)
-    state.small.forEach { topic ->
-        when (topic) {
-            Topic.Perf -> CpuTile(state.perf?.cpu, tile.clickable { actions.show(Topic.Perf) })
-            Topic.Processes -> TopProcessTile(state.rows.firstOrNull(), tile.clickable { actions.show(Topic.Processes) })
+private fun SmallTiles(state: DeskState, clock: ClockPart, now: Long, actions: DeskActions, tile: Modifier) {
+    // 고르는 중에 작은 칸을 누르면 고르기를 닫고 그 화면으로 간다.
+    fun go(screen: Screen) {
+        clock.actions.done()
+        actions.show(screen)
+    }
+    state.small.forEach { screen ->
+        when (screen) {
+            Screen.Home -> HomeTile(clock.state, now, tile.clickable { go(Screen.Home) })
+            Screen.Perf -> CpuTile(state.perf?.cpu, tile.clickable { go(Screen.Perf) }.dim(state.dimmed))
+            Screen.Processes -> TopProcessTile(state.rows.firstOrNull(), tile.clickable { go(Screen.Processes) }.dim(state.dimmed))
         }
     }
 }
 
 @Composable
-private fun Big(state: DeskState, actions: DeskActions, modifier: Modifier) {
-    Box(modifier.clip(RoundedCornerShape(28.dp)).background(Palette.panel).padding(14.dp)) {
+private fun Big(state: DeskState, clock: ClockPart, now: Long, actions: DeskActions, modifier: Modifier) {
+    val home = state.big == Screen.Home
+    val picking = home && clock.state.picking
+    val swipe = with(LocalDensity.current) { 60.dp.toPx() }
+    Box(
+        modifier
+            .testTag(BIG)
+            .clip(RoundedCornerShape(28.dp))
+            .background(Palette.panel)
+            // 옆으로 밀면 다음 화면, 고르는 중이면 다음 모양. 밀기가 시작되면 길게 누르기는 취소된다.
+            .pointerInput(picking) {
+                var moved = 0f
+                detectHorizontalDragGestures(
+                    onDragStart = { moved = 0f },
+                    onDragEnd = {
+                        if (moved <= -swipe) if (picking) clock.nextFace() else actions.next()
+                        if (moved >= swipe) if (picking) clock.previousFace() else actions.previous()
+                    },
+                ) { _, amount -> moved += amount }
+            }
+            .then(if (home) Modifier.pointerInput(Unit) { detectTapGestures(onLongPress = { clock.pick() }) } else Modifier)
+            .padding(14.dp),
+    ) {
         when (state.big) {
-            Topic.Perf -> PerfScreen(state)
-            Topic.Processes -> ProcessScreen(state, actions)
+            Screen.Home -> HomeBig(
+                clock.state,
+                now,
+                HomeExtras(state.perf?.cpu, state.rows.firstOrNull()?.name, state.rows.firstOrNull()?.cpu, state.dimmed) { m ->
+                    CpuTile(state.perf?.cpu, m.dim(state.dimmed), Palette.card)
+                },
+            )
+            Screen.Perf -> PerfScreen(state, Modifier.dim(state.dimmed))
+            Screen.Processes -> ProcessScreen(state, actions, Modifier.dim(state.dimmed))
         }
+        if (home && !picking) {
+            clock.notice?.let {
+                Text(it, color = Palette.muted, fontSize = 12.sp, textAlign = TextAlign.Center, modifier = Modifier.align(Alignment.TopCenter))
+            }
+        }
+        if (picking) Picker(clock.state, clock.actions, Modifier.align(Alignment.BottomCenter).fillMaxWidth())
         state.notice?.let { notice ->
             LaunchedEffect(notice) {
                 delay(4_000)
@@ -152,9 +228,9 @@ private fun Big(state: DeskState, actions: DeskActions, modifier: Modifier) {
 }
 
 @Composable
-private fun PerfScreen(state: DeskState) {
+private fun PerfScreen(state: DeskState, modifier: Modifier) {
     val perf = state.perf
-    Column(Modifier.fillMaxSize(), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+    Column(modifier.fillMaxSize(), verticalArrangement = Arrangement.spacedBy(10.dp)) {
         Row(Modifier.weight(1f).fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
             val gauge = Modifier.weight(1f).fillMaxHeight()
             Gauge("CPU", perf?.cpu, gauge)
@@ -178,10 +254,12 @@ private fun PerfScreen(state: DeskState) {
 private fun Gauge(label: String, value: Float?, modifier: Modifier) {
     BoxWithConstraints(modifier.clip(RoundedCornerShape(22.dp)).background(Palette.card)) {
         // 좁은 칸에서도 숫자와 % 가 한 줄에 들어가게 칸 너비에 맞춘다.
-        val size = minOf(38f, (maxWidth.value - 28f) / 1.6f).sp
+        val inner = maxWidth.value - 28f
+        val size = fit(minOf(38f, inner / 1.6f).dp)
+        val labelSize = fit(minOf(14f, inner / 3f).dp)
         Liquid(value, Modifier.fillMaxSize())
         Column(Modifier.padding(14.dp)) {
-            Text(label, color = Palette.ink, fontSize = 14.sp)
+            Text(label, color = Palette.ink, fontSize = labelSize, maxLines = 1, softWrap = false)
             Percent(value, size)
         }
     }
@@ -197,6 +275,7 @@ private fun Liquid(value: Float?, modifier: Modifier) {
         infiniteRepeatable(tween(4_000, easing = LinearEasing)),
         label = "phase",
     )
+    val liquid = Palette.liquid
     Canvas(modifier) {
         if (level <= 0f) return@Canvas
         val top = size.height * (1f - level)
@@ -212,7 +291,7 @@ private fun Liquid(value: Float?, modifier: Modifier) {
             lineTo(size.width, size.height)
             close()
         }
-        drawPath(path, Palette.liquid)
+        drawPath(path, liquid)
     }
 }
 
@@ -237,16 +316,20 @@ private fun Rate(arrow: String, bytes: Long?) {
         buildAnnotatedString {
             append("$arrow  ")
             val (number, unit) = rate(bytes)
-            withStyle(SpanStyle(fontSize = 20.sp, fontWeight = FontWeight.Medium)) { append(number) }
-            withStyle(SpanStyle(fontSize = 12.sp)) { append(" $unit") }
+            withStyle(SpanStyle(fontSize = fit(20.dp), fontWeight = FontWeight.Medium)) { append(number) }
+            withStyle(SpanStyle(fontSize = fit(12.dp))) { append(" $unit") }
         },
         color = Palette.ink,
-        fontSize = 14.sp,
+        fontSize = fit(14.dp),
+        maxLines = 1,
+        softWrap = false,
     )
 }
 
 @Composable
 private fun NetGraph(received: List<Long>, sent: List<Long>, modifier: Modifier) {
+    val sentColor = Palette.muted
+    val receivedColor = Palette.accent
     Canvas(modifier) {
         val top = maxOf(received.maxOrNull() ?: 0L, sent.maxOrNull() ?: 0L, 1L).toFloat()
         fun line(values: List<Long>, color: Color) {
@@ -261,14 +344,14 @@ private fun NetGraph(received: List<Long>, sent: List<Long>, modifier: Modifier)
             }
             drawPath(path, color, style = Stroke(1.5.dp.toPx(), cap = StrokeCap.Round, join = StrokeJoin.Round))
         }
-        line(sent, Palette.muted)
-        line(received, Palette.accent)
+        line(sent, sentColor)
+        line(received, receivedColor)
     }
 }
 
 @Composable
-private fun ProcessScreen(state: DeskState, actions: DeskActions) {
-    Column(Modifier.fillMaxSize()) {
+private fun ProcessScreen(state: DeskState, actions: DeskActions, modifier: Modifier) {
+    Column(modifier.fillMaxSize()) {
         Row(Modifier.fillMaxWidth().padding(start = 4.dp, bottom = 10.dp), verticalAlignment = Alignment.CenterVertically) {
             Percent(state.perf?.cpu, 34.sp)
             Text("CPU 사용률", color = Palette.ink, fontSize = 12.sp, modifier = Modifier.padding(start = 10.dp).weight(1f))
@@ -352,27 +435,8 @@ private fun ProcessRow(process: ProcessInfo, share: Float, onClick: () -> Unit) 
 }
 
 @Composable
-private fun ClockTile(modifier: Modifier) {
-    var now by remember { mutableLongStateOf(System.currentTimeMillis()) }
-    LaunchedEffect(Unit) {
-        while (true) {
-            delay(1_000 - now % 1_000)
-            now = System.currentTimeMillis()
-        }
-    }
-    Box(modifier.clip(RoundedCornerShape(20.dp)).background(Palette.side), contentAlignment = Alignment.Center) {
-        Text(
-            SimpleDateFormat("HH:mm", Locale.KOREA).format(Date(now)),
-            color = Palette.ink,
-            fontSize = 26.sp,
-            fontWeight = FontWeight.Medium,
-        )
-    }
-}
-
-@Composable
-private fun CpuTile(cpu: Float?, modifier: Modifier) {
-    Box(modifier.clip(RoundedCornerShape(20.dp)).background(Palette.side)) {
+private fun CpuTile(cpu: Float?, modifier: Modifier, background: Color = Palette.side) {
+    Box(modifier.clip(RoundedCornerShape(20.dp)).background(background)) {
         Liquid(cpu, Modifier.fillMaxSize())
         Row(Modifier.fillMaxSize().padding(horizontal = 14.dp), verticalAlignment = Alignment.CenterVertically) {
             Text("CPU", color = Palette.ink, fontSize = 12.sp)

@@ -20,8 +20,11 @@ import kotlinx.coroutines.launch
 
 enum class Sort { Cpu, Memory }
 
+/** 큰 화면에 띄울 수 있는 것. 옆으로 밀면 이 차례로 돈다. */
+enum class Screen(val topic: Topic) { Home(Topic.Weather), Perf(Topic.Perf), Processes(Topic.Processes) }
+
 data class DeskState(
-    val big: Topic = Topic.Perf,
+    val big: Screen = Screen.Home,
     val perf: Perf? = null,
     /** 오래된 것부터. 그래프용 */
     val received: List<Long> = emptyList(),
@@ -35,7 +38,7 @@ data class DeskState(
     val dimmed: Boolean = false,
 ) {
     /** 오른쪽 작은 칸. 시계는 늘 맨 위, 큰 화면에 띄운 것은 뺀다. */
-    val small: List<Topic> get() = Topic.entries.filter { it != big }
+    val small: List<Screen> get() = Screen.entries.filter { it != big }
 }
 
 /** 이름 뒤 조사. 한글로 끝나면 받침에 맞추고, 아니면 둘 다 적는다. */
@@ -98,10 +101,16 @@ class DeskViewModel(
         tellComputer()
     }
 
-    fun show(topic: Topic) {
-        _state.update { it.copy(big = topic) }
+    /** 프로세스 끝내기를 묻는 중에는 화면을 바꾸지 않는다. */
+    fun show(screen: Screen) {
+        if (_state.value.asking != null) return
+        _state.update { it.copy(big = screen) }
         tellComputer()
     }
+
+    fun next() = show(Screen.entries[(_state.value.big.ordinal + 1) % Screen.entries.size])
+
+    fun previous() = show(Screen.entries[(_state.value.big.ordinal + Screen.entries.size - 1) % Screen.entries.size])
 
     fun sortBy(sort: Sort) = _state.update { it.copy(sort = sort, rows = sorted(allProcesses, sort)) }
 
@@ -125,7 +134,7 @@ class DeskViewModel(
 
     private fun tellComputer() {
         val now = _state.value
-        link.subscribe(if (visible) Subscription(now.big, now.small.toSet()) else Subscription.NONE)
+        link.subscribe(if (visible) Subscription(now.big.topic, now.small.map { it.topic }.toSet()) else Subscription.NONE)
     }
 
     private fun sorted(list: List<ProcessInfo>, sort: Sort) = when (sort) {

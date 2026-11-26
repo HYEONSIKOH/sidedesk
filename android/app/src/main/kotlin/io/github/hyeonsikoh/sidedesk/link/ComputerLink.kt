@@ -29,12 +29,17 @@ interface ComputerLink {
 
     val processes: StateFlow<Processes?>
 
+    val weather: StateFlow<Weather?>
+
     val killResults: SharedFlow<KillResult>
 
     fun start()
 
     /** 연결이 바뀌어도 마지막 구독을 다시 보낸다. */
     fun subscribe(subscription: Subscription)
+
+    /** 연결이 바뀌어도 마지막 위치를 다시 보낸다. Off 면 받아 둔 날씨도 지운다. */
+    fun setLocation(location: LocationState)
 
     /** 결과가 올 때까지 다시 이어질 때마다 같은 번호로 보낸다. */
     fun kill(command: KillCommand)
