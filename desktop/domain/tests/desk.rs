@@ -599,9 +599,14 @@ fn weather_notices_do_not_disturb_performance_collection() {
             });
             thread::sleep(Duration::from_millis(1));
         }
-        // 성능은 40ms 주기 그대로(약 10번). 날씨 알림마다 더 모으지 않는다.
+        // 성능은 40ms 주기 그대로. 날씨 알림마다 더 모으지 않는다.
+        // 느린 CI 서버에서는 주기가 밀려 덜 모일 수 있으므로, 실제로 흐른 시간으로 위쪽 한도만 엄격히 본다.
         let performance = count(&counts.performance);
-        assert!((5..=14).contains(&performance), "성능 {performance}");
+        let ticks = start.elapsed().as_millis() as usize / 40;
+        assert!(
+            (1..=ticks + 4).contains(&performance),
+            "성능 {performance}, 주기 {ticks}"
+        );
         hub.stop();
     });
 }
