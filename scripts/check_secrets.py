@@ -1,13 +1,14 @@
 """저장소와 배포 파일에서 비밀값과 개인 정보를 찾는다. 하나라도 나오면 끝 코드 1.
 
-사용: python3 -I scripts/check_secrets.py [--repo] [--history] [--artifact 파일]... [--forbid 글자]... [--keychain]
+사용: python3 -I scripts/check_secrets.py [--repo] [--history] [--artifact 파일]... [--forbid 글자]...
 - --repo: git 에 올라간 파일 전부(지금 트리)
 - --history: git 이력의 모든 파일 내용(로컬에서 공개 전에 한 번)
 - --artifact: .app 폴더, .dmg(맥), .zip, .apk, 그 밖의 파일. 산출물은 홈 경로 허용 없이 엄격하게 본다
 - --forbid: 이 글자가 산출물에 있으면 실패(빌드한 곳의 실제 경로 등)
-- --keychain: 맥 열쇠고리의 기상청 키와 같은 값이 있는지(로컬 전용, 값은 출력하지 않음)
 금지어 목록은 저장소 밖 ~/.config/sidedesk/deny-words(줄마다 하나)에서만 읽는다.
+비밀 저장소(열쇠고리 등)에서 값을 꺼내지 않는다. 키는 모양 규칙으로만 찾는다.
 찾은 값은 가려서 보인다. 그림 속 글자는 볼 수 없어 사람이 본다.
+파이썬 3.9 이상에서 돈다(맥 기본 /usr/bin/python3).
 """
 
 from __future__ import annotations
@@ -52,26 +53,26 @@ RULES: list[tuple[str, bytes]] = [
 REPO_HOMES = [
     rb"/Users/(?!Shared/|runner/|me/|<)[A-Za-z0-9._-]+",
     rb"/home/(?!runner/|me/|<)[A-Za-z0-9._-]+",
-    rb"[A-Za-z]:\\{1,2}Users\\{1,2}(?!Public\\|runneradmin\\|me\\|<)[A-Za-z0-9._-]+",
+    rb"(?i)[A-Z]:[\\/]{1,2}Users[\\/]{1,2}(?!Public[\\/]|runneradmin[\\/]|me[\\/]|<)[A-Za-z0-9._-]+",
 ]
 # 산출물: 경로 바꾸기가 빠지면 CI 러너 경로도 잡히게 허용 없이
 ARTIFACT_HOMES = [
     rb"/Users/(?!Shared/)[A-Za-z0-9._-]+",
     rb"/home/[A-Za-z0-9._-]+",
-    rb"[A-Za-z]:\\{1,2}Users\\{1,2}(?!Public\\)[A-Za-z0-9._-]+",
+    rb"(?i)[A-Z]:[\\/]{1,2}Users[\\/]{1,2}(?!Public[\\/])[A-Za-z0-9._-]+",
 ]
 # 산출물만: 맨몸 64자 16진(공공데이터포털 새 형식 키 모양). 저장소의 lock 파일 해시와 겹쳐 저장소엔 쓰지 않는다.
 ARTIFACT_ONLY = [("기상청 키(16진)", rb"(?<![0-9a-fA-F])[0-9a-f]{64}(?![0-9a-fA-F])")]
 
 MAIL_ALLOW = re.compile(
-    rb"(?i)^(noreply@anthropic\.com|.*@example\.(com|org|net)|.*@users\.noreply\.github\.com)$"
+    # info@open-meteo.com: 의문점에 적은 Open-Meteo 의 공개 연락처(출처 표기)
+    rb"(?i)^(noreply@anthropic\.com|info@open-meteo\.com|.*@example\.(com|org|net)|.*@users\.noreply\.github\.com)$"
 )
 
 # 넓게 열지 않는다. (저장소 안 경로, 종류) 짝만.
-ALLOW: set[tuple[str, str]] = {
-    # Open-Meteo 의 공개 연락처(출처 표기)
-    ("tickets/의문점.md", "메일"),
-}
+ALLOW: set[tuple[str, str]] = set()
+# 메일 끝이 이것이면 패키지 이름으로 보지 않는다.
+MAIL_ENDS = {b"com", b"net", b"org", b"io", b"kr", b"co", b"dev", b"app", b"me", b"ai", b"jp", b"cn", b"edu", b"gov"}
 
 ELF_COMPRESSED = 0x800
 
@@ -86,7 +87,6 @@ class Found:
 @dataclass
 class Scan:
     words: list[bytes] = field(default_factory=list)
-    secret: bytes | None = None
     # 산출물이면 엄격하게
     strict: bool = False
     forbid: list[bytes] = field(default_factory=list)
@@ -107,24 +107,46 @@ class Scan:
             else:
                 pattern = rb"(?i)" + escaped
             rules.append(("금지어", re.compile(pattern)))
+            # 한글 등은 UTF-16 꼴(바이너리 XML, 윈도우 자원)로도 찾는다.
+            if not word.isascii():
+                wide = re.escape(word.decode("utf-8").encode("utf-16-le"))
+                rules.append(("금지어", re.compile(wide)))
         for value in self.forbid:
             rules.append(("빌드한 곳 경로", re.compile(re.escape(value))))
-        if self.secret:
-            rules.append(("실제 기상청 키", re.compile(re.escape(self.secret))))
         return rules
 
 
+# 앞머리가 정해진 모양이라 앞 몇 글자를 보여도 값이 드러나지 않는 종류와 그 길이
+PREFIX = {
+    "개인 키": 10,
+    "GitHub 토큰": 4,
+    "GitLab 토큰": 6,
+    "AWS 키": 4,
+    "Slack 토큰": 5,
+    "AI 키": 3,
+    "홈 경로": 6,
+}
+
+
 def mask(kind: str, value: bytes) -> str:
-    if kind in ("금지어", "실제 기상청 키", "빌드한 곳 경로"):
+    """메일, 키 값, 일련번호, 금지어 같은 것은 한 글자도 보이지 않는다."""
+    if kind not in PREFIX:
         return "(가림)"
-    text = value.decode("utf-8", "replace")
-    return text[:4] + "…"
+    return value.decode("utf-8", "replace")[: PREFIX[kind]] + "…"
 
 
 def variants(data: bytes) -> list[bytes]:
     """그대로와, UTF-16LE 로 보이는 글자를 좁힌 것. 글자 뒤 0 을 지우므로 짝수, 홀수 위치 모두 덮는다."""
-    narrowed = re.sub(rb"([\x20-\x7e])\x00", rb"\1", data)
+    narrowed = re.sub(
+        rb"(?:[\x20-\x7e]\x00){4,}", lambda m: m.group(0)[::2], data
+    )
     return [data] if narrowed == data else [data, narrowed]
+
+
+def package_name(value: bytes) -> bool:
+    """앞에 점이 셋 넘고 끝이 메일 끝이 아니면 자바, 코틀린 이름(androidx.….EXTRA@androidx.activity)"""
+    local, _, domain = value.partition(b"@")
+    return local.count(b".") > 2 and domain.rsplit(b".", 1)[-1].lower() not in MAIL_ENDS
 
 
 def allowed(where: str, kind: str) -> bool:
@@ -133,17 +155,19 @@ def allowed(where: str, kind: str) -> bool:
     return (where.split("!")[0].split(":")[0], kind) in ALLOW
 
 
-def scan_bytes(scan: Scan, where: str, data: bytes, rules) -> None:
-    seen: set[tuple[str, bytes]] = set()
+NEWLINE = b"\n"
+
+
+def scan_bytes(scan: Scan, where: str, data: bytes, rules, seen=None, line_base: int = 0) -> None:
+    """`seen` 을 넘기면 한 파일의 여러 조각에서 같은 값을 한 번만 센다."""
+    if seen is None:
+        seen = set()
     binary = b"\0" in data
     for text in variants(data):
         for kind, rule in rules:
             for match in rule.finditer(text):
                 value = match.group(0)
-                if kind == "메일" and (
-                    MAIL_ALLOW.match(value) or value.split(b"@")[0].count(b".") > 2
-                ):
-                    # 앞부분에 점이 셋 넘으면 자바, 코틀린 패키지 이름(androidx.….EXTRA@…)
+                if kind == "메일" and (MAIL_ALLOW.match(value) or package_name(value)):
                     continue
                 if allowed(where, kind) or (kind, value) in seen:
                     continue
@@ -151,7 +175,8 @@ def scan_bytes(scan: Scan, where: str, data: bytes, rules) -> None:
                 if binary:
                     place = f"{where}@{match.start()}"
                 else:
-                    place = f"{where}:{text.count(b'\n', 0, match.start()) + 1}"
+                    line = line_base + text.count(NEWLINE, 0, match.start()) + 1
+                    place = f"{where}:{line}"
                 scan.found.append(Found(place, kind, mask(kind, value)))
 
 
@@ -210,17 +235,24 @@ def scan_file(scan: Scan, where: str, path: Path, rules) -> None:
             scan_data(scan, where, handle.read(), rules)
             return
         tail = b""
+        seen: set = set()
+        lines = 0
         while True:
             chunk = handle.read(CHUNK)
             if not chunk:
                 break
-            scan_bytes(scan, where, tail + chunk, rules)
+            scan_bytes(scan, where, tail + chunk, rules, seen, lines - tail.count(NEWLINE))
+            lines += chunk.count(NEWLINE)
             # 겹침을 짝수로 두어 UTF-16 정렬을 지킨다.
             tail = chunk[-OVERLAP:]
 
 
 def scan_zip(scan: Scan, where: str, path: Path, rules, depth: int = 0) -> None:
+    # 파일 자체도 훑는다(APK 서명 블록의 인증서, 항목 이름, 주석은 항목 내용이 아니다).
+    scan_file(scan, f"{where}(묶음)", path, rules)
     with zipfile.ZipFile(path) as archive:
+        names = "\n".join(info.filename for info in archive.infolist()).encode("utf-8")
+        scan_bytes(scan, f"{where}(이름)", names, rules)
         for info in archive.infolist():
             if info.is_dir():
                 continue
@@ -242,6 +274,12 @@ def scan_zip(scan: Scan, where: str, path: Path, rules, depth: int = 0) -> None:
 
 def scan_tree(scan: Scan, where: str, root: Path, rules) -> None:
     # 바로 가기는 따라가지 않는다(dmg 의 /Applications 등).
+    names = "\n".join(
+        str(Path(folder, name).relative_to(root))
+        for folder, dirs, files in os.walk(root, followlinks=False)
+        for name in dirs + files
+    ).encode("utf-8")
+    scan_bytes(scan, f"{where}(이름)", names + NEWLINE + root.name.encode("utf-8"), rules)
     for folder, dirs, files in os.walk(root, followlinks=False):
         for name in sorted(dirs + files):
             path = Path(folder) / name
@@ -280,6 +318,8 @@ def scan_artifact(scan: Scan, where: str, path: Path, rules) -> None:
     elif path.is_dir():
         scan_tree(scan, where, path, rules)
     elif name.endswith(".dmg"):
+        # 파일 자체(볼륨 이름 등 압축 밖 머리)도 훑는다.
+        scan_file(scan, f"{where}(묶음)", path, rules)
         scan_dmg(scan, where, path, rules)
     elif name.endswith((".zip", ".apk", ".aab", ".jar", ".aar")) and zipfile.is_zipfile(path):
         scan_zip(scan, where, path, rules)
@@ -333,17 +373,6 @@ def deny_words() -> list[bytes]:
     return words
 
 
-def keychain_secret() -> bytes | None:
-    if sys.platform != "darwin":
-        return None
-    out = subprocess.run(
-        ["security", "find-generic-password", "-s", "io.github.hyeonsikoh.sidedesk", "-a", "kma", "-w"],
-        capture_output=True,
-    )
-    value = out.stdout.strip()
-    return value or None
-
-
 def warn(text: str) -> None:
     # GitHub Actions 에서는 작업 요약에 경고로 보인다.
     print(f"::warning::{text}" if os.environ.get("GITHUB_ACTIONS") == "true" else text)
@@ -369,20 +398,16 @@ def main(argv: list[str]) -> int:
     parser.add_argument("--history", action="store_true")
     parser.add_argument("--artifact", action="append", default=[])
     parser.add_argument("--forbid", action="append", default=[])
-    parser.add_argument("--keychain", action="store_true")
     args = parser.parse_args(argv)
+    if not (args.repo or args.history or args.artifact):
+        parser.error("--repo, --history, --artifact 중 하나는 있어야 합니다")
     root = Path(__file__).resolve().parent.parent
     words = deny_words()
     if not words:
         warn("금지어 목록 없음, 금지어 검사 건너뜀")
-    secret = None
-    if args.keychain:
-        secret = keychain_secret()
-        if secret is None:
-            warn("열쇠고리에 기상청 키 없음, 실제 키 비교 건너뜀")
     failed = 0
     if args.repo or args.history:
-        scan = Scan(words=words, secret=secret)
+        scan = Scan(words=words)
         rules = scan.rules()
         if args.repo:
             for name in repo_files(root):
@@ -394,7 +419,7 @@ def main(argv: list[str]) -> int:
         failed |= report(scan)
     if args.artifact:
         forbid = [value.encode("utf-8") for value in args.forbid if value]
-        scan = Scan(words=words, secret=secret, strict=True, forbid=forbid)
+        scan = Scan(words=words, strict=True, forbid=forbid)
         rules = scan.rules()
         for artifact in args.artifact:
             path = Path(artifact)

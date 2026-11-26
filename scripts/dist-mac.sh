@@ -1,8 +1,7 @@
 #!/bin/sh
 # 맥 배포 파일: 유니버설(애플 칩 + 인텔) SideDesk.app 을 ad-hoc 서명해 .dmg 로 묶고, 비밀값 검사를 돌린다.
 # 결과: target/dist/SideDesk-<버전>-mac.dmg
-# 사용: dist-mac.sh [--keychain]
-#   --keychain: 열쇠고리의 실제 기상청 키와도 맞춰 본다(로컬 전용, macOS 가 열쇠고리 허락 창을 띄운다)
+# 사용: dist-mac.sh
 set -eu
 root=$(cd "$(dirname "$0")/.." && pwd)
 cd "$root"
@@ -42,6 +41,13 @@ ln -s /Applications "$stage/Applications"
 hdiutil create -quiet -volname SideDesk -srcfolder "$stage" -ov -format UDZO "$dmg"
 rm -rf "$stage"
 
-python3 -I scripts/check_secrets.py --artifact "$dmg" --forbid "$HOME" --forbid "$root" "$@"
+set -f
+forbid=
+for path in $SIDEDESK_FORBID; do
+    forbid="$forbid --forbid $path"
+done
+# shellcheck disable=SC2086
+python3 -I scripts/check_secrets.py --artifact "$dmg" $forbid
+set +f
 
 echo "$dmg"

@@ -3,6 +3,8 @@
 사용: python3 -I scripts/test_check_secrets.py
 """
 
+from __future__ import annotations
+
 import os
 import sys
 import tempfile
@@ -67,6 +69,11 @@ class Rules(unittest.TestCase):
         token = j("gh", "p_", "z" * 36)
         cs.scan_bytes(scan, "x", token, scan.rules())
         self.assertEqual(scan.found[0].shown, token[:4].decode() + "…")
+        # 메일, 키 값, 일련번호는 한 글자도 보이지 않는다.
+        for sample in [j("alice", "@", "mail.test.io"), j("service", "Key=", "d" * 30)]:
+            scan = cs.Scan()
+            cs.scan_bytes(scan, "x", sample, scan.rules())
+            self.assertEqual(scan.found[0].shown, "(가림)")
         scan = cs.Scan(words=[j("se", "cretname")])
         cs.scan_bytes(scan, "x", j("a ", "SECRETNAME", " b"), scan.rules())
         self.assertEqual([(f.kind, f.shown) for f in scan.found], [("금지어", "(가림)")])
@@ -77,13 +84,23 @@ class Rules(unittest.TestCase):
         scan = cs.Scan(words=[b"ab"])
         self.assertEqual(kinds(b"x ab y", scan), ["금지어"])
 
-    def test_the_real_key_is_found_and_hidden(self):
-        scan = cs.Scan(secret=j("Real", "Key123"))
-        cs.scan_bytes(scan, "x", j("..", "RealKey123", ".."), scan.rules())
-        self.assertEqual([(f.kind, f.shown) for f in scan.found], [("실제 기상청 키", "(가림)")])
-
 
 class Artifacts(unittest.TestCase):
+    def test_zip_names_and_raw_bytes_are_scanned(self):
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / "a.apk"
+            name = j("/Us", "ers/", "erin/x.txt").decode()
+            with zipfile.ZipFile(path, "w") as archive:
+                archive.writestr(name, "깨끗함")
+                # 서명 블록 자리처럼 항목 밖에 든 메일(주석)
+                archive.comment = j("CN=", "erin", "@", "mail.test.io")
+            scan = cs.Scan()
+            cs.scan_artifact(scan, "a.apk", path, scan.rules())
+            kinds_found = sorted({f.kind for f in scan.found})
+            self.assertEqual(kinds_found, ["메일", "홈 경로"])
+            self.assertTrue(any(f.where.startswith("a.apk(이름)") for f in scan.found))
+            self.assertTrue(any(f.where.startswith("a.apk(묶음)") for f in scan.found))
+
     def test_inside_a_zip_and_a_nested_apk(self):
         with tempfile.TemporaryDirectory() as folder:
             inner = Path(folder) / "inner.apk"
@@ -95,8 +112,9 @@ class Artifacts(unittest.TestCase):
                 archive.writestr("readme.txt", "깨끗함")
             scan = cs.Scan()
             cs.scan_artifact(scan, "out.zip", outer, scan.rules())
-            self.assertEqual(len(scan.found), 1)
-            self.assertTrue(scan.found[0].where.startswith("out.zip!app/inner.apk!lib/a.so"))
+            # 안쪽 항목에서 찾고, 묶음 바이트(압축 안 된 저장)에서도 볼 수 있다.
+            self.assertTrue(any(f.where.startswith("out.zip!app/inner.apk!lib/a.so") for f in scan.found))
+            self.assertEqual({f.kind for f in scan.found}, {"홈 경로"})
 
     def test_a_value_across_chunks_is_found(self):
         with tempfile.TemporaryDirectory() as folder:
@@ -122,9 +140,24 @@ class Strict(unittest.TestCase):
         self.assertEqual(kinds(key), [])
         self.assertEqual(kinds(key, cs.Scan(strict=True)), ["기상청 키(16진)"])
 
-    def test_korean_deny_word_matches_inside_text(self):
+    def test_korean_deny_word_matches_inside_text_and_utf16(self):
         word = "회사".encode()
         self.assertEqual(kinds("우리회사이름".encode(), cs.Scan(words=[word])), ["금지어"])
+        wide = "우리회사이름".encode("utf-16-le")
+        self.assertEqual(kinds(wide, cs.Scan(words=[word])), ["금지어"])
+
+    def test_windows_paths_with_slashes_and_lowercase(self):
+        for path in [j("C:/", "Users/", "bob/x"), j("c:\\", "users\\", "bob")]:
+            with self.subTest(path=path):
+                self.assertEqual(set(kinds(path, cs.Scan(strict=True))), {"홈 경로"})
+
+    def test_dotted_mail_is_found_but_package_names_are_not(self):
+        self.assertEqual(kinds(j("a.b.c.d", "@", "corp.com")), ["메일"])
+        self.assertEqual(kinds(j("x.y.z.EXTRA", "@", "androidx.activity")), [])
+
+    def test_c_strings_are_not_glued(self):
+        # 짧은 C 문자열이 0 으로 끝나 이어져도 메일이 생기지 않는다.
+        self.assertEqual(kinds(b"abc\x00@\x00mail\x00.io\x00"), [])
 
     def test_png_text_chunks_are_unpacked(self):
         import struct as st
@@ -170,7 +203,14 @@ class Tree(unittest.TestCase):
                 inner = outer
             scan = cs.Scan()
             cs.scan_artifact(scan, "top.zip", inner, scan.rules())
-            self.assertEqual([f.kind for f in scan.found], ["너무 깊은 압축(안을 못 봄)"])
+            self.assertIn("너무 깊은 압축(안을 못 봄)", [f.kind for f in scan.found])
+
+
+class Command(unittest.TestCase):
+    def test_no_target_is_an_error(self):
+        with self.assertRaises(SystemExit) as raised:
+            cs.main([])
+        self.assertEqual(raised.exception.code, 2)
 
 
 if __name__ == "__main__":
