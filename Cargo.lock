@@ -2280,6 +2280,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "sidedesk-weather"
+version = "0.1.0"
+dependencies = [
+ "serde_json",
+ "sidedesk-core",
+ "sidedesk-domain",
+]
+
+[[package]]
 name = "sidedesk-window"
 version = "0.1.0"
 dependencies = [

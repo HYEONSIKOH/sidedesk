@@ -1,0 +1,9 @@
+[package]
+name = "sidedesk-weather"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+serde_json = "1"
+sidedesk-core = { path = "../../core" }
+sidedesk-domain = { path = "../domain" }
