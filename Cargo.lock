@@ -2296,6 +2296,7 @@ version = "0.1.0"
 dependencies = [
  "block2",
  "core-foundation 0.9.4",
+ "core-foundation-sys",
  "dispatch2",
  "libc",
  "objc2",

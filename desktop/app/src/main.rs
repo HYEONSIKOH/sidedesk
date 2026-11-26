@@ -16,11 +16,15 @@ use sidedesk_domain::{
 };
 use sidedesk_link::AdbLinks;
 #[cfg(target_os = "macos")]
-use sidedesk_mac::{MacGet, MacKeychain, MacLauncher, MacMeter, MacName as Name, MacProcesses};
+use sidedesk_mac::{
+    MacGet, MacKeychain, MacLauncher, MacMeter, MacName as Name, MacPlayer, MacProcesses,
+    MacSpeaker,
+};
 use sidedesk_window::{Board, Computer};
 #[cfg(target_os = "windows")]
 use sidedesk_windows::{
-    WindowsLauncher, WindowsMeter, WindowsName as Name, WindowsProcesses, WindowsSecrets,
+    WindowsLauncher, WindowsMeter, WindowsName as Name, WindowsPlayer, WindowsProcesses,
+    WindowsSecrets, WindowsSpeaker,
 };
 
 use crate::prefs::WeatherPrefs;
@@ -125,7 +129,20 @@ fn hub(folder: &Path) -> (Hub, Arc<WeatherPrefs>, Help) {
             .unwrap_or_default(),
     ));
     let deck = sidedesk_domain::Deck::new(Box::new(ShortcutsFile::new(folder)), launcher.clone());
-    (hub.with_shortcuts(deck), prefs, launcher)
+    let home = std::env::var_os("HOME")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_default();
+    let cache = home.join("Library/Caches/SideDesk");
+    let jukebox = sidedesk_domain::Jukebox::new(
+        Box::new(MacPlayer::new(home, cache)),
+        Box::new(MacSpeaker),
+        sidedesk_domain::MusicCadence::default(),
+    );
+    (
+        hub.with_shortcuts(deck).with_music(Arc::new(jukebox)),
+        prefs,
+        launcher,
+    )
 }
 
 #[cfg(target_os = "windows")]
@@ -137,7 +154,18 @@ fn hub(folder: &Path) -> (Hub, Arc<WeatherPrefs>, Help) {
     ));
     let launcher = Arc::new(WindowsLauncher);
     let deck = sidedesk_domain::Deck::new(Box::new(ShortcutsFile::new(folder)), launcher.clone());
-    (collectors().with_shortcuts(deck), prefs, launcher)
+    let jukebox = sidedesk_domain::Jukebox::new(
+        Box::new(WindowsPlayer),
+        Box::new(WindowsSpeaker),
+        sidedesk_domain::MusicCadence::default(),
+    );
+    (
+        collectors()
+            .with_shortcuts(deck)
+            .with_music(Arc::new(jukebox)),
+        prefs,
+        launcher,
+    )
 }
 
 fn run() -> Result<(), String> {
@@ -162,6 +190,7 @@ fn run() -> Result<(), String> {
         scope.spawn(|| hub.run_ai());
         scope.spawn(|| hub.run_forge());
         scope.spawn(|| hub.run_shortcuts());
+        scope.spawn(|| hub.run_music());
         keep_connected(&[&AdbLinks::default()], &context, &AtomicBool::new(false));
         hub.stop();
     });
@@ -255,6 +284,7 @@ fn window() -> Result<(), String> {
     thread::spawn(|| context.hub.run_ai());
     thread::spawn(|| context.hub.run_forge());
     thread::spawn(|| context.hub.run_shortcuts());
+    thread::spawn(|| context.hub.run_music());
     if let Some(deck) = context.hub.shortcuts() {
         let panel = sidedesk_window::ShortcutsPanel::new(Arc::clone(deck), help);
         sidedesk_window::with_shortcuts(Box::leak(Box::new(panel)));
