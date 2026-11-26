@@ -46,9 +46,12 @@ object Release {
         return KEY_NAMES.associateWith { env[it] ?: user.getProperty(it) }
     }
 
-    /** 저장소 gradle.properties 에 키 값 줄이 있으면 그 이름들. 있으면 빌드를 멈춘다. */
+    /**
+     * 저장소 gradle.properties 에 키 값 줄이 있으면 그 키 이름들(정해 둔 이름만 돌려주고 줄의 나머지는 쓰지 않는다).
+     * 있으면 빌드를 멈춘다. 멈춤 문구에 값이 찍히지 않게 이름만 돌려준다.
+     */
     fun keysInRepository(repoProperties: String): List<String> =
-        repoProperties.lines().map { it.trim() }.filter { line -> KEY_NAMES.any { line.startsWith(it) } }.map { it.substringBefore("=").trim() }
+        repoProperties.lines().map { it.trim() }.mapNotNull { line -> KEY_NAMES.sortedByDescending { it.length }.firstOrNull { line.startsWith(it) } }
 
     /** 키 넷 중 일부만 있으면 빠진 이름들(오타를 빨리 알리려고). 하나도 없거나 다 있으면 빈 목록 */
     fun missingKeys(keys: Map<String, String?>): List<String> {

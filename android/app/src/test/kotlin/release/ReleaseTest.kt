@@ -52,6 +52,10 @@ class ReleaseTest {
     fun keysInTheRepositoryStopTheBuild() {
         assertEquals(listOf("SIDEDESK_KEY_PASSWORD"), Release.keysInRepository("org.gradle.jvmargs=-Xmx2g\n  SIDEDESK_KEY_PASSWORD = secret\n"))
         assertEquals(emptyList<String>(), Release.keysInRepository("android.useAndroidX=true\n"))
+        // 등호 없이 빈칸이나 쌍점으로 적어도 값은 돌려주지 않는다.
+        val found = Release.keysInRepository("SIDEDESK_KEY_PASSWORD secret1\nSIDEDESK_KEYSTORE_PASSWORD:secret2\nSIDEDESK_KEYSTORE=/x/secret3.jks\n")
+        assertEquals(listOf("SIDEDESK_KEY_PASSWORD", "SIDEDESK_KEYSTORE_PASSWORD", "SIDEDESK_KEYSTORE"), found)
+        assertTrue(found.none { "secret" in it })
     }
 
     @Test
