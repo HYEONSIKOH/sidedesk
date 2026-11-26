@@ -48,6 +48,8 @@ final class LinkOwner: @unchecked Sendable {
 
     private let lock = NSLock()
     private let clock: @Sendable () -> TimeInterval
+    /// 음악 받은 때를 적는 시계(부팅 뒤 밀리초, 잠든 시간 포함)
+    private let elapsed: @Sendable () -> Int64
     private let publish: @Sendable (LinkSnapshot) -> Void
     private let emitResult: @Sendable (CommandResult) -> Void
     private let emitAlert: @Sendable (AiAlert) -> Void
@@ -82,11 +84,13 @@ final class LinkOwner: @unchecked Sendable {
 
     init(
         clock: @escaping @Sendable () -> TimeInterval = { ProcessInfo.processInfo.systemUptime },
+        elapsed: @escaping @Sendable () -> Int64 = { monotonicMillis() },
         publish: @escaping @Sendable (LinkSnapshot) -> Void = { _ in },
         emitResult: @escaping @Sendable (CommandResult) -> Void = { _ in },
         emitAlert: @escaping @Sendable (AiAlert) -> Void = { _ in }
     ) {
         self.clock = clock
+        self.elapsed = elapsed
         self.publish = publish
         self.emitResult = emitResult
         self.emitAlert = emitAlert
@@ -354,7 +358,7 @@ final class LinkOwner: @unchecked Sendable {
         changing {
             guard let now = current, now.generation == mine, let computer = now.computer else { return false }
             var stamped = value
-            stamped.receivedAt = Int64(clock() * 1000)
+            stamped.receivedAt = elapsed()
             snapshot.nowPlaying = stamped
             musicFrom = computer
             return true

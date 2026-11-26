@@ -203,6 +203,8 @@ struct RestModelTests {
         #expect(rest.resting, "초점 없음은 깨우지 않음")
         rest.hold(.pairing, true)
         #expect(!rest.resting, "짝 맺기 숫자는 깨움")
+        rest.forceRest()
+        #expect(!rest.resting, "막는 까닭이 있으면 바로 쉬기도 안 됨")
     }
 
     @Test func alertsWakeOnlyWhenAskedAndNotWhenLate() {

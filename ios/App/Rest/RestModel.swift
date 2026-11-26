@@ -177,8 +177,9 @@ final class RestModel {
     var isWaiting: Bool { timer != nil }
 
     #if DEBUG
-        /// 화면 찍기용. 기다리지 않고 바로 쉰다.
+        /// 화면 찍기와 시험용. 기다리지 않고 바로 쉰다. 막는 까닭이 있으면 쉬지 않는다(안드로이드 restNow).
         func forceRest() {
+            guard holds.isEmpty else { return }
             timer?.cancel()
             timer = nil
             set(resting: true)

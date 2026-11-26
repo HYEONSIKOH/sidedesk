@@ -1,9 +1,10 @@
 import Foundation
 import Observation
 
-/// 단조 시각(밀리초). LinkOwner 가 곡을 받은 때를 적는 시계와 같다.
+/// 부팅 뒤 밀리초(잠든 시간 포함, 다윈 CLOCK_MONOTONIC). LinkOwner 가 곡을 받은 때를 적는 시계와 같다.
+/// 화면이 꺼진 동안 흐른 재생 시간도 진행 바에 넣는다(안드로이드 elapsedRealtime 과 같음).
 func monotonicMillis() -> Int64 {
-    Int64(Foundation.ProcessInfo.processInfo.systemUptime * 1000)
+    Int64(clock_gettime_nsec_np(CLOCK_MONOTONIC) / 1_000_000)
 }
 
 /// 진행 위치. 재생 중이면 받은 때부터 흐르고, 끊긴 때나 전체 길이에서 멈춘다.

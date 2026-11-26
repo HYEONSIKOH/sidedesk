@@ -38,7 +38,7 @@ struct FeatureOwnerTests {
 
     func owner() -> LinkOwner {
         let clock = clock
-        return LinkOwner(clock: { clock.now }, emitResult: results.emit, emitAlert: alerts.emit)
+        return LinkOwner(clock: { clock.now }, elapsed: { Int64(clock.now * 1000) }, emitResult: results.emit, emitAlert: alerts.emit)
     }
 
     /// 이 컴퓨터로 붙은 연결 하나
