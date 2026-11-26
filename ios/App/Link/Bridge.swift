@@ -156,7 +156,8 @@ final class BridgeSession: CoreSession {
                     source: source(value.source)
                 )
             )
-        @unknown default:
+        default:
+            // AI 세션, 알림, GitHub 처럼 iOS 화면이 아직 없는 일은 버린다(SD-7 은 안드로이드만).
             return nil
         }
     }
