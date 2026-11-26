@@ -114,7 +114,7 @@ fn hub(folder: &Path) -> (Hub, Arc<WeatherPrefs>, Help) {
         Box::new(weather),
         sidedesk_domain::WeatherCadence::default(),
     );
-    // AI 세션 기록과 gh, glab 은 홈 폴더 아래를 본다. 윈도우는 아직 없음(컴파일만).
+    // AI 세션 기록과 gh, glab 은 홈 폴더 아래를 본다.
     let hub = match home {
         Some(home) => hub.with_ai(
             Box::new(sidedesk_agents::Agents::new(home.clone())),
@@ -158,10 +158,19 @@ fn hub(folder: &Path) -> (Hub, Arc<WeatherPrefs>, Help) {
         Box::new(weather),
         sidedesk_domain::WeatherCadence::default(),
     );
-    let launcher = Arc::new(WindowsLauncher);
+    // AI 세션 기록과 gh, glab 은 %USERPROFILE% 아래(.claude, .codex)를 본다.
+    let hub = match std::env::home_dir() {
+        Some(home) => hub.with_ai(
+            Box::new(sidedesk_agents::Agents::new(home.clone())),
+            Some(Box::new(sidedesk_forge::Forgery::system(home))),
+            sidedesk_domain::AiCadence::default(),
+        ),
+        None => hub,
+    };
+    let launcher = Arc::new(WindowsLauncher::default());
     let deck = sidedesk_domain::Deck::new(Box::new(ShortcutsFile::new(folder)), launcher.clone());
     let jukebox = sidedesk_domain::Jukebox::new(
-        Box::new(WindowsPlayer),
+        Box::new(WindowsPlayer::default()),
         Box::new(WindowsSpeaker),
         sidedesk_domain::MusicCadence::default(),
     );

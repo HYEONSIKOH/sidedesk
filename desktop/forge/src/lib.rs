@@ -1,6 +1,8 @@
 //! GitHub, GitLab 수. 설치된 `gh`, `glab` 을 정해진 인자로 돌려 숫자만 쓴다.
 //! 토큰을 읽거나 남기지 않고(환경 변수는 그대로 물려받음), 출력 글자를 오류 문장에 넣지 않는다.
 
+#[cfg(windows)]
+mod job;
 mod run;
 
 use std::path::PathBuf;

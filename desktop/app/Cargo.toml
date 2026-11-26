@@ -17,4 +17,6 @@ sidedesk-forge = { path = "../forge" }
 sidedesk-mac = { path = "../mac" }
 
 [target.'cfg(target_os = "windows")'.dependencies]
+sidedesk-agents = { path = "../agents" }
+sidedesk-forge = { path = "../forge" }
 sidedesk-windows = { path = "../windows" }

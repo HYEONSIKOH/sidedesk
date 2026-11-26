@@ -2282,6 +2282,7 @@ dependencies = [
  "serde_json",
  "sidedesk-core",
  "sidedesk-domain",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

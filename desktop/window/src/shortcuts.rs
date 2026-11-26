@@ -113,6 +113,11 @@ impl ShortcutsPanel {
                 self.lock().picked = picked;
                 Ok(None)
             }
+            "shortcut-pick-folder" => {
+                let picked = self.help.pick_folder();
+                self.lock().picked = picked;
+                Ok(None)
+            }
             "shortcut-key-settings" => {
                 self.help.open_key_settings();
                 Ok(None)
@@ -205,6 +210,8 @@ impl ShortcutsPanel {
             "needsKeys": needs_keys,
             "apps": apps,
             "focus": state.focus,
+            "focusSupported": self.help.focus_supported(),
+            "folderPick": self.help.separate_folder_pick(),
             "loading": state.loading,
             "message": state.message.as_ref().map(|(text, good)| json!({"text": text, "good": good})),
             // 한 번만 보내는 것
@@ -453,5 +460,11 @@ mod tests {
         let now = snapshot(panel);
         assert_eq!(now["apps"][0]["bundle"], "dev.sample.editor");
         assert_eq!(now["focus"][0], "집중 켜기");
+        // 기본값: 방해 금지를 고를 수 있고 폴더 고르기는 따로 없다(맥).
+        assert_eq!(now["focusSupported"], true);
+        assert_eq!(now["folderPick"], false);
+        // 폴더 고르기를 지원하지 않으면 고른 것이 없다.
+        assert!(panel.command(r#"{"shortcut-pick-folder":true}"#));
+        assert!(snapshot(panel)["picked"].is_null());
     }
 }
