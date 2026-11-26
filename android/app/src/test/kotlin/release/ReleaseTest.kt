@@ -28,9 +28,37 @@ class ReleaseTest {
     }
 
     @Test
+    fun aMissingWorkspaceVersionFailsTheBuild() {
+        val file = File.createTempFile("Cargo", ".toml")
+        file.writeText("[package]\nversion = \"9.9.9\"\n")
+        assertThrows(IllegalStateException::class.java) { Release.versionName(file) }
+        file.delete()
+    }
+
+    @Test
+    fun keysComeFromTheEnvironmentOrTheUserFileOnly() {
+        val user = File.createTempFile("gradle", ".properties")
+        user.writeText("SIDEDESK_KEY_ALIAS=from-user\nSIDEDESK_KEYSTORE=/user/k.jks\n")
+        val keys = Release.keys(mapOf("SIDEDESK_KEYSTORE" to "/env/k.jks"), user)
+        assertEquals("/env/k.jks", keys["SIDEDESK_KEYSTORE"])
+        assertEquals("from-user", keys["SIDEDESK_KEY_ALIAS"])
+        assertEquals(null, keys["SIDEDESK_KEY_PASSWORD"])
+        assertEquals(listOf("SIDEDESK_KEYSTORE_PASSWORD", "SIDEDESK_KEY_PASSWORD"), Release.missingKeys(keys))
+        assertEquals(emptyList<String>(), Release.missingKeys(emptyMap()))
+        user.delete()
+    }
+
+    @Test
+    fun keysInTheRepositoryStopTheBuild() {
+        assertEquals(listOf("SIDEDESK_KEY_PASSWORD"), Release.keysInRepository("org.gradle.jvmargs=-Xmx2g\n  SIDEDESK_KEY_PASSWORD = secret\n"))
+        assertEquals(emptyList<String>(), Release.keysInRepository("android.useAndroidX=true\n"))
+    }
+
+    @Test
     fun signingKinds() {
         val all = Release.KEY_NAMES.associateWith { "x" }
         assertEquals(Release.Signing.Release, Release.signing(all, ci = true))
+        assertEquals(Release.Signing.Release, Release.signing(all, ci = false))
         assertEquals(Release.Signing.Unsigned, Release.signing(all - "SIDEDESK_KEY_PASSWORD", ci = true))
         assertEquals(Release.Signing.DebugKey, Release.signing(emptyMap(), ci = false))
         assertEquals(Release.Signing.DebugKey, Release.signing(all + ("SIDEDESK_KEYSTORE" to ""), ci = false))

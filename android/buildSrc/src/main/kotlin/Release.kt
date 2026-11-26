@@ -36,6 +36,26 @@ object Release {
 
     val KEY_NAMES = listOf("SIDEDESK_KEYSTORE", "SIDEDESK_KEYSTORE_PASSWORD", "SIDEDESK_KEY_ALIAS", "SIDEDESK_KEY_PASSWORD")
 
+    /**
+     * 키 값은 환경변수나 사용자 홈의 ~/.gradle/gradle.properties 에서만 읽는다.
+     * 저장소의 gradle.properties 나 명령 줄 -P 는 보지 않는다(비밀번호가 커밋되거나 셸 기록에 남지 않게).
+     */
+    fun keys(env: Map<String, String>, userProperties: File?): Map<String, String?> {
+        val user = java.util.Properties()
+        if (userProperties != null && userProperties.isFile) userProperties.inputStream().use(user::load)
+        return KEY_NAMES.associateWith { env[it] ?: user.getProperty(it) }
+    }
+
+    /** 저장소 gradle.properties 에 키 값 줄이 있으면 그 이름들. 있으면 빌드를 멈춘다. */
+    fun keysInRepository(repoProperties: String): List<String> =
+        repoProperties.lines().map { it.trim() }.filter { line -> KEY_NAMES.any { line.startsWith(it) } }.map { it.substringBefore("=").trim() }
+
+    /** 키 넷 중 일부만 있으면 빠진 이름들(오타를 빨리 알리려고). 하나도 없거나 다 있으면 빈 목록 */
+    fun missingKeys(keys: Map<String, String?>): List<String> {
+        val missing = KEY_NAMES.filter { keys[it].isNullOrBlank() }
+        return if (missing.size == KEY_NAMES.size) emptyList() else missing
+    }
+
     /** 릴리스가 쓰는 권한(이름 → maxSdkVersion, 없으면 null). 라이브러리가 더하거나 maxSdk 를 풀면 빌드가 실패한다. */
     fun expectedPermissions(applicationId: String): Map<String, Int?> = mapOf(
         "android.permission.BLUETOOTH" to 30,

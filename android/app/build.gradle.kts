@@ -11,7 +11,10 @@ plugins {
 val appVersion = Release.versionName(rootDir.resolve("../Cargo.toml"))
 
 // 릴리스 서명 키는 저장소 밖에 두고 환경변수나 ~/.gradle/gradle.properties 로 받는다. 값은 로그에 찍지 않는다.
-val keys = Release.KEY_NAMES.associateWith { System.getenv(it) ?: providers.gradleProperty(it).orNull }
+val leaked = Release.keysInRepository(rootDir.resolve("gradle.properties").readText())
+check(leaked.isEmpty()) { "저장소 gradle.properties 에 서명 키 값($leaked)이 있습니다. 환경변수나 ~/.gradle/gradle.properties 로 옮기세요" }
+val keys = Release.keys(System.getenv(), gradle.gradleUserHomeDir.resolve("gradle.properties"))
+Release.missingKeys(keys).takeIf { it.isNotEmpty() }?.let { logger.warn("서명 키 값 일부가 없어 키로 서명하지 않습니다: $it") }
 val signing = Release.signing(keys, ci = System.getenv("CI") == "true")
 logger.lifecycle("안드로이드 서명: ${signing.name}")
 
