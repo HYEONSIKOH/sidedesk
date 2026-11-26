@@ -110,7 +110,7 @@ class MainActivity : ComponentActivity() {
                 offerLocation()
             }
         }
-        if (BuildConfig.DEBUG && savedInstanceState == null) openForCheck()
+        if (BuildConfig.CHECK && savedInstanceState == null) openForCheck()
         // 쉼은 Compose 를 거치지 않고 바로 넘긴다. Compose 의 모으기는 화면이 안 보이면 멈추기 때문이다.
         lifecycleScope.launch {
             rest.state.collect {
@@ -124,61 +124,19 @@ class MainActivity : ComponentActivity() {
             home.state.collect { rest.hold(Hold.Pairing, it.pairingCode != null || it.problem != null) }
         }
         fitWindow()
+        val models = Models(
+            home, desk, ai, shortcuts, music, clock, rest, buzzer.canSetStrength,
+            System::currentTimeMillis, { System.nanoTime() / 1_000_000 },
+            askLocation, LOCATION_NOTICE, ::answerLocation,
+        )
         setContent {
-            val clockState = clock.state.collectAsStateWithLifecycle().value
-            val restState = rest.state.collectAsStateWithLifecycle().value
-            LaunchedEffect(clockState.theme) {
-                barsFor(clockState.theme)
+            val theme = clock.state.collectAsStateWithLifecycle().value.theme
+            LaunchedEffect(theme) {
+                barsFor(theme)
                 fitWindow(force = true)
             }
             LaunchedEffect(askLocation.value) { rest.hold(Hold.Confirm, askLocation.value || desk.state.value.asking != null) }
-            SideDeskTheme(clockState.theme) {
-                Box(
-                    Modifier
-                        .fillMaxSize()
-                        // 누름(down)마다 쉬기 타이머를 다시 잰다. 보기만 하고 소비하지 않는다.
-                        .pointerInput(Unit) {
-                            awaitEachGesture {
-                                awaitFirstDown(requireUnconsumed = false, pass = PointerEventPass.Initial)
-                                rest.touched()
-                            }
-                        },
-                ) {
-                    val state = home.state.collectAsStateWithLifecycle().value
-                    if (state.pairingCode != null || state.problem != null) {
-                        HomeScreen(state, home::answer)
-                    } else {
-                        val actions = remember {
-                            DeskActions(
-                                desk::show, desk::next, desk::previous, desk::sortBy, desk::ask, desk::cancel,
-                                desk::confirmKill, desk::dismissNotice,
-                            )
-                        }
-                        val pick = remember { PickActions(clock::setFace, clock::setTheme, clock::done) }
-                        val panel = RestPanel(
-                            restState, buzzer.canSetStrength,
-                            rest::setKeepOn, rest::setRestAfter, rest::setWakeOnAlert, rest::setVibration,
-                        )
-                        val part = ClockPart(clockState, System::currentTimeMillis, clock::pick, clock::nextFace, clock::previousFace, pick, state.notice, panel)
-                        val aiPart = AiPart(ai.state.collectAsStateWithLifecycle().value, ai::selectTab)
-                        DeskScreen(
-                            desk.state.collectAsStateWithLifecycle().value,
-                            part,
-                            actions,
-                            aiPart,
-                            ShortcutPart(shortcuts.state.collectAsStateWithLifecycle().value, shortcuts::press),
-                            MusicPart(
-                                music.state.collectAsStateWithLifecycle().value,
-                                { System.nanoTime() / 1_000_000 },
-                                remember { MusicActions(music::playPause, music::next, music::previous, music::dragVolume, music::releaseVolume) },
-                            ),
-                            modal = if (askLocation.value) LOCATION_NOTICE else null,
-                            onModal = ::answerLocation,
-                        )
-                    }
-                    RestScreen(restState.resting, restState, clockState, System::currentTimeMillis, rest::touched)
-                }
-            }
+            SideDeskScreen(models)
         }
     }
 
@@ -234,10 +192,9 @@ class MainActivity : ComponentActivity() {
 
     /** 디버그 빌드 전용. 폰을 누르지 않고 화면을 찍어 보려고 am start 값으로 화면을 고른다. */
     private fun openForCheck() {
-        when (intent.getStringExtra("screen")) {
-            "processes" -> desk.show(Screen.Processes)
-            "perf" -> desk.show(Screen.Perf)
-        }
+        // 디버그와 측정 빌드에서만. 예: am start -n …/.MainActivity --es screen music --ez rest true
+        Screen.entries.firstOrNull { it.name.equals(intent.getStringExtra("screen"), ignoreCase = true) }?.let(desk::show)
+        if (intent.getBooleanExtra("rest", false)) rest.restNow()
         if (intent.getStringExtra("sort") == "memory") desk.sortBy(Sort.Memory)
         if (intent.getBooleanExtra("ask", false)) {
             lifecycleScope.launch { desk.state.first { it.rows.isNotEmpty() }.rows.first().let(desk::ask) }

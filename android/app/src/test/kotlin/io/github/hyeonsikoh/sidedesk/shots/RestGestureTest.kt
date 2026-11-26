@@ -8,6 +8,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshots.Snapshot
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.input.pointer.PointerEventPass
 import androidx.compose.ui.input.pointer.pointerInput
@@ -75,7 +76,11 @@ class RestGestureTest {
         compose.mainClock.advanceTimeBy(100)
     }
 
-    private fun settle(ms: Long = 1_000) = compose.mainClock.advanceTimeBy(ms)
+    // 쉬지 않고 도는 애니메이션이 없어져, 시험에서 바꾼 상태를 직접 알려야 다음 프레임에 반영된다.
+    private fun settle(ms: Long = 1_000) {
+        Snapshot.sendApplyNotifications()
+        compose.mainClock.advanceTimeBy(ms)
+    }
 
     @Test
     fun aTouchWhileAwakeGoesThrough() {

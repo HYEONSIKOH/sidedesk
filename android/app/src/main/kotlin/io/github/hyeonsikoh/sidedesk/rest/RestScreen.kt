@@ -43,6 +43,9 @@ import io.github.hyeonsikoh.sidedesk.ui.Palette
 import io.github.hyeonsikoh.sidedesk.ui.RestColors
 import io.github.hyeonsikoh.sidedesk.ui.fit
 
+/** 쉬는 판이 다 덮이는 데 걸리는 시간. 그 뒤로는 아래 화면을 구성하지 않는다. */
+const val REST_FADE_IN_MS = 600
+
 /**
  * 쉬는 화면. 화면 틀 위에 검은 판을 겹쳐 고른 시계 모양만 어둡게 그린다.
  * 모든 누름을 먼저 받아 깨우기만 하고, 아래 칸과 버튼에는 보내지 않는다. 나가는 0.2초 동안도 같다.
@@ -52,7 +55,7 @@ fun BoxScope.RestScreen(resting: Boolean, rest: RestState, clock: ClockState, ti
     BackHandler(enabled = resting, onBack = onWake)
     AnimatedVisibility(
         visible = resting,
-        enter = fadeIn(tween(600)),
+        enter = fadeIn(tween(REST_FADE_IN_MS)),
         exit = fadeOut(tween(200)),
         modifier = Modifier.matchParentSize(),
     ) {

@@ -86,6 +86,13 @@ class RestViewModel(private val settings: Settings, alerts: Flow<AiScreenState>)
         val WAKERS = setOf(Hold.Pairing, Hold.Confirm)
     }
 
+    /** 측정용(디버그와 측정 빌드의 am start 값): 기다리지 않고 바로 쉰다. 막는 까닭이 있으면 쉬지 않는다. */
+    fun restNow() {
+        if (holds.isNotEmpty()) return
+        timer?.cancel()
+        _state.update { it.copy(resting = true) }
+    }
+
     /** 화면이 안 보이면 타이머를 멈추고 깨어 있는 상태로 둔다. */
     fun setVisible(value: Boolean) {
         visible = value

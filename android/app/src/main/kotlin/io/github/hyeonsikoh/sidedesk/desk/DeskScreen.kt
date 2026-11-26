@@ -1,10 +1,8 @@
 package io.github.hyeonsikoh.sidedesk.desk
 
 import androidx.compose.animation.core.LinearEasing
-import androidx.compose.animation.core.animateFloat
+import io.github.hyeonsikoh.sidedesk.ui.Track
 import androidx.compose.animation.core.animateFloatAsState
-import androidx.compose.animation.core.infiniteRepeatable
-import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
@@ -31,7 +29,9 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableLongStateOf
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -172,16 +172,16 @@ private fun killConfirm(process: ProcessInfo) = Confirm(
 
 @Composable
 private fun Content(state: DeskState, clock: ClockPart, ai: AiPart, shortcuts: ShortcutPart, music: MusicPart, actions: DeskActions, modifier: Modifier) {
-    val now = rememberNow(clock.now)
-    val ticks = rememberTicks(music.clock)
-    val parts = Parts(clock, ai, shortcuts, music, ticks)
+    Track("content")
+    // 시각은 여기서 읽지 않는다. 쓰는 칸이 각자 읽어 그 칸만 다시 구성한다.
+    val parts = remember(clock, ai, shortcuts, music) { Parts(clock, ai, shortcuts, music) }
     BoxWithConstraints(modifier.fillMaxSize().safeDrawingPadding().padding(12.dp)) {
         val wide = maxWidth >= maxHeight
         if (wide) {
             Row(Modifier.fillMaxSize(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                Big(state, parts, now, actions, Modifier.weight(1f).fillMaxHeight())
+                Big(state, parts, actions, Modifier.weight(1f).fillMaxHeight())
                 Column(Modifier.width(132.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                    SmallTiles(state, state.small, parts, now, actions, Modifier.fillMaxWidth().weight(1f, fill = false).height(72.dp))
+                    SmallTiles(state, state.small, parts, actions, Modifier.fillMaxWidth().weight(1f, fill = false).height(72.dp))
                 }
             }
         } else {
@@ -190,10 +190,10 @@ private fun Content(state: DeskState, clock: ClockPart, ai: AiPart, shortcuts: S
                 val rows = if (state.small.size > 4) state.small.chunked(3) else listOf(state.small)
                 rows.forEach { row ->
                     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                        SmallTiles(state, row, parts, now, actions, Modifier.weight(1f).height(72.dp))
+                        SmallTiles(state, row, parts, actions, Modifier.weight(1f).height(72.dp))
                     }
                 }
-                Big(state, parts, now, actions, Modifier.weight(1f).fillMaxWidth())
+                Big(state, parts, actions, Modifier.weight(1f).fillMaxWidth())
             }
         }
     }
@@ -208,32 +208,56 @@ const val BIG = "big"
 /** 끊기면 컴퓨터에서 온 값만 흐리게 한다. 시계는 흐리지 않는다. */
 private fun Modifier.dim(dimmed: Boolean) = alpha(if (dimmed) 0.4f else 1f)
 
-private class Parts(val clock: ClockPart, val ai: AiPart, val shortcuts: ShortcutPart, val music: MusicPart, val ticks: Long)
+private class Parts(val clock: ClockPart, val ai: AiPart, val shortcuts: ShortcutPart, val music: MusicPart)
+
+// 시각을 읽는 칸은 따로 감싸, 시각이 바뀌면 감싼 칸만 다시 구성되게 한다.
 
 @Composable
-private fun SmallTiles(state: DeskState, screens: List<Screen>, parts: Parts, now: Long, actions: DeskActions, tile: Modifier) {
+private fun HomeBigNow(clock: ClockPart) = HomeBig(clock.state, rememberNow(clock.now))
+
+@Composable
+private fun HomeTileNow(clock: ClockPart, modifier: Modifier) = HomeTile(clock.state, rememberNow(clock.now), modifier)
+
+@Composable
+private fun AiBigNow(ai: AiPart, time: () -> Long) = AiBig(ai.state, rememberNow(time), ai.selectTab)
+
+@Composable
+private fun MusicBigNow(music: MusicPart) =
+    MusicBig(music.state, rememberTicks(music.clock, music.state.playing), music.actions)
+
+@Composable
+private fun MusicTileNow(music: MusicPart, modifier: Modifier) =
+    MusicTile(music.state, rememberTicks(music.clock, music.state.playing), music.actions, modifier)
+
+@Composable
+private fun SmallTiles(state: DeskState, screens: List<Screen>, parts: Parts, actions: DeskActions, tile: Modifier) {
+    Track("small-tiles")
     val clock = parts.clock
     val ai = parts.ai
     val shortcuts = parts.shortcuts
     // 고르는 중에 작은 칸을 누르면 고르기를 닫고 그 화면으로 간다.
-    fun go(screen: Screen) {
-        clock.actions.done()
-        actions.show(screen)
+    // 칸마다 누름 Modifier 를 한 번만 만든다. 값이 바뀌어 여기가 다시 구성되어도 같은 Modifier 라 다른 칸은 건너뛴다.
+    val done = clock.actions.done
+    val show = actions.show
+    val press = remember(tile, done, show) {
+        Screen.entries.associateWith { screen -> tile.clickable { done(); show(screen) } }
     }
     screens.forEach { screen ->
+        val pressed = press.getValue(screen)
         when (screen) {
-            Screen.Home -> HomeTile(clock.state, now, tile.clickable { go(Screen.Home) })
-            Screen.Ai -> AiTile(ai.state, tile.clickable { go(Screen.Ai) })
-            Screen.Perf -> CpuTile(state.perf?.cpu, tile.clickable { go(Screen.Perf) }.dim(state.dimmed))
-            Screen.Processes -> TopProcessTile(state.rows.firstOrNull(), tile.clickable { go(Screen.Processes) }.dim(state.dimmed))
-            Screen.Shortcuts -> ShortcutTile(shortcuts.state, tile.clickable { go(Screen.Shortcuts) })
-            Screen.Music -> MusicTile(parts.music.state, parts.ticks, parts.music.actions, tile.clickable { go(Screen.Music) })
+            Screen.Home -> HomeTileNow(clock, pressed)
+            Screen.Ai -> AiTile(ai.state, pressed)
+            Screen.Perf -> CpuTile(state.perf?.cpu, pressed.dim(state.dimmed))
+            Screen.Processes -> TopProcessTile(state.rows.firstOrNull(), pressed.dim(state.dimmed))
+            Screen.Shortcuts -> ShortcutTile(shortcuts.state, pressed)
+            Screen.Music -> MusicTileNow(parts.music, pressed)
         }
     }
 }
 
 @Composable
-private fun Big(state: DeskState, parts: Parts, now: Long, actions: DeskActions, modifier: Modifier) {
+private fun Big(state: DeskState, parts: Parts, actions: DeskActions, modifier: Modifier) {
+    Track("big")
     val clock = parts.clock
     val ai = parts.ai
     val shortcuts = parts.shortcuts
@@ -262,12 +286,12 @@ private fun Big(state: DeskState, parts: Parts, now: Long, actions: DeskActions,
             .padding(14.dp),
     ) {
         when (state.big) {
-            Screen.Home -> HomeBig(clock.state, now)
-            Screen.Ai -> AiBig(ai.state, now, ai.selectTab)
+            Screen.Home -> HomeBigNow(clock)
+            Screen.Ai -> AiBigNow(ai, clock.now)
             Screen.Perf -> PerfScreen(state, Modifier.dim(state.dimmed))
             Screen.Processes -> ProcessScreen(state, actions, Modifier.dim(state.dimmed))
             Screen.Shortcuts -> ShortcutBig(shortcuts.state, shortcuts.press)
-            Screen.Music -> MusicBig(parts.music.state, parts.ticks, parts.music.actions)
+            Screen.Music -> MusicBigNow(parts.music)
         }
         if (home && !picking) {
             clock.notice?.let {
@@ -298,6 +322,7 @@ private fun Big(state: DeskState, parts: Parts, now: Long, actions: DeskActions,
 
 @Composable
 private fun PerfScreen(state: DeskState, modifier: Modifier) {
+    Track("perf-big")
     val perf = state.perf
     Column(modifier.fillMaxSize(), verticalArrangement = Arrangement.spacedBy(10.dp)) {
         Row(Modifier.weight(1f).fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
@@ -337,13 +362,15 @@ private fun Gauge(label: String, value: Float?, modifier: Modifier) {
 /** 값만큼 아래에서 차오르는 물결 */
 @Composable
 private fun Liquid(value: Float?, modifier: Modifier) {
+    // 쉬지 않고 도는 애니메이션은 두지 않는다. 값이 바뀔 때만 0.6초 동안 높이를 옮기고 물결을 1/4 바퀴 민다.
     val level by animateFloatAsState((value ?: 0f).coerceIn(0f, 100f) / 100f, tween(600), label = "level")
-    val phase by rememberInfiniteTransition(label = "wave").animateFloat(
-        0f,
-        (2 * PI).toFloat(),
-        infiniteRepeatable(tween(4_000, easing = LinearEasing)),
-        label = "phase",
-    )
+    var turns by remember { mutableIntStateOf(0) }
+    var seen by remember { mutableStateOf(value) }
+    LaunchedEffect(value) {
+        if (value != seen) turns += 1
+        seen = value
+    }
+    val phase by animateFloatAsState(turns * (PI / 2).toFloat(), tween(600, easing = LinearEasing), label = "phase")
     val liquid = Palette.liquid
     Canvas(modifier) {
         if (level <= 0f) return@Canvas
@@ -420,6 +447,7 @@ private fun NetGraph(received: List<Long>, sent: List<Long>, modifier: Modifier)
 
 @Composable
 private fun ProcessScreen(state: DeskState, actions: DeskActions, modifier: Modifier) {
+    Track("processes-big")
     Column(modifier.fillMaxSize()) {
         Row(Modifier.fillMaxWidth().padding(start = 4.dp, bottom = 10.dp), verticalAlignment = Alignment.CenterVertically) {
             Percent(state.perf?.cpu, 34.sp)
@@ -505,6 +533,7 @@ private fun ProcessRow(process: ProcessInfo, share: Float, onClick: () -> Unit) 
 
 @Composable
 private fun CpuTile(cpu: Float?, modifier: Modifier) {
+    Track("cpu-tile")
     BoxWithConstraints(modifier.clip(RoundedCornerShape(20.dp)).background(Palette.side)) {
         Liquid(cpu, Modifier.fillMaxSize())
         if (maxWidth < NARROW) {
@@ -525,6 +554,7 @@ private fun CpuTile(cpu: Float?, modifier: Modifier) {
 
 @Composable
 private fun TopProcessTile(top: ProcessInfo?, modifier: Modifier) {
+    Track("process-tile")
     BoxWithConstraints(modifier.clip(RoundedCornerShape(20.dp)).background(Palette.side)) {
         val narrow = maxWidth < NARROW
         Column(

@@ -1,6 +1,7 @@
 package io.github.hyeonsikoh.sidedesk.ai
 
 import androidx.compose.animation.core.Animatable
+import io.github.hyeonsikoh.sidedesk.ui.Track
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -70,6 +71,7 @@ private fun toolText(tool: AiTool) = when (tool) {
 /** AI 큰 화면. 위는 세션 카드, 아래는 GitHub/GitLab 숫자 */
 @Composable
 fun AiBig(state: AiScreenState, now: Long, onTab: (ForgeTab) -> Unit, modifier: Modifier = Modifier) {
+    Track("ai-big")
     Column(modifier.fillMaxSize()) {
         BoxWithConstraints(Modifier.weight(1f).fillMaxWidth().alpha(if (state.dimmed) DIM else 1f)) {
             if (state.sessions.isEmpty()) {
@@ -253,6 +255,7 @@ private fun Count(value: String, label: String) {
  */
 @Composable
 fun AiTile(state: AiScreenState, modifier: Modifier) {
+    Track("ai-tile")
     val pulse = remember { Animatable(1f) }
     val alert = state.alert
     LaunchedEffect(alert?.id) {
