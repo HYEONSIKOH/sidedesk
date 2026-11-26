@@ -73,7 +73,10 @@ pub fn gui() -> ExitCode {
             }
         },
         #[cfg(target_os = "windows")]
-        Some(_) => ExitCode::from(2),
+        Some(_) => {
+            alert("터미널에서는 sidedesk-cli 를 쓰세요(sidedesk-cli pair, sidedesk-cli run)");
+            ExitCode::from(2)
+        }
     }
 }
 
@@ -316,7 +319,7 @@ fn pair() -> Result<(), String> {
         &AtomicBool::new(false),
     ) {
         Ok(Ended::Paired) => {
-            println!("이제 sidedesk run 으로 연결하면 됩니다");
+            println!("이제 sidedesk-cli run 으로 연결하거나 sidedesk 를 실행하면 됩니다");
             Ok(())
         }
         Ok(_) => Err("등록 전에 연결이 끊김".to_owned()),

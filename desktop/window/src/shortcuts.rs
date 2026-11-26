@@ -117,6 +117,7 @@ impl ShortcutsPanel {
                 self.lock().detail = detail.map(|s| json!(s));
                 Ok(None)
             }
+            // 창에서는 view 가 먼저 가로채 이벤트 루프에서 pick() 을 부른다. 이 길은 시험과 창 없는 쪽에서만 쓴다.
             "shortcut-pick" => {
                 let picked = self.help.pick_path();
                 self.lock().picked = picked;

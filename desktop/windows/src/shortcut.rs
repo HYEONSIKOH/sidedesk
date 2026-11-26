@@ -6,6 +6,7 @@ use std::time::{Duration, Instant};
 
 use sidedesk_domain::{Action, AppChoice, Combo, Launcher, PortError, ShortcutHelp, SystemAction};
 use windows::Win32::System::Com::{CLSCTX_INPROC_SERVER, CoCreateInstance, CoTaskMemFree};
+use windows::Win32::UI::Input::KeyboardAndMouse::GetActiveWindow;
 use windows::Win32::UI::Input::KeyboardAndMouse::{
     INPUT, INPUT_0, INPUT_KEYBOARD, KEYBD_EVENT_FLAGS, KEYBDINPUT, KEYEVENTF_EXTENDEDKEY,
     KEYEVENTF_KEYUP, KEYEVENTF_SCANCODE, SendInput, VIRTUAL_KEY,
@@ -212,21 +213,26 @@ fn read_apps() -> Vec<AppChoice> {
     if listed.is_err() {
         return Vec::new();
     }
-    apps.sort_by_key(|a| a.name.to_lowercase());
-    apps.dedup_by(|a, b| a.name == b.name);
+    // 이름이 같은 두 판(예: x86 과 x64)도 둘 다 고를 수 있게 열 값으로만 중복을 지운다.
+    apps.sort_by(|a, b| {
+        (a.name.to_lowercase(), &a.bundle).cmp(&(b.name.to_lowercase(), &b.bundle))
+    });
+    apps.dedup_by(|a, b| a.bundle == b.bundle);
     apps
 }
 
-/// 운영체제 고르기 창. UI 스레드에서 부른다. 고르지 않으면 없음.
+/// 운영체제 고르기 창. UI 스레드(이벤트 루프)에서 부른다. 고르지 않으면 없음.
+/// 지금 앞에 있는 이 스레드의 창(설정 창)을 주인으로 띄워 설정 창 뒤로 숨지 않고, 열린 동안 설정 창을 막는다.
 fn pick(options: FILEOPENDIALOGOPTIONS) -> Option<String> {
     let _sta = Sta::enter();
-    // SAFETY: STA 안에서 고르기 창을 만들고 모달로 띄운다.
+    // SAFETY: STA 안에서 고르기 창을 만들고 모달로 띄운다. 주인 창은 이 스레드의 활성 창(없으면 없음).
     unsafe {
         let dialog: IFileOpenDialog =
             CoCreateInstance(&FileOpenDialog, None, CLSCTX_INPROC_SERVER).ok()?;
         let now = dialog.GetOptions().ok()?;
         dialog.SetOptions(now | options).ok()?;
-        dialog.Show(None).ok()?;
+        let owner = GetActiveWindow();
+        dialog.Show((!owner.is_invalid()).then_some(owner)).ok()?;
         let item = dialog.GetResult().ok()?;
         display_name(&item, SIGDN_FILESYSPATH)
     }
@@ -399,6 +405,8 @@ fn send_combo(combo: &Combo) -> Result<(), PortError> {
     all.push(input(key, true));
     let releases: Vec<INPUT> = held.iter().rev().map(|k| input(*k, true)).collect();
     all.extend(releases.iter().copied());
+    // 앞쪽 일부만 들어갔을 때(예: Win 누름만) 떼기를 다시 보내면 Win 떼기로 시작 메뉴가 열릴 수 있다.
+    // 드문 일이고, 눌린 채 남는 것보다 낫다.
     if send(&all) < all.len() {
         let mut ups = vec![input(key, true)];
         ups.extend(releases);

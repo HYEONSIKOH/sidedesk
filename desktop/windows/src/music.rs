@@ -25,7 +25,8 @@ const UNIX_EPOCH_TICKS: i64 = 116_444_736_000_000_000;
 /// 지금 등록해 둔 바뀜 알림
 struct Watching {
     changed: Changed,
-    manager_token: i64,
+    /// 세션 관리자를 아직 못 열었으면 없음(열리면 그때 건다)
+    manager_token: Option<i64>,
     session: Option<(Session, [i64; 3])>,
 }
 
@@ -49,18 +50,28 @@ fn lock(state: &Mutex<State>) -> std::sync::MutexGuard<'_, State> {
 }
 
 impl WindowsPlayer {
+    /// 세션 관리자. 처음 한 번 열고, 못 열면 잠시 뒤 다시 연다.
+    /// WinRT `join()` 에는 시간 제한이 없다. 시스템이 응답하지 않으면 음악 스레드만 멈추고
+    /// 다른 수집은 따로 스레드라 영향이 없다(위험으로 적어 둠). 그래서 기다리는 동안 잠금을 쥐지 않는다.
     fn manager(&self) -> Option<Manager> {
+        {
+            let state = lock(&self.state);
+            if let Some(manager) = &state.manager {
+                return Some(manager.clone());
+            }
+            if state.failed_at.is_some_and(|at| at.elapsed() < RETRY) {
+                return None;
+            }
+        }
+        let opened = Manager::RequestAsync().and_then(|request| request.join());
         let mut state = lock(&self.state);
-        if let Some(manager) = &state.manager {
-            return Some(manager.clone());
-        }
-        if state.failed_at.is_some_and(|at| at.elapsed() < RETRY) {
-            return None;
-        }
-        match Manager::RequestAsync().and_then(|request| request.join()) {
+        match opened {
             Ok(manager) => {
-                state.manager = Some(manager.clone());
+                let manager = state.manager.get_or_insert(manager).clone();
                 state.failed_at = None;
+                drop(state);
+                // 감시를 켰는데 그때 관리자를 못 열었으면 지금 세션 바뀜 알림을 건다.
+                self.attach(&manager);
                 Some(manager)
             }
             Err(_) => {
@@ -158,20 +169,20 @@ impl Player for WindowsPlayer {
             lock(&self.state).art_key = None;
             return Ok((Track::nothing(), None));
         }
-        let new_song = {
-            let mut state = lock(&self.state);
-            let new = state.art_key.as_deref() != Some(track.key.as_str());
-            state.art_key = Some(track.key.clone());
-            new
-        };
-        let picture = if new_song {
+        // 플레이어는 보통 제목을 먼저 알리고 그림을 뒤에 채운다. 그림을 얻었을 때만 "보냄"으로 적어,
+        // 아직 없으면 다음 읽기에서 다시 본다(domain 은 같은 곡의 늦은 그림도 받는다).
+        let sent = lock(&self.state).art_key.as_deref() == Some(track.key.as_str());
+        let picture = if sent {
+            None
+        } else {
             reference
                 .as_ref()
                 .and_then(thumbnail)
                 .and_then(|bytes| shrink(&bytes))
-        } else {
-            None
         };
+        if picture.is_some() {
+            lock(&self.state).art_key = Some(track.key.clone());
+        }
         // 세션이 바뀌었으면 알림도 새 세션으로 옮긴다.
         self.follow(&session);
         Ok((track, picture))
@@ -196,31 +207,44 @@ impl Player for WindowsPlayer {
 
     fn watch(&self, changed: Option<Changed>) {
         self.unwatch();
-        let (Some(changed), Some(manager)) = (changed, self.manager()) else {
-            return;
-        };
-        // 처리기는 알림 함수만 잡는다(플레이어를 잡지 않아 순환 참조가 없다). 새 세션의 알림은 다음 now() 에서 건다.
-        let ping = changed.clone();
-        let Ok(manager_token) =
-            manager.CurrentSessionChanged(&TypedEventHandler::new(move |_, _| {
-                ping();
-                Ok(())
-            }))
-        else {
+        let Some(changed) = changed else {
             return;
         };
         lock(&self.state).watching = Some(Watching {
             changed,
-            manager_token,
+            manager_token: None,
             session: None,
         });
-        if let Some(session) = self.session() {
-            self.follow(&session);
+        // 관리자를 못 열었으면 나중에 열릴 때(manager) 건다.
+        if let Some(manager) = self.manager() {
+            self.attach(&manager);
+            if let Ok(session) = manager.GetCurrentSession() {
+                self.follow(&session);
+            }
         }
     }
 }
 
 impl WindowsPlayer {
+    /// 감시 중이고 아직 안 걸었으면 세션 바뀜 알림을 건다.
+    /// 처리기는 알림 함수만 잡는다(플레이어를 잡지 않아 순환 참조가 없다). 새 세션의 알림은 다음 now() 에서 건다.
+    fn attach(&self, manager: &Manager) {
+        let mut state = lock(&self.state);
+        let Some(watching) = state.watching.as_mut() else {
+            return;
+        };
+        if watching.manager_token.is_some() {
+            return;
+        }
+        let ping = watching.changed.clone();
+        watching.manager_token = manager
+            .CurrentSessionChanged(&TypedEventHandler::new(move |_, _| {
+                ping();
+                Ok(())
+            }))
+            .ok();
+    }
+
     /// 지금 세션의 바뀜 알림을 건다. 이미 같은 세션이면 그대로.
     fn follow(&self, session: &Session) {
         let mut state = lock(&self.state);
@@ -268,8 +292,8 @@ impl WindowsPlayer {
         let Some(watching) = watching else {
             return;
         };
-        if let Some(manager) = manager {
-            let _ = manager.RemoveCurrentSessionChanged(watching.manager_token);
+        if let (Some(manager), Some(token)) = (manager, watching.manager_token) {
+            let _ = manager.RemoveCurrentSessionChanged(token);
         }
         if let Some((session, tokens)) = watching.session {
             remove(&session, tokens);

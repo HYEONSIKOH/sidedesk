@@ -359,12 +359,12 @@ const WINDOWS_RUNNABLE: [&str; 39] = [
 #[cfg_attr(not(windows), allow(dead_code))]
 pub fn windows_path_problem(path: &str, pathext: &str) -> Option<&'static str> {
     let slashed = path.replace('/', "\\");
-    if slashed.starts_with("\\\\") {
-        return Some("네트워크 경로와 장치 경로는 열 수 없습니다");
-    }
+    // 받는 꼴은 드라이브 글자로 시작하는 전체 경로(`C:\..`) 하나. 나머지(UNC, `\\?\`, `\??\`, 장치 경로,
+    // 상대 경로)는 모두 받지 않는다. 연결된 네트워크 드라이브(`Z:`)는 드라이브 글자라 받는다.
     let rest = match slashed.as_bytes() {
-        [drive, b':', ..] if drive.is_ascii_alphabetic() => &slashed[2..],
-        _ => slashed.as_str(),
+        [drive, b':', b'\\', ..] if drive.is_ascii_alphabetic() => &slashed[2..],
+        [b'\\', ..] => return Some("네트워크 경로와 장치 경로는 열 수 없습니다"),
+        _ => return Some("드라이브부터 시작하는 전체 경로를 고르세요"),
     };
     if rest.contains(':') {
         return Some("이 경로는 열 수 없습니다");
@@ -393,15 +393,23 @@ pub fn check_path(path: &str) -> Result<(), &'static str> {
     if path.is_empty() || path.len() > PATH_LEN || path.chars().any(char::is_control) {
         return Err("파일이나 폴더를 고르세요");
     }
+    // 윈도우는 파일을 열어 보기(canonicalize) 전에 글자로 먼저 거른다. 네트워크 경로를 열면
+    // 그것만으로 다른 컴퓨터에 로그인 정보(NTLM)가 나간다.
+    #[cfg(windows)]
+    let pathext = std::env::var("PATHEXT").unwrap_or_default();
+    #[cfg(windows)]
+    if let Some(problem) = windows_path_problem(path, &pathext) {
+        return Err(problem);
+    }
     let real = std::fs::canonicalize(path).unwrap_or_else(|_| path.into());
     #[cfg(windows)]
     {
-        let pathext = std::env::var("PATHEXT").unwrap_or_default();
-        if let Some(problem) = windows_path_problem(path, &pathext) {
-            return Err(problem);
-        }
-        // canonicalize 는 `\\?\C:\..` 모양을 돌려준다. 확장자만 다시 본다(링크가 가리키는 실제 파일).
+        // canonicalize 는 `\\?\C:\..` 모양을 돌려준다. 링크가 가리키는 실제 파일이 네트워크 공유이거나
+        // 실행 파일이면 받지 않는다(짧은 8.3 이름도 여기서 긴 이름으로 풀린다).
         let real = real.to_string_lossy();
+        if real.starts_with("\\\\?\\UNC\\") {
+            return Err("네트워크 경로와 장치 경로는 열 수 없습니다");
+        }
         let real = real.strip_prefix("\\\\?\\").unwrap_or(&real);
         if windows_runnable(real, &pathext) {
             return Err("실행 파일은 앱 열기로 등록하세요");
@@ -526,6 +534,20 @@ mod tests {
         }
         assert!(windows_path_problem(r"C:\x\a.txt:hidden.exe", pathext).is_some());
         assert!(windows_path_problem(r"C:\x\a.txt:stream", pathext).is_some());
+        for odd in [r"\??\UNC\host\share\a.txt", r"\??\C:\a.txt"] {
+            assert_eq!(
+                windows_path_problem(odd, pathext),
+                Some("네트워크 경로와 장치 경로는 열 수 없습니다"),
+                "{odd}"
+            );
+        }
+        for relative in ["a.txt", r"x\a.txt", "C:a.txt", r"C:"] {
+            assert_eq!(
+                windows_path_problem(relative, pathext),
+                Some("드라이브부터 시작하는 전체 경로를 고르세요"),
+                "{relative}"
+            );
+        }
         for good in [
             r"C:\x\plan.txt",
             r"D:\사진\a.JPG",
@@ -664,5 +686,66 @@ mod tests {
         assert_eq!(saved.next_id, 6);
         let json = serde_json::to_string(&saved).unwrap();
         assert_eq!(serde_json::from_str::<Saved>(&json).unwrap(), saved);
+    }
+
+    /// 윈도우에서 실제 파일로 본다. 네트워크 경로는 열어 보기 전에 거르므로 바로 돌아온다.
+    #[cfg(windows)]
+    #[test]
+    fn windows_real_files_and_network_paths() {
+        let start = std::time::Instant::now();
+        assert_eq!(
+            check_path(r"\\10.255.255.1\share\a.txt"),
+            Err("네트워크 경로와 장치 경로는 열 수 없습니다")
+        );
+        assert!(
+            start.elapsed() < std::time::Duration::from_secs(1),
+            "네트워크에 나가 기다림: {:?}",
+            start.elapsed()
+        );
+        let folder = std::env::temp_dir().join(format!("sidedesk-paths-{}", std::process::id()));
+        std::fs::create_dir_all(&folder).unwrap();
+        let file = |name: &str| {
+            let path = folder.join(name);
+            std::fs::write(&path, b"x").unwrap();
+            path
+        };
+        let text = file("plan.txt");
+        assert_eq!(check_path(text.to_str().unwrap()), Ok(()));
+        for runnable in ["run.bat", "go.lnk", "page.hta"] {
+            let path = file(runnable);
+            assert_eq!(
+                check_path(path.to_str().unwrap()),
+                Err("실행 파일은 앱 열기로 등록하세요"),
+                "{runnable}"
+            );
+        }
+        // 짧은 8.3 이름도 실제 이름으로 풀어 거른다(그 드라이브가 짧은 이름을 만들 때만).
+        let long = file("longer-script-name.cmd");
+        let wide: Vec<u16> = long.to_str().unwrap().encode_utf16().chain([0]).collect();
+        let mut short = vec![0u16; 1024];
+        // SAFETY: 널 끝 경로와 그 길이의 버퍼
+        let length = unsafe {
+            windows_sys::Win32::Storage::FileSystem::GetShortPathNameW(
+                wide.as_ptr(),
+                short.as_mut_ptr(),
+                short.len() as u32,
+            )
+        } as usize;
+        let short = String::from_utf16_lossy(&short[..length.min(short.len())]);
+        eprintln!("짧은 이름: {short}");
+        if length > 0 && short != long.to_str().unwrap() {
+            assert_eq!(check_path(&short), Err("실행 파일은 앱 열기로 등록하세요"));
+        }
+        // 심볼릭 링크는 가리키는 실제 파일로 본다(개발자 모드나 관리자 권한이 없으면 건너뜀).
+        let link = folder.join("notes.txt");
+        if std::os::windows::fs::symlink_file(folder.join("run.bat"), &link).is_ok() {
+            assert_eq!(
+                check_path(link.to_str().unwrap()),
+                Err("실행 파일은 앱 열기로 등록하세요")
+            );
+        } else {
+            eprintln!("심볼릭 링크를 만들 수 없어 건너뜀");
+        }
+        let _ = std::fs::remove_dir_all(&folder);
     }
 }

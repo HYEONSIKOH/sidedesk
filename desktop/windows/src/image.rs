@@ -226,6 +226,10 @@ mod tests {
             assert!(small.jpeg.len() <= BLE_ART_LIMIT);
             assert_ne!(small.hash, picture.hash);
         }
+        // 블루투스용 작은 판 길도 직접 본다(큰 판이 상한 안이면 shrink 는 작은 판을 만들지 않는다).
+        let small = shrink_to(&bmp(1200, 900), SMALL_SIDE, BLE_ART_LIMIT).expect("작은 판");
+        eprintln!("작은 판 {}바이트", small.jpeg.len());
+        assert!(small.jpeg.len() <= BLE_ART_LIMIT);
         assert!(shrink(b"not an image").is_none());
         assert!(shrink(&[]).is_none());
         // 한 변이 상한을 넘는 그림은 풀지 않는다.
