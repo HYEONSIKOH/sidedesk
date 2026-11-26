@@ -484,7 +484,6 @@ impl PhoneLinks for OnePhone {
     }
 }
 
-/// 느린 CI 서버를 생각해 고정 시간 대신 조건이 될 때까지 기다린다(최대 20초). 됐으면 true.
 /// 연결 하나를 돌리되 정해진 시간 안에 끝나지 않으면 멈춘다. 기대한 끝(등록 해제, 답 없음 등)을
 /// 놓치는 버그가 끝없는 매달림이 아니라 Ok(Stopped) 같은 분명한 실패로 드러나게 한다.
 fn within<T>(run: impl FnOnce(&AtomicBool) -> T) -> T {
@@ -505,6 +504,7 @@ fn within<T>(run: impl FnOnce(&AtomicBool) -> T) -> T {
     })
 }
 
+/// 느린 CI 서버를 생각해 고정 시간 대신 조건이 될 때까지 기다린다(최대 20초). 됐으면 true.
 fn wait_for(done: impl Fn() -> bool) -> bool {
     let deadline = std::time::Instant::now() + Duration::from_secs(20);
     while !done() {
@@ -845,7 +845,7 @@ fn bluetooth_reports_busy_when_the_phone_drops_it_at_ready() {
     air.says = PhoneSays::Busy;
     air.strict = true;
     // 멈추는 동안(부하가 크면 오래 걸림)의 재시도는 빼고, 지켜본 시간 안의 접속만 센다.
-    let mut seen = 0;
+    let (mut before, mut seen) = (0, 0);
     run_links(&[&air], &world, || {
         let busy = ServeError::Busy.to_string();
         wait_for(|| {
@@ -854,13 +854,15 @@ fn bluetooth_reports_busy_when_the_phone_drops_it_at_ready() {
                 |note| matches!(note, Note::Lost(reason) if reason == &busy),
             )
         });
-        // 거절된 뒤 바로 다시 붙지 않는지 더 본다. 보통 재시도(1초)였다면 이 사이 세 번 넘게 붙는다.
+        // 거절을 본 순간부터 2.5초 더 본다. 보통 재시도(1초)였다면 이 사이 두 번 붙는다.
+        before = air.connects.load(Ordering::Relaxed);
         thread::sleep(Duration::from_millis(2500));
         seen = air.connects.load(Ordering::Relaxed);
     });
+    // 5초 쉬므로 0 이어야 한다. 굶어서 알림이 늦게 보인 경우만 생각해 1 까지 둔다.
     assert!(
-        seen <= 2,
-        "거절된 뒤에는 5초 쉬고 다시 시도 {seen} {:?}",
+        seen - before <= 1,
+        "거절된 뒤에는 5초 쉬고 다시 시도 {before} → {seen} {:?}",
         world.notes.0.lock().unwrap()
     );
     assert_eq!(
@@ -993,15 +995,11 @@ fn a_rotated_bluetooth_address_does_not_add_a_second_connection() {
     let old = Switch::new(Link::Ble, ble(&public), phone_key.clone(), computer.clone());
     let new = Switch::new(Link::Ble, second(), phone_key, computer);
     new.unplug();
-    let wait_for = |done: &dyn Fn() -> bool| {
-        let deadline = std::time::Instant::now() + Duration::from_secs(20);
-        while !done() && std::time::Instant::now() < deadline {
-            thread::sleep(Duration::from_millis(50));
-        }
-    };
     let notes = || format!("{:?}", world.notes.0.lock().unwrap());
+    // 멈추는 동안(부하가 크면 오래 걸림)의 재접속은 빼고, 지켜본 시간 안의 값으로 단정한다.
+    let mut taken = (0, 0);
     run_links(&[&old, &new], &world, || {
-        wait_for(&|| connected_on(&world, "ble:1") > 0);
+        wait_for(|| connected_on(&world, "ble:1") > 0);
         new.plug(second());
         // 재시도 간격(RETRY)이 몇 번 지나도록 둔다.
         thread::sleep(sidedesk_domain::RETRY * 2 + Duration::from_millis(500));
@@ -1014,10 +1012,13 @@ fn a_rotated_bluetooth_address_does_not_add_a_second_connection() {
         );
         // 옛 주소가 사라지면 옛 연결이 끝나 자리를 놓고, 새 주소가 넘겨받는다.
         old.unplug();
-        wait_for(&|| connected_on(&world, "ble:2") > 0);
+        wait_for(|| connected_on(&world, "ble:2") > 0);
+        taken = (
+            connected_on(&world, "ble:2"),
+            new.connects.load(Ordering::Relaxed),
+        );
     });
-    assert_eq!(connected_on(&world, "ble:2"), 1, "{}", notes());
-    assert_eq!(new.connects.load(Ordering::Relaxed), 1, "{}", notes());
+    assert_eq!(taken, (1, 1), "넘겨받기(연결됨, 접속 수): {}", notes());
 }
 
 #[test]
