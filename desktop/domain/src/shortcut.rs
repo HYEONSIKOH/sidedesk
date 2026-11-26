@@ -402,13 +402,11 @@ pub fn check_path(path: &str) -> Result<(), &'static str> {
     if let Some(problem) = windows_path_problem(path, &pathext) {
         return Err(problem);
     }
-    let real = std::fs::canonicalize(path);
-    // 윈도우는 실제 경로를 못 풀면 받지 않는다. 풀지 못한 짧은 8.3 이름(`A237D~1.SET`)은 확장자가 달라
-    // 글자 검사를 피하기 때문이다. 없는 파일은 어차피 열 수 없다(실행 직전에도 다시 검사한다).
-    #[cfg(windows)]
-    let real = real.map_err(|_| "파일이나 폴더를 찾지 못했습니다")?;
-    #[cfg(not(windows))]
-    let real = real.unwrap_or_else(|_| path.into());
+    // 실제 경로를 못 풀면 받지 않는다. 원래 글자로 되돌아가 검사하면 길이 생긴다:
+    // 윈도우의 풀지 못한 짧은 8.3 이름(`A237D~1.SET`)은 확장자가 달라 글자 검사를 피하고,
+    // 대상이 아직 없는 링크(`notes.txt` → 나중에 생길 `run.command`)는 링크 이름으로만 검사된다.
+    // 없는 파일은 어차피 열 수 없다(실행 직전에도 다시 검사한다).
+    let real = std::fs::canonicalize(path).map_err(|_| "파일이나 폴더를 찾지 못했습니다")?;
     #[cfg(windows)]
     {
         // canonicalize 는 `\\?\C:\..` 모양을 돌려준다. 링크가 가리키는 실제 파일이 네트워크 공유이거나
@@ -618,6 +616,17 @@ mod tests {
             let link = dir.join("innocent.txt");
             std::os::unix::fs::symlink(&script, &link).unwrap();
             assert!(check_path(link.to_str().unwrap()).is_err());
+            // 대상이 없는 링크는 실제 경로를 못 풀어 받지 않는다(나중에 대상이 생겨도 등록된 채 남지 않게).
+            let dangling = dir.join("later.txt");
+            std::os::unix::fs::symlink(dir.join("not-yet.command"), &dangling).unwrap();
+            assert_eq!(
+                check_path(dangling.to_str().unwrap()),
+                Err("파일이나 폴더를 찾지 못했습니다")
+            );
+            assert_eq!(
+                check_path(dir.join("missing.txt").to_str().unwrap()),
+                Err("파일이나 폴더를 찾지 못했습니다")
+            );
             // 확장자가 있는 문서는 실행 비트가 있어도 받는다(USB 저장 장치).
             let document = dir.join("report.pdf");
             std::fs::write(&document, b"x").unwrap();
