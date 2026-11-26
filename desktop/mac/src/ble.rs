@@ -1,5 +1,6 @@
 //! 맥 CoreBluetooth 로 SideDesk 기기를 찾고 L2CAP 채널로 붙는다.
 //! CoreBluetooth 를 부르는 `unsafe` 는 이 파일에만 둔다.
+//! 아이폰은 알림 신호에 서비스 데이터를 못 실으므로, 한 번 붙어 GATT 특성에서 같은 값을 읽는다.
 
 use std::collections::{HashMap, HashSet};
 use std::ptr::NonNull;
@@ -14,14 +15,14 @@ use objc2::runtime::{AnyObject, ProtocolObject};
 use objc2::{AnyThread, DefinedClass, Message, define_class, msg_send};
 use objc2_core_bluetooth::{
     CBAdvertisementDataLocalNameKey, CBAdvertisementDataServiceDataKey, CBCentralManager,
-    CBCentralManagerDelegate, CBCentralManagerScanOptionAllowDuplicatesKey, CBL2CAPChannel,
-    CBManagerState, CBPeripheral, CBPeripheralDelegate, CBUUID,
+    CBCentralManagerDelegate, CBCentralManagerScanOptionAllowDuplicatesKey, CBCharacteristic,
+    CBL2CAPChannel, CBManagerState, CBPeripheral, CBPeripheralDelegate, CBService, CBUUID,
 };
 use objc2_foundation::{
     NSArray, NSData, NSDictionary, NSError, NSNumber, NSObject, NSObjectProtocol, NSStreamStatus,
     NSString,
 };
-use sidedesk_core::{BEACON_LEN, BLE_SERVICE, parse_service_data};
+use sidedesk_core::{BEACON_LEN, BLE_INFO, BLE_SERVICE, parse_service_data};
 use sidedesk_domain::{Conn, Link, Phone, PhoneLinks, PortError, Received};
 
 /// 이만큼 알림 신호가 안 보이면 목록에서 뺀다(붙어 있는 기기는 빼지 않는다).
@@ -36,6 +37,14 @@ const READ_WAIT: Duration = Duration::from_millis(250);
 const READ_POLL: Duration = Duration::from_millis(20);
 const WRITE_LIMIT: Duration = Duration::from_secs(5);
 const PREFIX: &str = "ble:";
+/// GATT 찾기와 읽기 한 단계의 제한
+const READ_LIMIT: Duration = Duration::from_secs(5);
+/// 아이폰 정보 읽기가 실패하면 이만큼 뒤에 다시 읽는다.
+const PROBE_RETRY: Duration = Duration::from_secs(30);
+/// 서비스 데이터 없이만 이만큼 보인 기기를 아이폰으로 보고 읽는다.
+const SETTLE: Duration = Duration::from_secs(1);
+/// 붙기가 읽는 중인 기기를 기다리는 한도
+const PROBE_WAIT: Duration = Duration::from_secs(15);
 
 /// 한 스레드가 쥐고 있다가 다른 스레드로 넘기는 CoreBluetooth 객체(기기, 채널, 스트림).
 /// 빌린 참조를 `Manager::on_queue` 로 잠깐 넘기기도 한다(부른 쪽이 끝날 때까지 기다린다).
@@ -44,10 +53,19 @@ struct Sendable<T>(T);
 // SAFETY: 위 설명대로 한 번에 한 스레드만 쓴다. 넘기는 것만 허용하고 Sync 는 붙이지 않는다.
 unsafe impl<T> Send for Sendable<T> {}
 
+/// PSM 과 알림 신호 지문
+type Info = (u16, [u8; BEACON_LEN]);
+
 struct Seen {
     peripheral: Sendable<Retained<CBPeripheral>>,
-    psm: u16,
-    beacon: [u8; BEACON_LEN],
+    /// 모르면(아직 안 읽은 아이폰) 목록에 내지 않는다.
+    info: Option<Info>,
+    /// 서비스 데이터 없이 알리는 기기(아이폰). 붙을 때마다 특성을 다시 읽는다.
+    gatt: bool,
+    /// 마지막으로 읽기에 실패한 때
+    failed: Option<Instant>,
+    /// 처음 본 때. 안드로이드도 이름만 실린 응답이 먼저 올 수 있어, 조금 지켜본 뒤에 아이폰으로 본다.
+    since: Instant,
     name: Option<String>,
     last: Instant,
 }
@@ -57,6 +75,9 @@ enum Step {
     Failed(String),
     Channel(Sendable<Retained<CBL2CAPChannel>>),
     Disconnected,
+    Services,
+    Characteristics,
+    Value(Vec<u8>),
 }
 
 #[derive(Default)]
@@ -70,6 +91,8 @@ struct State {
     tickets: u64,
     /// 붙는 중인 수. 0 일 때만 찾기를 켠다.
     connecting: usize,
+    /// 정보를 읽으려고 붙어 있는 기기
+    probing: HashSet<String>,
     version: u64,
 }
 
@@ -119,6 +142,18 @@ fn service_uuid() -> Retained<CBUUID> {
     unsafe { CBUUID::UUIDWithString(&NSString::from_str(BLE_SERVICE)) }
 }
 
+fn info_uuid() -> Retained<CBUUID> {
+    // SAFETY: 올바른 UUID 문자열
+    unsafe { CBUUID::UUIDWithString(&NSString::from_str(BLE_INFO)) }
+}
+
+fn failure(error: Option<&NSError>, otherwise: Step) -> Step {
+    match error {
+        Some(error) => Step::Failed(error.localizedDescription().to_string()),
+        None => otherwise,
+    }
+}
+
 define_class!(
     // SAFETY: NSObject 는 하위 클래스 조건이 없고, 이 클래스는 Drop 을 구현하지 않는다.
     #[unsafe(super(NSObject))]
@@ -164,27 +199,39 @@ define_class!(
             advertisement: &NSDictionary<NSString, AnyObject>,
             _rssi: &NSNumber,
         ) {
-            let Some(data) = service_data(advertisement) else {
-                return;
-            };
-            let Some((psm, beacon)) = parse_service_data(&data) else {
-                return;
+            // 찾기는 SideDesk 서비스로 걸렀으므로, 서비스 데이터가 없으면 아이폰이다.
+            let carried = match service_data(advertisement) {
+                Some(data) => match parse_service_data(&data) {
+                    Some(info) => Some(info),
+                    None => return,
+                },
+                None => None,
             };
             let name = local_name(advertisement);
             let id = peripheral_id(peripheral);
             let hub = self.ivars();
             let mut state = hub.lock();
-            let fresh = match state.seen.get(&id) {
-                Some(old) => old.psm != psm || old.beacon != beacon || (name.is_some() && old.name != name),
+            let old = state.seen.get(&id);
+            // 서비스 데이터가 없는 알림 신호(아이폰, 또는 이름만 실린 응답)는 읽어 둔 값을 남긴다.
+            let (info, gatt, failed) = match (carried, old) {
+                (Some(info), _) => (Some(info), false, None),
+                (None, Some(old)) => (old.info, old.gatt, old.failed),
+                (None, None) => (None, true, None),
+            };
+            let fresh = match old {
+                Some(old) => old.info != info || (name.is_some() && old.name != name),
                 None => true,
             };
-            let name = name.or_else(|| state.seen.get(&id).and_then(|old| old.name.clone()));
+            let name = name.or_else(|| old.and_then(|old| old.name.clone()));
+            let since = old.map_or_else(Instant::now, |old| old.since);
             state.seen.insert(
                 id,
                 Seen {
                     peripheral: Sendable(peripheral.retain()),
-                    psm,
-                    beacon,
+                    info,
+                    gatt,
+                    failed,
+                    since,
                     name,
                     last: Instant::now(),
                 },
@@ -246,6 +293,38 @@ define_class!(
                 ),
             };
             self.ivars().step(&peripheral_id(peripheral), step);
+        }
+
+        #[unsafe(method(peripheral:didDiscoverServices:))]
+        fn did_discover_services(&self, peripheral: &CBPeripheral, error: Option<&NSError>) {
+            self.ivars()
+                .step(&peripheral_id(peripheral), failure(error, Step::Services));
+        }
+
+        #[unsafe(method(peripheral:didDiscoverCharacteristicsForService:error:))]
+        fn did_discover_characteristics(
+            &self,
+            peripheral: &CBPeripheral,
+            _service: &CBService,
+            error: Option<&NSError>,
+        ) {
+            self.ivars()
+                .step(&peripheral_id(peripheral), failure(error, Step::Characteristics));
+        }
+
+        #[unsafe(method(peripheral:didUpdateValueForCharacteristic:error:))]
+        fn did_update_value(
+            &self,
+            peripheral: &CBPeripheral,
+            characteristic: &CBCharacteristic,
+            error: Option<&NSError>,
+        ) {
+            // SAFETY: 읽기 전용 속성
+            let value = unsafe { characteristic.value() }
+                .map(|data| data.to_vec())
+                .unwrap_or_default();
+            self.ivars()
+                .step(&peripheral_id(peripheral), failure(error, Step::Value(value)));
         }
     }
 );
@@ -364,6 +443,75 @@ impl Manager {
         });
     }
 
+    fn discover_services(&self, peripheral: &CBPeripheral) {
+        let peripheral = Sendable(peripheral);
+        self.on_queue(|_, _| {
+            let peripheral = &peripheral;
+            let services = NSArray::from_retained_slice(&[service_uuid()]);
+            // SAFETY: 붙은 기기에서 우리 서비스만 찾는다.
+            unsafe { peripheral.0.discoverServices(Some(&services)) };
+        });
+    }
+
+    /// 찾은 우리 서비스. 큐 안에서 읽는다.
+    fn our_service(&self, peripheral: &CBPeripheral) -> Option<Sendable<Retained<CBService>>> {
+        let peripheral = Sendable(peripheral);
+        let mut found = None;
+        self.on_queue(|_, _| {
+            let peripheral = &peripheral;
+            let ours = service_uuid();
+            // SAFETY: 읽기 전용 속성
+            let services = unsafe { peripheral.0.services() };
+            found = services
+                .and_then(|list| {
+                    list.iter().find(|service| {
+                        // SAFETY: 읽기 전용 속성
+                        unsafe { service.UUID() }.isEqual(Some(&ours))
+                    })
+                })
+                .map(Sendable);
+        });
+        found
+    }
+
+    fn discover_info(&self, peripheral: &CBPeripheral, service: &CBService) {
+        let both = Sendable((peripheral, service));
+        self.on_queue(|_, _| {
+            let both = &both;
+            let wanted = NSArray::from_retained_slice(&[info_uuid()]);
+            // SAFETY: 찾은 서비스에서 정보 특성만 찾는다.
+            unsafe {
+                both.0
+                    .0
+                    .discoverCharacteristics_forService(Some(&wanted), both.0.1)
+            };
+        });
+    }
+
+    /// 정보 특성을 찾았으면 읽기를 시작하고 true
+    fn read_info(&self, peripheral: &CBPeripheral, service: &CBService) -> bool {
+        let both = Sendable((peripheral, service));
+        let mut started = false;
+        self.on_queue(|_, _| {
+            let both = &both;
+            let wanted = info_uuid();
+            // SAFETY: 읽기 전용 속성
+            let characteristics = unsafe { both.0.1.characteristics() };
+            let Some(info) = characteristics.and_then(|list| {
+                list.iter().find(|item| {
+                    // SAFETY: 읽기 전용 속성
+                    unsafe { item.UUID() }.isEqual(Some(&wanted))
+                })
+            }) else {
+                return;
+            };
+            // SAFETY: 붙은 기기의 읽기 전용 특성을 읽는다.
+            unsafe { both.0.0.readValueForCharacteristic(&info) };
+            started = true;
+        });
+        started
+    }
+
     fn open_channel(&self, peripheral: &CBPeripheral, psm: u16) {
         let peripheral = Sendable(peripheral);
         self.on_queue(|_, _| {
@@ -396,14 +544,17 @@ impl BleLinks {
                 Some(&queue),
             )
         };
-        Self {
-            hub,
-            manager: Arc::new(Manager {
-                central,
-                delegate,
-                queue,
-            }),
-        }
+        let manager = Arc::new(Manager {
+            central,
+            delegate,
+            queue,
+        });
+        let (probe_hub, probe_manager) = (Arc::clone(&hub), Arc::clone(&manager));
+        thread::Builder::new()
+            .name("sidedesk-ble-probe".into())
+            .spawn(move || probe_forever(&probe_hub, &probe_manager))
+            .expect("블루투스 읽기 스레드를 띄우지 못함");
+        Self { hub, manager }
     }
 
     /// 오래 안 보인 기기는 지우고, 최근에 보였거나 붙어 있는 기기만 목록으로 낸다.
@@ -419,12 +570,15 @@ impl BleLinks {
             .seen
             .iter()
             .filter(|(id, seen)| seen.last.elapsed() < GONE || connected.contains(*id))
-            .map(|(id, seen)| Phone {
-                id: id.clone(),
-                model: seen.name.clone(),
-                blocked: None,
-                link: Link::Ble,
-                beacon: Some(seen.beacon),
+            .filter_map(|(id, seen)| {
+                let (_, beacon) = seen.info?;
+                Some(Phone {
+                    id: id.clone(),
+                    model: seen.name.clone(),
+                    blocked: None,
+                    link: Link::Ble,
+                    beacon: Some(beacon),
+                })
             })
             .collect();
         phones.sort_by(|a, b| a.id.cmp(&b.id));
@@ -486,23 +640,39 @@ impl PhoneLinks for BleLinks {
 
     fn connect(&self, id: &str) -> Result<Box<dyn Conn>, PortError> {
         let (tx, steps) = mpsc::channel();
-        let (peripheral, psm, ticket) = {
+        let (peripheral, info, gatt, ticket) = {
             let mut state = self.hub.lock();
+            // 정보를 읽으려고 붙어 있는 중이면 끝날 때까지 기다린다(대기자가 하나뿐이라 겹치면 단계가 엉킨다).
+            let until = Instant::now() + PROBE_WAIT;
+            while state.probing.contains(id) {
+                let Some(left) = until.checked_duration_since(Instant::now()) else {
+                    return Err(PortError::new("블루투스 기기 정보를 읽는 중입니다"));
+                };
+                state = self
+                    .hub
+                    .changed
+                    .wait_timeout(state, left)
+                    .unwrap_or_else(|lock| lock.into_inner())
+                    .0;
+            }
             // 주소가 바뀌어 사라진 기기에 10초 동안 매달리지 않는다(살아 있는 기기는 자주 보인다).
             let seen = state
                 .seen
                 .get(id)
                 .filter(|seen| seen.last.elapsed() < FRESH)
                 .ok_or_else(|| PortError::new("블루투스에서 기기가 보이지 않습니다"))?;
+            let info = seen
+                .info
+                .ok_or_else(|| PortError::new("블루투스 기기 정보를 아직 읽지 못했습니다"))?;
             let peripheral = seen.peripheral.0.clone();
-            let psm = seen.psm;
+            let gatt = seen.gatt;
             state.tickets += 1;
             let ticket = state.tickets;
             state.waiters.insert(id.to_owned(), (ticket, tx));
-            (peripheral, psm, ticket)
+            (peripheral, info, gatt, ticket)
         };
         self.manager.begin(&self.hub, &peripheral);
-        let result = self.finish_connect(id, &peripheral, psm, ticket, steps);
+        let result = self.finish_connect(id, &peripheral, info, gatt, ticket, steps);
         self.manager.end(&self.hub);
         result
     }
@@ -513,7 +683,8 @@ impl BleLinks {
         &self,
         id: &str,
         peripheral: &Retained<CBPeripheral>,
-        psm: u16,
+        (psm, beacon): Info,
+        gatt: bool,
         ticket: u64,
         steps: Receiver<Step>,
     ) -> Result<Box<dyn Conn>, PortError> {
@@ -534,6 +705,18 @@ impl BleLinks {
             state.connected.insert(id.to_owned());
             self.hub.bump(&mut state);
         }
+        // 아이폰은 앱을 다시 켜면 PSM 이 바뀌므로 붙을 때마다 다시 읽는다.
+        let psm = if gatt {
+            match read_info(&self.manager, peripheral, &steps) {
+                Ok((psm, mark)) if mark == beacon => psm,
+                Ok(_) => {
+                    return Err(self.give_up(peripheral, id, ticket, "기기의 키가 바뀌었습니다"));
+                }
+                Err(reason) => return Err(self.give_up(peripheral, id, ticket, &reason)),
+            }
+        } else {
+            psm
+        };
         self.manager.open_channel(peripheral, psm);
         let channel = match Self::wait(&steps, CHANNEL_LIMIT, true) {
             Some(Step::Channel(channel)) => channel,
@@ -660,5 +843,100 @@ impl Drop for BleConn {
         if state.connected.remove(&self.id) {
             self.hub.bump(&mut state);
         }
+    }
+}
+
+/// 붙은 기기에서 서비스, 정보 특성을 차례로 찾아 읽는다.
+fn read_info(
+    manager: &Manager,
+    peripheral: &CBPeripheral,
+    steps: &Receiver<Step>,
+) -> Result<Info, String> {
+    manager.discover_services(peripheral);
+    match BleLinks::wait(steps, READ_LIMIT, true) {
+        Some(Step::Services) => {}
+        Some(Step::Failed(reason)) => return Err(reason),
+        _ => return Err("블루투스 서비스를 찾지 못했습니다".to_owned()),
+    }
+    let service = manager
+        .our_service(peripheral)
+        .ok_or_else(|| "블루투스 서비스가 없습니다".to_owned())?;
+    manager.discover_info(peripheral, &service.0);
+    match BleLinks::wait(steps, READ_LIMIT, true) {
+        Some(Step::Characteristics) => {}
+        Some(Step::Failed(reason)) => return Err(reason),
+        _ => return Err("블루투스 기기 정보를 찾지 못했습니다".to_owned()),
+    }
+    if !manager.read_info(peripheral, &service.0) {
+        return Err("블루투스 기기 정보가 없습니다".to_owned());
+    }
+    match BleLinks::wait(steps, READ_LIMIT, true) {
+        Some(Step::Value(bytes)) => {
+            parse_service_data(&bytes).ok_or_else(|| "블루투스 기기 정보가 이상합니다".to_owned())
+        }
+        Some(Step::Failed(reason)) => Err(reason),
+        _ => Err("블루투스 기기 정보를 읽지 못했습니다".to_owned()),
+    }
+}
+
+/// 아직 정보를 모르는 아이폰 하나를 고른다. 다른 붙기가 진행 중이면 고르지 않는다.
+fn next_probe(state: &State) -> Option<(String, Retained<CBPeripheral>)> {
+    if state.problem.is_some() || state.connecting > 0 {
+        return None;
+    }
+    state
+        .seen
+        .iter()
+        .find(|(id, seen)| {
+            seen.gatt
+                && seen.info.is_none()
+                && seen.last.elapsed() < FRESH
+                && seen.since.elapsed() >= SETTLE
+                && !state.waiters.contains_key(*id)
+                && seen.failed.is_none_or(|at| at.elapsed() >= PROBE_RETRY)
+        })
+        .map(|(id, seen)| (id.clone(), seen.peripheral.0.clone()))
+}
+
+/// 아이폰 정보 읽기. 붙고, 읽고, 바로 놓는다(그래야 아이폰이 다시 알림 신호를 낸다).
+fn probe_forever(hub: &Hub, manager: &Manager) {
+    loop {
+        let (id, peripheral, ticket, steps) = {
+            let mut state = hub.lock();
+            let Some((id, peripheral)) = next_probe(&state) else {
+                let _ = hub
+                    .changed
+                    .wait_timeout(state, Duration::from_secs(1))
+                    .unwrap_or_else(|lock| lock.into_inner());
+                continue;
+            };
+            let (tx, steps) = mpsc::channel();
+            state.tickets += 1;
+            let ticket = state.tickets;
+            state.waiters.insert(id.clone(), (ticket, tx));
+            state.probing.insert(id.clone());
+            (id, peripheral, ticket, steps)
+        };
+        manager.begin(hub, &peripheral);
+        let read = match BleLinks::wait(&steps, CONNECT_LIMIT, false) {
+            Some(Step::Connected) => read_info(manager, &peripheral, &steps),
+            Some(Step::Failed(reason)) => Err(reason),
+            _ => Err("블루투스로 붙지 못했습니다".to_owned()),
+        };
+        manager.cancel(&peripheral);
+        hub.forget_waiter(&id, ticket);
+        manager.end(hub);
+        let mut state = hub.lock();
+        state.probing.remove(&id);
+        if let Some(seen) = state.seen.get_mut(&id) {
+            match read {
+                Ok(info) => {
+                    seen.info = Some(info);
+                    seen.failed = None;
+                }
+                Err(_) => seen.failed = Some(Instant::now()),
+            }
+        }
+        hub.bump(&mut state);
     }
 }
