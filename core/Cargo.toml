@@ -8,7 +8,16 @@ name = "sidedesk_core"
 crate-type = ["lib", "cdylib", "staticlib"]
 
 [dependencies]
+getrandom = "0.3"
 prost = "0.14.6"
+sha2 = "0.11.1"
+snow = { version = "0.10.0", default-features = false, features = [
+    "default-resolver",
+    "use-chacha20poly1305",
+    "use-blake2",
+    "use-curve25519",
+    "use-getrandom",
+] }
 thiserror = "2.0.21"
 uniffi = { version = "0.32.2", optional = true }
 
