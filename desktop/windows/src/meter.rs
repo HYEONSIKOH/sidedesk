@@ -222,7 +222,9 @@ impl Meter for WindowsMeter {
         let gpu = match state.gpu.as_ref().map(Gpu::read) {
             Some(Ok(value)) => value,
             Some(Err(())) => {
+                // 읽기가 망가졌으면 닫고, 열기 실패와 같이 잠시 뒤에 다시 연다.
                 state.gpu = None;
+                state.gpu_retry = Some(Instant::now() + GPU_RETRY);
                 None
             }
             None => None,
