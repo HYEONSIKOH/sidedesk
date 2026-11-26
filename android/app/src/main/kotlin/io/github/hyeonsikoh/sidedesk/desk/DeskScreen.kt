@@ -177,11 +177,13 @@ private fun PerfScreen(state: DeskState) {
 
 @Composable
 private fun Gauge(label: String, value: Float?, modifier: Modifier) {
-    Box(modifier.clip(RoundedCornerShape(22.dp)).background(Palette.card)) {
+    BoxWithConstraints(modifier.clip(RoundedCornerShape(22.dp)).background(Palette.card)) {
+        // 좁은 칸에서도 숫자와 % 가 한 줄에 들어가게 칸 너비에 맞춘다.
+        val size = minOf(38f, (maxWidth.value - 28f) / 1.6f).sp
         Liquid(value, Modifier.fillMaxSize())
         Column(Modifier.padding(14.dp)) {
             Text(label, color = Palette.ink, fontSize = 14.sp)
-            Percent(value, 38.sp)
+            Percent(value, size)
         }
     }
 }
@@ -225,6 +227,8 @@ private fun Percent(value: Float?, size: TextUnit, decimals: Boolean = false) {
         color = Palette.ink,
         fontSize = size,
         fontWeight = FontWeight.Medium,
+        maxLines = 1,
+        softWrap = false,
     )
 }
 
