@@ -72,6 +72,8 @@ pub struct Board {
     changed: Mutex<Option<Listener>>,
     code_wait: Duration,
     weather: Option<&'static dyn WeatherSetup>,
+    /// 키 저장과 지우기를 한 줄로 세운다. 키체인이 사람에게 물어도 화면 상태 잠금은 잡지 않는다.
+    key_io: Mutex<()>,
 }
 
 impl Board {
@@ -88,6 +90,7 @@ impl Board {
             changed: Mutex::new(None),
             code_wait: CODE_WAIT,
             weather: None,
+            key_io: Mutex::new(()),
         }
     }
 
@@ -187,14 +190,21 @@ impl Board {
         };
         thread::spawn(move || {
             let check = setup.check_key(&key);
+            let saved = {
+                let _io = self.key_io.lock().unwrap_or_else(|lock| lock.into_inner());
+                // 지우기나 새 넣기는 번호를 먼저 올리므로, 여기서 번호가 같으면 이 저장이 마지막이다.
+                if self.lock().key_round != round {
+                    return;
+                }
+                match check {
+                    KeyCheck::Good | KeyCheck::Limit => setup.save_key(&key).map(|_| true),
+                    _ => Ok(false),
+                }
+            };
             let mut state = self.lock();
             if state.key_round != round {
                 return;
             }
-            let saved = match check {
-                KeyCheck::Good | KeyCheck::Limit => setup.save_key(&key).map(|_| true),
-                _ => Ok(false),
-            };
             let (text, good) = match (check, saved) {
                 (_, Err(error)) => (error.0, false),
                 (KeyCheck::Good, _) => ("확인했습니다".to_owned(), true),
@@ -220,17 +230,33 @@ impl Board {
         });
     }
 
-    fn clear_key(&self) {
+    /// 번호를 먼저 올려 늦게 끝난 확인이 저장하지 못하게 한 뒤 지운다.
+    /// 키체인이 물을 수 있어 창 스레드가 아닌 곳에서 지운다.
+    fn clear_key(&'static self) {
         let Some(setup) = self.weather.filter(|setup| setup.supported()) else {
             return;
         };
-        let result = setup.clear_key();
-        let mut state = self.lock();
-        state.key_round += 1;
-        state.checking = false;
-        state.key_result = result.err().map(|error| Notice {
-            text: error.0,
-            good: false,
+        let round = {
+            let mut state = self.lock();
+            state.key_round += 1;
+            state.checking = false;
+            state.key_result = None;
+            state.key_round
+        };
+        thread::spawn(move || {
+            let result = {
+                let _io = self.key_io.lock().unwrap_or_else(|lock| lock.into_inner());
+                setup.clear_key()
+            };
+            let mut state = self.lock();
+            if state.key_round == round {
+                state.key_result = result.err().map(|error| Notice {
+                    text: error.0,
+                    good: false,
+                });
+            }
+            drop(state);
+            self.publish();
         });
     }
 
@@ -1010,7 +1036,7 @@ mod tests {
         assert!(snapshot.contains("확인했습니다"));
         assert!(!snapshot.contains("Abc"));
         board.command(r#"{"kma-key-clear":""}"#);
-        assert!(setup.saved.lock().unwrap().is_none());
+        wait_until(|| setup.saved.lock().unwrap().is_none());
         assert!(board.snapshot().contains(r#""has_key":false"#));
     }
 
@@ -1043,6 +1069,35 @@ mod tests {
         thread::sleep(Duration::from_millis(50));
         assert!(setup.saved.lock().unwrap().is_none());
         assert!(!board.snapshot().contains("확인했습니다"));
+    }
+
+    #[test]
+    fn a_clear_waits_for_a_save_in_progress_and_wins() {
+        let (board, setup) = weather_board();
+        // 저장이 시작된 뒤 지우기가 와도 키가 남지 않는다.
+        let (tell, answer) = mpsc::channel();
+        *setup.answer.lock().unwrap() = Some(answer);
+        board.command(r#"{"kma-key":"first"}"#);
+        let io = board.key_io.lock().unwrap();
+        tell.send(KeyCheck::Good).unwrap();
+        thread::sleep(Duration::from_millis(20));
+        board.command(r#"{"kma-key-clear":""}"#);
+        drop(io);
+        wait_until(|| {
+            setup.saved.lock().unwrap().is_none() && !board.snapshot().contains("확인했습니다")
+        });
+        thread::sleep(Duration::from_millis(30));
+        assert!(setup.saved.lock().unwrap().is_none());
+    }
+
+    fn wait_until(done: impl Fn() -> bool) {
+        for _ in 0..200 {
+            if done() {
+                return;
+            }
+            thread::sleep(Duration::from_millis(5));
+        }
+        panic!("기다려도 되지 않음");
     }
 
     #[test]

@@ -65,14 +65,21 @@ impl Kma {
         }
     }
 
-    /// 국내 격자가 아니면 바로 실패한다.
+    /// 기상청이 맡는 곳인지. 국외면 부르지 않는다.
+    pub fn covers(place: Place) -> bool {
+        let latitude = f64::from(place.latitude) / 10.0;
+        let longitude = f64::from(place.longitude) / 10.0;
+        in_korea(latitude, longitude)
+    }
+
+    /// 국외면 바로 실패한다(고르는 쪽은 `covers` 로 먼저 거른다).
     pub fn fetch(&self, place: Place, key: &Secret, now: SystemTime) -> Result<Weather, PortError> {
+        if !Self::covers(place) {
+            return Err(failed());
+        }
         let latitude = f64::from(place.latitude) / 10.0;
         let longitude = f64::from(place.longitude) / 10.0;
         let cell = grid(latitude, longitude);
-        if !in_korea(cell) {
-            return Err(failed());
-        }
         let kst = Kst::from(now);
         let (temperature, now_pty) = self.nowcast(key, cell, &kst)?;
         let (sky, pty) = self.sky(key, cell, &kst)?;
@@ -164,6 +171,8 @@ impl Kma {
         let base = forecast_base(kst);
         let stamp = format!("{}{:02}00", base.date(), base.hour);
         let mut cache = self.lock();
+        // 지난 발표의 기억은 다른 격자 것도 지운다(다녀간 위치를 오래 들고 있지 않게).
+        cache.forecast.retain(|_, forecast| forecast.base == stamp);
         if cache.forecast.get(&cell).is_none_or(|f| f.base != stamp) {
             drop(cache);
             let items = self.call(FORECAST, key, &base, FORECAST_ROWS, cell)?;
@@ -255,8 +264,15 @@ pub fn grid(latitude: f64, longitude: f64) -> (i32, i32) {
     (x as i32, y as i32)
 }
 
-fn in_korea((x, y): (i32, i32)) -> bool {
-    (1..=149).contains(&x) && (1..=253).contains(&y)
+/// 남한과 그 섬. 격자 범위만으로는 후쿠오카, 쓰시마, 평양도 들어오므로 위경도 상자로 좁힌다.
+/// 대략 북위 33~38.7, 동경 124.5~132 에서 쓰시마와 규슈 쪽(북위 34.8 아래, 동경 129.2 넘음)을 뺀다.
+/// 휴전선은 직선이 아니라 북쪽 끝 일부(개성 등)는 국내로 잡힌다.
+fn in_korea(latitude: f64, longitude: f64) -> bool {
+    let (x, y) = grid(latitude, longitude);
+    let grid = (1..=149).contains(&x) && (1..=253).contains(&y);
+    let boxed = (33.0..=38.7).contains(&latitude) && (124.5..=132.0).contains(&longitude);
+    let japan = latitude <= 34.8 && longitude >= 129.2;
+    grid && boxed && !japan
 }
 
 /// 매시 40분 이후면 그 시각, 아니면 한 시간 전
@@ -305,7 +321,11 @@ fn daily_base(kst: &Kst) -> Kst {
 }
 
 /// 키에 `%` 가 있으면 이미 인코딩된 것으로 보고 그대로 쓴다.
-fn encode_key(key: &str) -> String {
+fn encode_key(key: &str) -> Secret {
+    Secret::new(encode(key))
+}
+
+fn encode(key: &str) -> String {
     if key.contains('%') {
         return key.to_owned();
     }
@@ -324,7 +344,7 @@ fn url(operation: &str, key: &Secret, base: &Kst, rows: u32, (x, y): (i32, i32))
     Secret::new(format!(
         "{BASE}/{operation}?serviceKey={}&pageNo=1&numOfRows={rows}&dataType=JSON\
          &base_date={}&base_time={:02}00&nx={x}&ny={y}",
-        encode_key(key.expose()),
+        encode_key(key.expose()).expose(),
         base.date(),
         base.hour,
     ))
@@ -437,9 +457,27 @@ mod tests {
     fn grid_of_known_places() {
         assert_eq!(grid(37.5665, 126.9780), (60, 127));
         assert_eq!(grid(37.6, 127.0), (60, 127));
-        assert!(in_korea(grid(35.2, 129.1)));
-        assert!(!in_korea(grid(51.5, -0.1)));
-        assert!(!in_korea(grid(-33.9, 151.2)));
+        for (lat, lon) in [
+            (35.1, 129.0),
+            (33.5, 126.5),
+            (37.5, 130.9),
+            (37.2, 131.9),
+            (34.9, 128.6),
+            (37.9, 124.7),
+        ] {
+            assert!(in_korea(lat, lon), "{lat}, {lon}");
+        }
+        // 후쿠오카, 쓰시마, 평양, 단둥, 런던, 시드니
+        for (lat, lon) in [
+            (33.6, 130.4),
+            (34.4, 129.3),
+            (39.0, 125.8),
+            (40.1, 124.4),
+            (51.5, -0.1),
+            (-33.9, 151.2),
+        ] {
+            assert!(!in_korea(lat, lon), "{lat}, {lon}");
+        }
     }
 
     #[test]
@@ -485,8 +523,8 @@ mod tests {
 
     #[test]
     fn keys_are_encoded_once() {
-        assert_eq!(encode_key("ab+c/d=="), "ab%2Bc%2Fd%3D%3D");
-        assert_eq!(encode_key("ab%2Bc"), "ab%2Bc");
+        assert_eq!(encode_key("ab+c/d==").expose(), "ab%2Bc%2Fd%3D%3D");
+        assert_eq!(encode_key("ab%2Bc").expose(), "ab%2Bc");
     }
 
     fn nowcast_body(t1h: &str, pty: &str) -> String {
@@ -585,6 +623,30 @@ mod tests {
         kma.fetch(seoul(), &key, afternoon() + Duration::from_secs(900))
             .unwrap();
         assert_eq!(get.calls.lock().unwrap().len(), 4);
+    }
+
+    #[test]
+    fn old_forecasts_and_other_days_are_forgotten() {
+        let get = fake(nowcast_body("10.2", "0"), "3", "0", "5.0", "16.0");
+        let kma = Kma::new(get);
+        let key = Secret::new("k");
+        kma.fetch(seoul(), &key, afternoon()).unwrap();
+        let busan = Place {
+            latitude: 352,
+            longitude: 1291,
+        };
+        kma.fetch(busan, &key, afternoon()).unwrap();
+        assert_eq!(kma.lock().forecast.len(), 2);
+        // 다음 발표(17시)가 되면 지난 발표 기억은 다른 격자 것도 지운다.
+        let evening = afternoon() + Duration::from_secs(3 * 3600);
+        let _ = kma.fetch(seoul(), &key, evening);
+        assert_eq!(kma.lock().forecast.len(), 1);
+        assert!(
+            kma.lock()
+                .daily
+                .values()
+                .all(|daily| daily.date == "20261127")
+        );
     }
 
     #[test]

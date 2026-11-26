@@ -3,7 +3,7 @@
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant, SystemTime};
+use std::time::{Duration, SystemTime};
 
 use sidedesk_core::Weather;
 use sidedesk_domain::{Choice, Place, PortError, Secret, WeatherSource};
@@ -23,7 +23,8 @@ pub trait Settings: Send + Sync {
 #[derive(Default)]
 struct Health {
     failures: u32,
-    resting_until: Option<Instant>,
+    /// 벽시계로 센다(맥이 잠든 동안도 쉼이 흐른다).
+    resting_until: Option<SystemTime>,
     /// 키가 바뀌었는지 보려고 키의 해시만 든다.
     key: Option<u64>,
 }
@@ -46,7 +47,8 @@ impl Chooser {
     }
 
     fn try_kma(&self, place: Place) -> Option<Weather> {
-        if self.settings.choice() != Choice::Kma {
+        // 국외는 기상청을 쓰지 않을 뿐 실패가 아니다. 쉼 셈에 넣지 않는다.
+        if self.settings.choice() != Choice::Kma || !Kma::covers(place) {
             return None;
         }
         let key = self.settings.kma_key()?;
@@ -63,7 +65,7 @@ impl Chooser {
             }
             if health
                 .resting_until
-                .is_some_and(|until| Instant::now() < until)
+                .is_some_and(|until| SystemTime::now() < until)
             {
                 return None;
             }
@@ -80,7 +82,7 @@ impl Chooser {
                 health.failures += 1;
                 if health.failures >= KMA_FAILURES {
                     health.failures = 0;
-                    health.resting_until = Some(Instant::now() + KMA_REST);
+                    health.resting_until = Some(SystemTime::now() + KMA_REST);
                 }
                 None
             }
@@ -166,6 +168,22 @@ mod tests {
         let weather = chooser.fetch(SEOUL).unwrap();
         assert_eq!(weather.provider, Provider::OpenMeteo as i32);
         assert_eq!(*get.kma.lock().unwrap(), 0);
+    }
+
+    #[test]
+    fn abroad_does_not_count_as_a_kma_failure() {
+        let (chooser, get, _) = chooser(Choice::Kma, Some("k"));
+        let london = Place {
+            latitude: 515,
+            longitude: -1,
+        };
+        for _ in 0..5 {
+            assert!(chooser.fetch(london).is_ok());
+        }
+        assert_eq!(*get.kma.lock().unwrap(), 0);
+        // 국내는 그대로 기상청을 먼저 해 본다.
+        chooser.fetch(SEOUL).unwrap();
+        assert_eq!(*get.kma.lock().unwrap(), 1);
     }
 
     #[test]

@@ -73,7 +73,7 @@ impl MacKeychain {
 }
 
 fn broken(what: &str) -> PortError {
-    // 키체인 오류 번호만 남기고 값은 넣지 않는다.
+    // 문장에는 키 값도 키체인 오류 번호도 넣지 않는다.
     PortError::new(format!("키체인에서 {what} 못했습니다"))
 }
 

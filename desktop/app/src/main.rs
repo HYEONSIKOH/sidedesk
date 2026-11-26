@@ -69,6 +69,25 @@ impl Prompt for Terminal {
     }
 }
 
+/// 성능과 프로세스만 모으는 묶음. 날씨는 `hub` 가 더한다.
+#[cfg(target_os = "macos")]
+fn collectors() -> Hub {
+    Hub::new(
+        Box::new(MacMeter::default()),
+        Box::new(MacProcesses::default()),
+        Cadence::default(),
+    )
+}
+
+#[cfg(target_os = "windows")]
+fn collectors() -> Hub {
+    Hub::new(
+        Box::new(WindowsMeter),
+        Box::new(WindowsProcesses),
+        Cadence::default(),
+    )
+}
+
 /// 맥은 날씨를 받고, 윈도우는 받지 않는다(설정 창에 "받지 않음").
 #[cfg(target_os = "macos")]
 fn hub(folder: &Path) -> (Hub, Arc<WeatherPrefs>) {
@@ -79,12 +98,7 @@ fn hub(folder: &Path) -> (Hub, Arc<WeatherPrefs>) {
         Some(Arc::clone(&get)),
     ));
     let weather = sidedesk_weather::Chooser::new(prefs.clone(), get);
-    let hub = Hub::new(
-        Box::new(MacMeter::default()),
-        Box::new(MacProcesses::default()),
-        Cadence::default(),
-    )
-    .with_weather(
+    let hub = collectors().with_weather(
         Box::new(weather),
         sidedesk_domain::WeatherCadence::default(),
     );
@@ -98,12 +112,7 @@ fn hub(folder: &Path) -> (Hub, Arc<WeatherPrefs>) {
         Box::new(WindowsSecrets),
         None,
     ));
-    let hub = Hub::new(
-        Box::new(WindowsMeter),
-        Box::new(WindowsProcesses),
-        Cadence::default(),
-    );
-    (hub, prefs)
+    (collectors(), prefs)
 }
 
 fn run() -> Result<(), String> {
@@ -134,8 +143,8 @@ fn run() -> Result<(), String> {
 fn pair() -> Result<(), String> {
     let folder = store::folder().map_err(|e| e.0)?;
     let _lock = store::lock(&folder).map_err(|e| e.0)?;
-    // 등록만 하므로 구독이 없고 수집도 돌리지 않는다.
-    let (hub, _) = hub(&folder);
+    // 등록만 하므로 구독이 없고 수집도 돌리지 않는다. 날씨 설정(키체인)도 열지 않는다.
+    let hub = collectors();
     let keys = FileKeys::new(folder);
     let links = AdbLinks::default();
     let phones: Vec<_> = links
