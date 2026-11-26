@@ -21,13 +21,18 @@ class LinkOwner(private val nanos: () -> Long = System::nanoTime) {
     val sessions = MutableStateFlow<List<AiSession>?>(null)
     val forge = MutableStateFlow<Forge?>(null)
     val alerts = MutableSharedFlow<AiAlert>(extraBufferCapacity = 64)
+    val shortcuts = MutableStateFlow<List<Shortcut>?>(null)
+    /** 단축키 목록을 보낸 컴퓨터. 번호는 컴퓨터마다 따로라, 다른 컴퓨터에 보내지 않으려고 기억한다. */
+    private var shortcutsFrom: ByteArray? = null
+    /** 그 목록과 함께 온 장부 번호. 실행할 때 돌려주면 컴퓨터가 다른 장부의 번호를 거절한다. */
+    private var shortcutsBook = 0L
     /** 이 세대에서 받은 알림 번호. 새 연결이면 비운다(컴퓨터가 다시 켜지면 번호가 1부터 다시 간다). */
     private val seenAlerts = HashSet<Long>()
     private var seenFor = 0
     val location = AtomicReference<LocationState>(LocationState.Unknown)
-    val killResults = MutableSharedFlow<KillResult>(extraBufferCapacity = 64)
+    val results = MutableSharedFlow<CommandResult>(extraBufferCapacity = 64)
     val subscription = AtomicReference(Subscription.NONE)
-    private class Pending(val command: KillCommand, val computer: ByteArray, val at: Long)
+    private class Pending(val command: Command, val computer: ByteArray, val at: Long)
 
     private val kills = LinkedHashMap<Long, Pending>()
     /** 마지막으로 키를 확인한 컴퓨터. 끊긴 뒤에도 남겨 같은 컴퓨터가 다시 붙으면 밀린 명령을 보낸다. */
@@ -68,6 +73,7 @@ class LinkOwner(private val nanos: () -> Long = System::nanoTime) {
         generation += 1
         current = Holder(Via.Bluetooth, computer, close, generation)
         lastComputer = computer
+        forgetShortcutsOfOthers(computer)
         answer.set(null)
         return generation
     }
@@ -77,6 +83,39 @@ class LinkOwner(private val nanos: () -> Long = System::nanoTime) {
         val now = current?.takeIf { it.generation == mine } ?: return
         now.computer = computer
         lastComputer = computer
+        forgetShortcutsOfOthers(computer)
+    }
+
+    /** 다른 컴퓨터가 붙으면 앞 컴퓨터의 단축키 목록을 바로 지운다. 화면이 붙음으로 바뀌기 전이다. */
+    private fun forgetShortcutsOfOthers(computer: ByteArray) {
+        val from = shortcutsFrom ?: return
+        if (from.contentEquals(computer)) return
+        shortcuts.value = null
+        shortcutsFrom = null
+    }
+
+    fun receivedShortcuts(mine: Int, book: Long, value: List<Shortcut>) = synchronized(this) {
+        val now = current?.takeIf { it.generation == mine } ?: return@synchronized
+        val computer = now.computer ?: return@synchronized
+        shortcuts.value = value
+        shortcutsFrom = computer
+        shortcutsBook = book
+    }
+
+    /**
+     * 지금 붙은 컴퓨터가 보낸 목록에 있는 단축키만 명령으로 둔다.
+     * 목록이 다른 컴퓨터 것이거나, 붙어 있지 않거나, 목록에 없는 번호면 보내지 않고 false 다.
+     */
+    fun runShortcut(command: RunShortcut): Boolean {
+        val booked = synchronized(this) {
+            val from = shortcutsFrom
+            val now = current?.computer
+            val ok = from != null && now != null && from.contentEquals(now) &&
+                shortcuts.value.orEmpty().any { it.id == command.shortcutId }
+            if (ok) command.copy(book = shortcutsBook) else null
+        } ?: return false
+        send(booked)
+        return true
     }
 
     @Synchronized
@@ -96,18 +135,18 @@ class LinkOwner(private val nanos: () -> Long = System::nanoTime) {
     }
 
     /** 지금 컴퓨터 앞으로 명령을 둔다. 아는 컴퓨터가 없으면 바로 실패로 알린다. */
-    fun kill(command: KillCommand) {
+    fun send(command: Command) {
         val queued = synchronized(this) {
             val computer = lastComputer ?: return@synchronized false
             kills[command.commandId] = Pending(command, computer, nanos())
             true
         }
-        if (!queued) killResults.tryEmit(KillResult(command.commandId, false, NOT_CONNECTED))
+        if (!queued) results.tryEmit(CommandResult(command.commandId, false, NOT_CONNECTED))
     }
 
     /** 이 컴퓨터 앞으로 둔, 기한이 지나지 않은 명령 */
     @Synchronized
-    fun pendingKills(computer: ByteArray): List<KillCommand> {
+    fun pendingCommands(computer: ByteArray): List<Command> {
         val now = nanos()
         return kills.values
             .filter { it.computer.contentEquals(computer) && now - it.at <= KILL_LIMIT_NANOS }
@@ -117,7 +156,7 @@ class LinkOwner(private val nanos: () -> Long = System::nanoTime) {
     /** 기한 안에 결과가 오지 않은 명령을 지우고 실패로 알린다. */
     fun giveUp(commandId: Long) {
         val known = synchronized(this) { kills.remove(commandId) != null }
-        if (known) killResults.tryEmit(KillResult(commandId, false, NOT_CONNECTED))
+        if (known) results.tryEmit(CommandResult(commandId, false, NOT_CONNECTED))
     }
 
     /** 받은 값은 지금 연결 것만 받는다. */
@@ -161,9 +200,9 @@ class LinkOwner(private val nanos: () -> Long = System::nanoTime) {
     }
 
     /** 명령 결과는 어느 연결로 왔든 버리지 않는다. */
-    fun receivedKill(result: KillResult) {
+    fun receivedResult(result: CommandResult) {
         val known = synchronized(this) { kills.remove(result.commandId) != null }
-        if (known) killResults.tryEmit(result)
+        if (known) results.tryEmit(result)
     }
 
     @Synchronized

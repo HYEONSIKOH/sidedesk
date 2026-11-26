@@ -12,10 +12,13 @@ class FakeLink : ComputerLink {
     override val forge = MutableStateFlow<Forge?>(null)
     override val alerts = MutableSharedFlow<AiAlert>(extraBufferCapacity = 8)
     val locations = mutableListOf<LocationState>()
-    override val killResults = MutableSharedFlow<KillResult>(extraBufferCapacity = 8)
+    override val results = MutableSharedFlow<CommandResult>(extraBufferCapacity = 8)
     val answers = mutableListOf<Boolean>()
     val subscriptions = mutableListOf<Subscription>()
-    val kills = mutableListOf<KillCommand>()
+    val kills = mutableListOf<Command>()
+    override val shortcuts = MutableStateFlow<List<Shortcut>?>(null)
+    /** runShortcut 이 받아들일지 */
+    var acceptShortcuts = true
 
     override fun start() = Unit
 
@@ -33,8 +36,14 @@ class FakeLink : ComputerLink {
         locations += location
     }
 
-    override fun kill(command: KillCommand) {
+    override fun send(command: Command) {
         kills += command
+    }
+
+    override fun runShortcut(command: RunShortcut): Boolean {
+        if (!acceptShortcuts) return false
+        kills += command
+        return true
     }
 
     val givenUp = mutableListOf<Long>()
