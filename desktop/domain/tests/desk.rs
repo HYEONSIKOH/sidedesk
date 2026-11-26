@@ -1,8 +1,8 @@
 //! 구독, 수집 주기, 멈춤, 명령 중복을 가짜 수집기와 가짜 폰으로 시험한다.
 
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
+use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -582,4 +582,155 @@ fn weather_notices_do_not_disturb_performance_collection() {
         assert!((5..=14).contains(&performance), "성능 {performance}");
         hub.stop();
     });
+}
+
+/// 시험이 단계를 바꿔 주는 가짜 기록
+struct Log(Mutex<Vec<sidedesk_domain::SessionFacts>>, AtomicUsize);
+
+impl sidedesk_domain::SessionLog for Log {
+    fn poll(&self) -> Result<Vec<sidedesk_domain::SessionFacts>, PortError> {
+        self.1.fetch_add(1, Ordering::SeqCst);
+        Ok(self.0.lock().unwrap().clone())
+    }
+}
+
+struct SharedLog(Arc<Log>);
+
+impl sidedesk_domain::SessionLog for SharedLog {
+    fn poll(&self) -> Result<Vec<sidedesk_domain::SessionFacts>, PortError> {
+        self.0.poll()
+    }
+}
+
+/// 숫자를 주고, 끝낼 때 불렸는지 남기는 가짜 gh/glab
+struct Counter(AtomicUsize, AtomicBool);
+
+impl sidedesk_domain::Forges for Counter {
+    fn counts(&self) -> sidedesk_core::Forge {
+        self.0.fetch_add(1, Ordering::SeqCst);
+        sidedesk_core::Forge::default()
+    }
+
+    fn stop(&self) {
+        self.1.store(true, Ordering::SeqCst);
+    }
+}
+
+struct SharedForge(Arc<Counter>);
+
+impl sidedesk_domain::Forges for SharedForge {
+    fn counts(&self) -> sidedesk_core::Forge {
+        self.0.counts()
+    }
+
+    fn stop(&self) {
+        self.0.stop()
+    }
+}
+
+fn session(phase: sidedesk_domain::Phase, seconds_ago: u64) -> sidedesk_domain::SessionFacts {
+    sidedesk_domain::SessionFacts {
+        key: "claude:1".into(),
+        tool: sidedesk_core::AiTool::ClaudeCode,
+        title: "작업".into(),
+        project: "폴더".into(),
+        open: true,
+        phase,
+        last_activity: std::time::SystemTime::now() - Duration::from_secs(seconds_ago),
+    }
+}
+
+fn quick_ai() -> sidedesk_domain::AiCadence {
+    sidedesk_domain::AiCadence {
+        poll: Duration::from_millis(20),
+        ..sidedesk_domain::AiCadence::default()
+    }
+}
+
+fn wait_for(mut done: impl FnMut() -> bool) {
+    let start = Instant::now();
+    while !done() {
+        assert!(
+            start.elapsed() < Duration::from_secs(2),
+            "기다려도 되지 않음"
+        );
+        thread::sleep(Duration::from_millis(5));
+    }
+}
+
+#[test]
+fn ai_sessions_flow_and_stop_quietly_when_nobody_watches() {
+    use sidedesk_domain::Phase;
+    let log = Arc::new(Log(
+        Mutex::new(vec![session(Phase::Working, 0)]),
+        AtomicUsize::new(0),
+    ));
+    let forge = Arc::new(Counter(AtomicUsize::new(0), AtomicBool::new(false)));
+    let counts = Counts::default();
+    let hub = hub(&counts).with_ai(
+        Box::new(SharedLog(Arc::clone(&log))),
+        Some(Box::new(SharedForge(Arc::clone(&forge)))),
+        quick_ai(),
+    );
+    thread::scope(|scope| {
+        scope.spawn(|| hub.run_ai());
+        scope.spawn(|| hub.run_forge());
+        let _stopper = Stopper(&hub);
+        // 아무도 안 보면 읽지 않는다.
+        thread::sleep(Duration::from_millis(60));
+        assert_eq!(log.1.load(Ordering::SeqCst), 0);
+
+        let near = hub.join();
+        let far = hub.join();
+        near.set(&watch(View::Ai, &[]));
+        far.set(&watch(View::Performance, &[View::Ai]));
+        let got = |phone: &sidedesk_domain::Subscriber<'_>| {
+            phone
+                .take()
+                .into_iter()
+                .fold((0, 0, 0), |(s, a, f), body| match body {
+                    Body::AiSessions(_) => (s + 1, a, f),
+                    Body::AiAlert(_) => (s, a + 1, f),
+                    Body::Forge(_) => (s, a, f + 1),
+                    _ => (s, a, f),
+                })
+        };
+        wait_for(|| log.1.load(Ordering::SeqCst) >= 2);
+        let (sessions, alerts, forges) = got(&near);
+        assert_eq!((sessions, alerts), (1, 0));
+        assert_eq!(forges, 1);
+        assert_eq!(got(&far), (1, 0, 0));
+        assert_eq!(forge.0.load(Ordering::SeqCst), 1);
+
+        // 답변 대기로 바뀌면 두 기기 모두 알림 하나
+        *log.0.lock().unwrap() = vec![session(Phase::Waiting, 0)];
+        let mut near_got = (0, 0, 0);
+        let mut far_got = (0, 0, 0);
+        wait_for(|| {
+            let a = got(&near);
+            let b = got(&far);
+            near_got = (near_got.0 + a.0, near_got.1 + a.1, 0);
+            far_got = (far_got.0 + b.0, far_got.1 + b.1, 0);
+            near_got.1 == 1 && far_got.1 == 1
+        });
+
+        // 둘 다 안 보는 사이 끝났다가 다시 보면 알림이 없다.
+        *log.0.lock().unwrap() = vec![session(Phase::Working, 0)];
+        thread::sleep(Duration::from_millis(60));
+        near.set(&Subscribe::default());
+        far.set(&Subscribe::default());
+        thread::sleep(Duration::from_millis(40));
+        let polled = log.1.load(Ordering::SeqCst);
+        *log.0.lock().unwrap() = vec![session(Phase::TurnEnded, 60)];
+        thread::sleep(Duration::from_millis(100));
+        assert_eq!(log.1.load(Ordering::SeqCst), polled);
+        near.set(&watch(View::Ai, &[]));
+        thread::sleep(Duration::from_millis(100));
+        let (sessions, alerts, _) = got(&near);
+        assert_eq!(alerts, 0);
+        assert!(sessions >= 1);
+
+        hub.stop();
+    });
+    assert!(forge.1.load(Ordering::SeqCst));
 }

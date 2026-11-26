@@ -9,7 +9,8 @@ use sidedesk_core::{
     Body, CommandResult, KillProcess, Location, Performance, Process, Processes, Subscribe, View,
 };
 
-use crate::port::{Meter, Place, PortError, ProcessTable, WeatherSource};
+use crate::ai::{AiBook, AiCadence};
+use crate::port::{Forges, Meter, Place, PortError, ProcessTable, SessionLog, WeatherSource};
 use crate::weather::{Book, WeatherCadence};
 
 /// CPU 상위와 메모리 상위를 이만큼씩 골라 합친다.
@@ -157,6 +158,7 @@ struct State {
     performance: Feed<Performance>,
     processes: Feed<Processes>,
     weather: Book,
+    ai: AiBook,
     stopped: bool,
 }
 
@@ -184,10 +186,15 @@ pub struct Hub {
     weather: Option<Box<dyn WeatherSource>>,
     weather_cadence: WeatherCadence,
     wall: Wall,
+    sessions: Option<Box<dyn SessionLog>>,
+    forges: Option<Box<dyn Forges>>,
+    ai_cadence: AiCadence,
     state: Mutex<State>,
     changed: Condvar,
     /// 날씨 스레드만 깨운다. 성능 수집 주기를 흔들지 않게 따로 둔다.
     weather_changed: Condvar,
+    /// AI 세션과 GitHub/GitLab 스레드를 깨운다.
+    ai_changed: Condvar,
     done: Mutex<Done>,
 }
 
@@ -200,9 +207,13 @@ impl Hub {
             weather: None,
             weather_cadence: WeatherCadence::default(),
             wall: Box::new(SystemTime::now),
+            sessions: None,
+            forges: None,
+            ai_cadence: AiCadence::default(),
             state: Mutex::default(),
             changed: Condvar::new(),
             weather_changed: Condvar::new(),
+            ai_changed: Condvar::new(),
             done: Mutex::default(),
         }
     }
@@ -212,6 +223,90 @@ impl Hub {
         self.weather = Some(source);
         self.weather_cadence = cadence;
         self
+    }
+
+    /// AI 세션 기록과 GitHub/GitLab. 없으면 그 스레드는 바로 끝난다.
+    pub fn with_ai(
+        mut self,
+        sessions: Box<dyn SessionLog>,
+        forges: Option<Box<dyn Forges>>,
+        cadence: AiCadence,
+    ) -> Self {
+        self.sessions = Some(sessions);
+        self.forges = forges;
+        self.ai_cadence = cadence;
+        self
+    }
+
+    /// AI 를 보는 기기가 있는 동안 기록을 읽는다. `stop` 을 부를 때까지 돌아오지 않는다.
+    pub fn run_ai(&self) {
+        let Some(log) = &self.sessions else {
+            return;
+        };
+        let cadence = &self.ai_cadence;
+        let mut state = self.lock();
+        loop {
+            if state.stopped {
+                return;
+            }
+            if !state.ai.watching() {
+                state = self
+                    .ai_changed
+                    .wait(state)
+                    .unwrap_or_else(|lock| lock.into_inner());
+                continue;
+            }
+            drop(state);
+            let facts = guarded(|| log.poll());
+            state = self.lock();
+            if let Ok(facts) = facts
+                && state.ai.watching()
+            {
+                state.ai.apply(facts, (self.wall)(), cadence);
+            }
+            state = self
+                .ai_changed
+                .wait_timeout(state, cadence.poll)
+                .unwrap_or_else(|lock| lock.into_inner())
+                .0;
+        }
+    }
+
+    /// AI 큰 화면을 보는 기기가 있는 동안 3분마다 GitHub/GitLab 수를 받는다.
+    pub fn run_forge(&self) {
+        let Some(forges) = &self.forges else {
+            return;
+        };
+        let cadence = &self.ai_cadence;
+        let mut state = self.lock();
+        loop {
+            if state.stopped {
+                return;
+            }
+            let now = (self.wall)();
+            if state.ai.forge_due(now, cadence) {
+                state.ai.forge_tried(now);
+                drop(state);
+                let counts = panic::catch_unwind(AssertUnwindSafe(|| forges.counts()));
+                state = self.lock();
+                if let Ok(counts) = counts {
+                    state.ai.forge_publish(counts, (self.wall)());
+                }
+                continue;
+            }
+            state = match state.ai.forge_wait(now, cadence) {
+                None => self
+                    .ai_changed
+                    .wait(state)
+                    .unwrap_or_else(|lock| lock.into_inner()),
+                Some(wait) => {
+                    self.ai_changed
+                        .wait_timeout(state, wait)
+                        .unwrap_or_else(|lock| lock.into_inner())
+                        .0
+                }
+            };
+        }
     }
 
     /// 시험에서 벽시계를 바꾼다.
@@ -314,6 +409,10 @@ impl Hub {
         self.lock().stopped = true;
         self.changed.notify_all();
         self.weather_changed.notify_all();
+        self.ai_changed.notify_all();
+        if let Some(forges) = &self.forges {
+            forges.stop();
+        }
     }
 
     /// 같은 번호는 한 번만 실행하고, 다시 오면 그때 결과를 그대로 돌려준다.
@@ -371,9 +470,16 @@ impl Subscriber<'_> {
             self.id,
             subscribe.main == weather || subscribe.tiles.contains(&weather),
         );
+        let ai = View::Ai as i32;
+        state.ai.set_wants(
+            self.id,
+            subscribe.main == ai || subscribe.tiles.contains(&ai),
+            subscribe.main == ai,
+        );
         drop(state);
         self.hub.changed.notify_all();
         self.hub.weather_changed.notify_all();
+        self.hub.ai_changed.notify_all();
     }
 
     /// 폰의 위치. 범위 밖이거나 한쪽만 오면 위치 없음.
@@ -391,10 +497,14 @@ impl Subscriber<'_> {
         let performance = state.performance.take(self.id).map(Body::Performance);
         let processes = state.processes.take(self.id).map(Body::Processes);
         let weather = state.weather.take(self.id).map(Body::Weather);
+        let (sessions, alerts, forge) = state.ai.take(self.id);
         performance
             .into_iter()
             .chain(processes)
             .chain(weather)
+            .chain(sessions.map(Body::AiSessions))
+            .chain(alerts.into_iter().map(Body::AiAlert))
+            .chain(forge.map(Body::Forge))
             .collect()
     }
 }
@@ -405,9 +515,11 @@ impl Drop for Subscriber<'_> {
         state.performance.remove(self.id);
         state.processes.remove(self.id);
         state.weather.remove(self.id);
+        state.ai.remove(self.id);
         drop(state);
         self.hub.changed.notify_all();
         self.hub.weather_changed.notify_all();
+        self.hub.ai_changed.notify_all();
     }
 }
 
