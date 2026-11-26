@@ -402,7 +402,13 @@ pub fn check_path(path: &str) -> Result<(), &'static str> {
     if let Some(problem) = windows_path_problem(path, &pathext) {
         return Err(problem);
     }
-    let real = std::fs::canonicalize(path).unwrap_or_else(|_| path.into());
+    let real = std::fs::canonicalize(path);
+    // 윈도우는 실제 경로를 못 풀면 받지 않는다. 풀지 못한 짧은 8.3 이름(`A237D~1.SET`)은 확장자가 달라
+    // 글자 검사를 피하기 때문이다. 없는 파일은 어차피 열 수 없다(실행 직전에도 다시 검사한다).
+    #[cfg(windows)]
+    let real = real.map_err(|_| "파일이나 폴더를 찾지 못했습니다")?;
+    #[cfg(not(windows))]
+    let real = real.unwrap_or_else(|_| path.into());
     #[cfg(windows)]
     {
         // canonicalize 는 `\\?\C:\..` 모양을 돌려준다. 링크가 가리키는 실제 파일이 네트워크 공유이거나
@@ -721,8 +727,9 @@ mod tests {
             );
         }
         // 짧은 8.3 이름도 실제 이름으로 풀어 거른다(그 드라이브가 짧은 이름을 만들 때만).
-        // 짧은 이름에서 확장자가 바뀌는 파일(`ASETTI~1.SET`)이라 실제 경로 검사를 탄다.
-        let long = file("a.settingcontent-ms");
+        // 짧은 이름에서 확장자가 바뀌는 파일(`AAPPRE~1.APP`)이라 실제 경로 검사를 탄다.
+        // .settingcontent-ms 는 백신이 만들자마자 지울 수 있어(CI 에서 한 번 그렇게 보임) 쓰지 않는다.
+        let long = file("a.appref-ms");
         let wide: Vec<u16> = long.to_str().unwrap().encode_utf16().chain([0]).collect();
         let mut short = vec![0u16; 1024];
         // SAFETY: 널 끝 경로와 그 길이의 버퍼
@@ -736,8 +743,19 @@ mod tests {
         let short = String::from_utf16_lossy(&short[..length.min(short.len())]);
         eprintln!("짧은 이름: {short}");
         if length > 0 && short != long.to_str().unwrap() {
+            eprintln!(
+                "긴 이름 파일 있음: {}, 실제 경로: {:?}",
+                long.exists(),
+                std::fs::canonicalize(&short)
+            );
             assert_eq!(check_path(&short), Err("실행 파일은 앱 열기로 등록하세요"));
         }
+        // 없는 파일(실제 경로를 못 푸는 것)은 짧은 이름 꼴이어도 받지 않는다.
+        let missing = folder.join("GONE~1.SET");
+        assert_eq!(
+            check_path(missing.to_str().unwrap()),
+            Err("파일이나 폴더를 찾지 못했습니다")
+        );
         // 심볼릭 링크는 가리키는 실제 파일로 본다(개발자 모드나 관리자 권한이 없으면 건너뜀).
         let link = folder.join("notes.txt");
         if std::os::windows::fs::symlink_file(folder.join("run.bat"), &link).is_ok() {
