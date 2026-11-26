@@ -25,8 +25,11 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.darkColorScheme
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -84,6 +87,17 @@ class DeskActions(
 
 @Composable
 fun DeskScreen(state: DeskState, actions: DeskActions) {
+    val colors = darkColorScheme(
+        primary = Palette.accent,
+        surfaceContainerHigh = Palette.card,
+        onSurface = Palette.ink,
+        onSurfaceVariant = Palette.muted,
+    )
+    MaterialTheme(colorScheme = colors) { Desk(state, actions) }
+}
+
+@Composable
+private fun Desk(state: DeskState, actions: DeskActions) {
     BoxWithConstraints(Modifier.fillMaxSize().background(Palette.ground).safeDrawingPadding().padding(12.dp)) {
         val wide = maxWidth >= maxHeight
         val content = Modifier.alpha(if (state.dimmed) 0.4f else 1f)
@@ -279,8 +293,11 @@ private fun ProcessScreen(state: DeskState, actions: DeskActions) {
             Sort.Cpu -> state.rows.maxOfOrNull { it.cpu.toDouble() }
             Sort.Memory -> state.rows.maxOfOrNull { it.memoryBytes.toDouble() }
         }?.takeIf { it > 0 } ?: 1.0
-        LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            items(state.rows, key = { "${it.pid}-${it.startedAt}" }) { process ->
+        // 키를 붙이면 순서가 바뀔 때 목록이 그 줄을 따라 내려가므로 자리 번호로 둔다.
+        val list = rememberLazyListState()
+        LaunchedEffect(state.sort) { list.scrollToItem(0) }
+        LazyColumn(state = list, verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            items(state.rows) { process ->
                 val share = when (state.sort) {
                     Sort.Cpu -> process.cpu / top
                     Sort.Memory -> process.memoryBytes / top
@@ -328,9 +345,16 @@ private fun ProcessRow(process: ProcessInfo, share: Float, onClick: () -> Unit) 
                 fontSize = 15.sp,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
-                modifier = Modifier.padding(start = 12.dp).weight(1f),
+                modifier = Modifier.padding(start = 12.dp, end = 8.dp).weight(1f),
             )
-            Text("%.1f%%".format(process.cpu), color = Palette.ink, fontSize = 15.sp, fontWeight = FontWeight.Medium)
+            Text(
+                "%.1f%%".format(process.cpu),
+                color = Palette.ink,
+                fontSize = 15.sp,
+                fontWeight = FontWeight.Medium,
+                textAlign = TextAlign.End,
+                modifier = Modifier.width(60.dp),
+            )
             Text(
                 memory(process.memoryBytes),
                 color = Palette.ink,

@@ -15,6 +15,11 @@ import androidx.lifecycle.viewmodel.viewModelFactory
 import io.github.hyeonsikoh.sidedesk.desk.DeskActions
 import io.github.hyeonsikoh.sidedesk.desk.DeskScreen
 import io.github.hyeonsikoh.sidedesk.desk.DeskViewModel
+import io.github.hyeonsikoh.sidedesk.desk.Sort
+import io.github.hyeonsikoh.sidedesk.link.Topic
+import androidx.lifecycle.lifecycleScope
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.launch
 import io.github.hyeonsikoh.sidedesk.home.HomeScreen
 import io.github.hyeonsikoh.sidedesk.home.HomeViewModel
 import uniffi.sidedesk_core.newRequestId
@@ -36,6 +41,7 @@ class MainActivity : ComponentActivity() {
             val missing = BLUETOOTH.filter { checkSelfPermission(it) != PackageManager.PERMISSION_GRANTED }
             if (missing.isNotEmpty()) requestPermissions(missing.toTypedArray(), ASK_BLUETOOTH)
         }
+        if (BuildConfig.DEBUG) openForCheck()
         setContent {
             val state = home.state.collectAsStateWithLifecycle().value
             if (state.computerName != null && state.pairingCode == null && state.problem == null) {
@@ -46,6 +52,15 @@ class MainActivity : ComponentActivity() {
             } else {
                 HomeScreen(state, home::answer)
             }
+        }
+    }
+
+    /** 디버그 빌드 전용. 폰을 누르지 않고 화면을 찍어 보려고 am start 값으로 화면을 고른다. */
+    private fun openForCheck() {
+        if (intent.getStringExtra("screen") == "processes") desk.show(Topic.Processes)
+        if (intent.getStringExtra("sort") == "memory") desk.sortBy(Sort.Memory)
+        if (intent.getBooleanExtra("ask", false)) {
+            lifecycleScope.launch { desk.state.first { it.rows.isNotEmpty() }.rows.first().let(desk::ask) }
         }
     }
 
