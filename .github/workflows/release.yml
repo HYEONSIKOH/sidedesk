@@ -1,0 +1,101 @@
+name: 배포 파일
+
+# 배포 파일을 만들어 비밀값과 개인 정보 검사를 통과한 것만 Actions 산출물로 올린다.
+# Release, 태그를 만들지 않고 공개하지 않는다(공개는 사람이 정한다). 저장소 비밀값을 쓰지 않는다.
+# 윈도우 묶기는 SD-12 가 들어온 뒤 더한다(그때까지 윈도우 실행 파일은 ci.yml 이 올린다).
+# run 단계에는 이벤트에서 온 글(제목, 본문, 브랜치 이름)을 넣지 않는다.
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [develop, main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref_name }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  repo:
+    name: 저장소 비밀값 검사
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          persist-credentials: false
+      - run: python3 -I scripts/test_check_secrets.py
+      - run: python3 -I scripts/check_secrets.py --repo
+
+  mac:
+    name: macOS dmg
+    runs-on: macos-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          persist-credentials: false
+      # 배포 빌드는 캐시 없이 돈다(다른 작업의 캐시와 섞이지 않게).
+      - uses: dtolnay/rust-toolchain@39008827e6b4319a349e9a42dfc90579dd25f1ca # stable
+        with:
+          toolchain: stable
+          targets: aarch64-apple-darwin,x86_64-apple-darwin
+      # 묶고, 홈 경로와 저장소 경로(--forbid)까지 검사한다. 걸리면 여기서 멈춘다.
+      - run: bash scripts/dist-mac.sh
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: sidedesk-mac
+          path: target/dist/SideDesk-*-mac.dmg
+          if-no-files-found: error
+          retention-days: 14
+
+  android:
+    name: Android APK (서명 없음)
+    runs-on: macos-latest
+    timeout-minutes: 60
+    env:
+      NDK_VERSION: 27.2.12479018
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          persist-credentials: false
+      - uses: actions/setup-java@cf277c60eb25467037889841efdb72551f06f6c3 # v4.9.1
+        with:
+          distribution: temurin
+          java-version: 17
+      - uses: dtolnay/rust-toolchain@39008827e6b4319a349e9a42dfc90579dd25f1ca # stable
+        with:
+          toolchain: stable
+          targets: aarch64-linux-android
+      - name: NDK
+        run: |
+          ndk="$ANDROID_HOME/ndk/$NDK_VERSION"
+          if [ ! -d "$ndk" ]; then
+            yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "ndk;$NDK_VERSION" > /dev/null
+          fi
+          echo "ANDROID_NDK_HOME=$ndk" >> "$GITHUB_ENV"
+      # 키가 없는 CI 는 서명하지 않은 SideDesk-<버전>-unsigned.apk 를 만든다(gradle 이 core 도 같이 빌드).
+      - name: Gradle
+        working-directory: android
+        run: ./gradlew --no-daemon assembleRelease
+      - name: 검사(비밀값, 16KB 정렬)
+        run: |
+          apk=$(ls android/app/build/outputs/apk/release/SideDesk-*-unsigned.apk)
+          echo "서명 없음: $(basename "$apk")"
+          python3 -I scripts/check_secrets.py --artifact "$apk" --forbid "$HOME" --forbid "$GITHUB_WORKSPACE"
+          tools=$(ls -d "$ANDROID_HOME"/build-tools/* | sort -V | tail -1)
+          "$tools/zipalign" -c -P 16 4 "$apk"
+          readelf="$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/darwin-x86_64/bin/llvm-readelf"
+          unzip -p "$apk" lib/arm64-v8a/libsidedesk_core.so > "$RUNNER_TEMP/core.so"
+          "$readelf" -l "$RUNNER_TEMP/core.so" | awk '/LOAD/ { if ($NF != "0x4000") bad = 1 } END { exit bad }'
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: sidedesk-android
+          path: android/app/build/outputs/apk/release/SideDesk-*-unsigned.apk
+          if-no-files-found: error
+          retention-days: 14
