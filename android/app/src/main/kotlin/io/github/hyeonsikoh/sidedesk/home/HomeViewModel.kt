@@ -6,7 +6,7 @@ import io.github.hyeonsikoh.sidedesk.link.ComputerLink
 import io.github.hyeonsikoh.sidedesk.link.LinkState
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
-import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.stateIn
 
 data class HomeState(
@@ -15,12 +15,18 @@ data class HomeState(
     val dimmed: Boolean = false,
     val pairingCode: String? = null,
     val problem: String? = null,
+    /** 블루투스를 쓸 수 없는 이유. USB 는 된다. */
+    val notice: String? = null,
 )
 
 class HomeViewModel(private val link: ComputerLink) : ViewModel() {
-    val state: StateFlow<HomeState> = link.state
-        .map(::toHome)
-        .stateIn(viewModelScope, SharingStarted.Eagerly, toHome(link.state.value))
+    val state: StateFlow<HomeState> = combine(link.state, link.bluetoothProblem) { state, problem ->
+        toHome(state).copy(notice = problem)
+    }.stateIn(
+        viewModelScope,
+        SharingStarted.Eagerly,
+        toHome(link.state.value).copy(notice = link.bluetoothProblem.value),
+    )
 
     fun answer(same: Boolean) = link.answer(same)
 

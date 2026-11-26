@@ -7,8 +7,8 @@ use std::sync::mpsc::{self, Receiver};
 use std::thread;
 
 use sidedesk_domain::{
-    ComputerName, Context, Ended, Keys, Note, PairRequests, PhoneLinks, Prompt, Report, Timing,
-    keep_connected, serve,
+    Active, ComputerName, Context, Ended, Keys, Note, PairRequests, PhoneLinks, Prompt, Report,
+    Timing, keep_connected, serve,
 };
 use sidedesk_link::AdbLinks;
 #[cfg(target_os = "macos")]
@@ -75,10 +75,11 @@ fn run() -> Result<(), String> {
         prompt: &Terminal,
         report: &Terminal,
         requests: &PairRequests::default(),
+        active: &Active::default(),
         timing: Timing::default(),
     };
     println!("기기를 기다리는 중. 끝내려면 Ctrl+C");
-    keep_connected(&AdbLinks::default(), &context, &AtomicBool::new(false));
+    keep_connected(&[&AdbLinks::default()], &context, &AtomicBool::new(false));
     Ok(())
 }
 
@@ -105,6 +106,7 @@ fn pair() -> Result<(), String> {
         prompt: &Terminal,
         report: &Terminal,
         requests: &PairRequests::default(),
+        active: &Active::default(),
         timing: Timing::default(),
     };
     match serve(
@@ -121,6 +123,15 @@ fn pair() -> Result<(), String> {
         Ok(_) => Err("등록 전에 연결이 끊김".to_owned()),
         Err(error) => Err(error.to_string()),
     }
+}
+
+/// 맥에서 `SideDesk.app/Contents/MacOS/` 안에서 돌고 있는지
+#[cfg(target_os = "macos")]
+fn in_app_bundle() -> bool {
+    std::env::current_exe()
+        .ok()
+        .and_then(|path| path.parent().map(|dir| dir.ends_with("Contents/MacOS")))
+        .unwrap_or(false)
 }
 
 /// 설정 창. 창이 열려 있는 동안 연결을 유지한다. 값들은 프로세스가 끝날 때까지 쓰므로 놓아주지 않는다.
@@ -143,11 +154,25 @@ fn window() -> Result<(), String> {
         prompt: board,
         report: board,
         requests,
+        active: Box::leak(Box::default()),
         timing: Timing::default(),
     }));
     thread::spawn(move || {
         let _lock = lock;
-        keep_connected(&AdbLinks::default(), context, &AtomicBool::new(false));
+        let usb = AdbLinks::default();
+        #[cfg(target_os = "macos")]
+        if in_app_bundle() {
+            let air = sidedesk_mac::BleLinks::start();
+            keep_connected(&[&usb, &air], context, &AtomicBool::new(false));
+            return;
+        }
+        // 맥 블루투스는 Info.plist 가 있는 SideDesk.app 안에서만 쓸 수 있다.
+        #[cfg(target_os = "macos")]
+        board.link(
+            sidedesk_domain::Link::Ble,
+            Some("블루투스를 쓰려면 SideDesk.app 으로 실행하세요".to_owned()),
+        );
+        keep_connected(&[&usb], context, &AtomicBool::new(false));
     });
     sidedesk_window::open(board, mode_file)
 }

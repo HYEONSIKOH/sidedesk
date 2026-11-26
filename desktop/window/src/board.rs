@@ -6,8 +6,8 @@ use std::sync::{Mutex, MutexGuard};
 use std::thread;
 use std::time::Duration;
 
-use sidedesk_core::KEY_LEN;
-use sidedesk_domain::{Keys, Note, PairRequests, Phone, Prompt, Report};
+use sidedesk_core::{KEY_LEN, beacon};
+use sidedesk_domain::{Keys, Link, Note, PairRequests, Phone, Prompt, Report};
 
 use crate::json;
 
@@ -50,6 +50,8 @@ struct State {
     notice: Option<Notice>,
     /// 키마다 마지막으로 그 키로 붙었던 폰
     seen: HashMap<[u8; KEY_LEN], String>,
+    /// 링크 자체의 문제(adb 없음, 블루투스 꺼짐)
+    problems: HashMap<Link, String>,
 }
 
 /// 화면에 JSON 을 보내는 함수
@@ -127,7 +129,13 @@ impl Board {
     fn start_pairing(&'static self, id: &str) {
         let round = {
             let mut state = self.lock();
-            if state.pairing.is_some() || !state.attached.iter().any(|phone| phone.id == id) {
+            // 등록은 USB 로만 한다.
+            if state.pairing.is_some()
+                || !state
+                    .attached
+                    .iter()
+                    .any(|phone| phone.id == id && phone.link == Link::Usb)
+            {
                 return;
             }
             state.rounds += 1;
@@ -188,14 +196,23 @@ impl Board {
         };
         let state = self.lock();
         let paired = trusted.iter().map(|paired| {
-            // 붙었던 기록이 없으면 등록할 때 저장한 일련번호로 꽂힌 기기를 찾는다.
-            let id = state.seen.get(&paired.key).or_else(|| {
-                state
-                    .attached
-                    .iter()
-                    .map(|phone| &phone.id)
-                    .find(|id| !paired.serial.is_empty() && **id == paired.serial)
-            });
+            // 붙었던 기록이 없으면 저장한 일련번호(USB)나 알림 신호 지문(블루투스)으로 찾는다.
+            let mark = beacon(&paired.key);
+            let id = state
+                .seen
+                .get(&paired.key)
+                .filter(|id| state.attached.iter().any(|phone| &phone.id == *id))
+                .or_else(|| {
+                    state
+                        .attached
+                        .iter()
+                        .find(|phone| match phone.link {
+                            Link::Usb => !paired.serial.is_empty() && phone.id == paired.serial,
+                            Link::Ble => phone.beacon == Some(mark),
+                        })
+                        .map(|phone| &phone.id)
+                })
+                .or_else(|| state.seen.get(&paired.key));
             let plugged = id.and_then(|id| state.attached.iter().find(|phone| phone.id == *id));
             // 이름 없이 저장된 기기는 꽂혀 있는 동안 adb 가 알려 준 모델명을 쓴다.
             let name = match (paired.name.as_str(), plugged) {
@@ -210,48 +227,56 @@ impl Board {
                 _ => ("idle", None),
             };
             let serial = plugged
+                .filter(|phone| phone.link == Link::Usb)
                 .map(|phone| phone.id.as_str())
                 .or((!paired.serial.is_empty()).then_some(paired.serial.as_str()));
+            let link = plugged.map(|phone| phone.link.to_string());
             json::object(&[
                 ("key", json::text(&encode(&paired.key))),
                 ("fingerprint", json::text(&fingerprint(&paired.key))),
                 ("name", json::text(name)),
-                ("usb", plugged.is_some().to_string()),
+                ("link", json::optional(link.as_deref())),
                 ("serial", json::optional(serial)),
                 ("status", json::text(status)),
                 ("reason", json::optional(reason)),
             ])
         });
-        let attached = state.attached.iter().map(|phone| {
-            let (status, reason) = match (&phone.blocked, state.status.get(&phone.id)) {
-                (Some(reason), _) => ("blocked", Some(reason.as_str())),
-                (None, Some(Status::Connected { .. })) => ("connected", None),
-                (None, Some(Status::Refused(reason))) => ("refused", Some(reason.as_str())),
-                (None, Some(Status::Lost(reason))) => ("waiting", Some(reason.as_str())),
-                (None, None) => ("waiting", None),
-            };
-            let status = if state.pairing.as_ref().is_some_and(|p| p.id == phone.id) {
-                "pairing"
-            } else {
-                status
-            };
-            // 이 기기로 붙었던 키나 이 일련번호가 등록 목록에 있으면 등록된 기기다.
-            // 일련번호만 맞고 거절됐다면(앱을 다시 깔아 키가 바뀜) 다시 등록할 수 있게 둔다.
-            let refused = matches!(state.status.get(&phone.id), Some(Status::Refused(_)));
-            let paired = state.seen.iter().any(|(key, id)| {
-                *id == phone.id && trusted.iter().any(|paired| paired.key == *key)
-            }) || (!refused && trusted.iter().any(|paired| paired.serial == phone.id));
-            json::object(&[
-                ("id", json::text(&phone.id)),
-                (
-                    "name",
-                    json::text(phone.model.as_deref().unwrap_or(&phone.id)),
-                ),
-                ("status", json::text(status)),
-                ("reason", json::optional(reason)),
-                ("paired", paired.to_string()),
-            ])
-        });
+        // 블루투스 기기는 등록된 것만 위 등록 줄에 보인다.
+        let attached = state
+            .attached
+            .iter()
+            .filter(|phone| phone.link == Link::Usb)
+            .map(|phone| {
+                let (status, reason) = match (&phone.blocked, state.status.get(&phone.id)) {
+                    (Some(reason), _) => ("blocked", Some(reason.as_str())),
+                    (None, Some(Status::Connected { .. })) => ("connected", None),
+                    (None, Some(Status::Refused(reason))) => ("refused", Some(reason.as_str())),
+                    (None, Some(Status::Lost(reason))) => ("waiting", Some(reason.as_str())),
+                    (None, None) => ("waiting", None),
+                };
+                let status = if state.pairing.as_ref().is_some_and(|p| p.id == phone.id) {
+                    "pairing"
+                } else {
+                    status
+                };
+                // 이 기기로 붙었던 키나 이 일련번호가 등록 목록에 있으면 등록된 기기다.
+                // 일련번호만 맞고 거절됐다면(앱을 다시 깔아 키가 바뀜) 다시 등록할 수 있게 둔다.
+                let refused = matches!(state.status.get(&phone.id), Some(Status::Refused(_)));
+                let paired = state.seen.iter().any(|(key, id)| {
+                    *id == phone.id && trusted.iter().any(|paired| paired.key == *key)
+                }) || (!refused
+                    && trusted.iter().any(|paired| paired.serial == phone.id));
+                json::object(&[
+                    ("id", json::text(&phone.id)),
+                    (
+                        "name",
+                        json::text(phone.model.as_deref().unwrap_or(&phone.id)),
+                    ),
+                    ("status", json::text(status)),
+                    ("reason", json::optional(reason)),
+                    ("paired", paired.to_string()),
+                ])
+            });
         let pairing = state.pairing.as_ref().map_or_else(
             || "null".to_owned(),
             |pairing| {
@@ -295,6 +320,14 @@ impl Board {
             ("attached", json::array(attached)),
             ("pairing", pairing),
             ("notice", notice),
+            (
+                "problems",
+                json::array(
+                    [Link::Usb, Link::Ble]
+                        .into_iter()
+                        .filter_map(|link| state.problems.get(&link).map(|text| json::text(text))),
+                ),
+            ),
         ])
     }
 
@@ -351,21 +384,6 @@ impl Report for Board {
                         }),
                     );
                 }
-                // adb 와 끊기면 붙은 폰을 알 수 없다. 모든 폰을 그 이유로 끊김으로 둔다.
-                Note::Lost(reason) if phone == "adb" => {
-                    for status in state.status.values_mut() {
-                        *status = Status::Lost(reason.clone());
-                    }
-                    state.attached.clear();
-                    if let Some(id) = state.pairing.as_ref().map(|pairing| pairing.id.clone()) {
-                        self.requests.take(&id);
-                        state.pairing = None;
-                    }
-                    state.notice = Some(Notice {
-                        text: reason,
-                        good: false,
-                    });
-                }
                 Note::Lost(reason) => {
                     Self::fail_pairing(&mut state, phone, &reason);
                     state.status.insert(phone.to_owned(), Status::Lost(reason));
@@ -381,26 +399,67 @@ impl Report for Board {
         self.publish();
     }
 
-    fn phones(&self, phones: &[Phone]) {
+    fn link(&self, link: Link, problem: Option<String>) {
         {
             let mut state = self.lock();
-            if state
-                .notice
-                .as_ref()
-                .is_some_and(|notice| notice.text.contains("adb"))
-            {
-                state.notice = None;
+            match problem {
+                None => {
+                    if state.problems.remove(&link).is_none() {
+                        return;
+                    }
+                }
+                // 링크를 쓸 수 없으면 그 링크의 기기를 알 수 없다. 그 이유로 끊김으로 둔다.
+                Some(reason) => {
+                    if state.problems.get(&link) == Some(&reason) {
+                        return;
+                    }
+                    let ids: Vec<String> = state
+                        .attached
+                        .iter()
+                        .filter(|phone| phone.link == link)
+                        .map(|phone| phone.id.clone())
+                        .collect();
+                    for id in &ids {
+                        state
+                            .status
+                            .insert(id.clone(), Status::Lost(reason.clone()));
+                    }
+                    state.attached.retain(|phone| phone.link != link);
+                    if let Some(id) = state.pairing.as_ref().map(|pairing| pairing.id.clone())
+                        && ids.contains(&id)
+                    {
+                        self.requests.take(&id);
+                        state.pairing = None;
+                    }
+                    state.problems.insert(link, reason);
+                }
             }
+        }
+        self.publish();
+    }
+
+    fn phones(&self, link: Link, phones: &[Phone]) {
+        {
+            let mut state = self.lock();
             let gone: Vec<String> = state
-                .status
-                .keys()
-                .filter(|id| !phones.iter().any(|phone| &phone.id == *id))
-                .cloned()
+                .attached
+                .iter()
+                .filter(|phone| phone.link == link)
+                .filter(|old| !phones.iter().any(|phone| phone.id == old.id))
+                .map(|phone| phone.id.clone())
                 .collect();
+            let reason = match link {
+                Link::Usb => "USB 연결이 끊김",
+                Link::Ble => "블루투스 신호가 사라짐",
+            };
             for id in gone {
-                state
-                    .status
-                    .insert(id, Status::Lost("USB 연결이 끊김".to_owned()));
+                // 블루투스 id 는 주소가 바뀔 때마다 새로 생기므로, 등록 줄이 가리키지 않는 옛 id 는 지운다.
+                let pointed = state.seen.values().any(|seen| *seen == id);
+                if link == Link::Ble && !pointed {
+                    state.status.remove(&id);
+                } else {
+                    state.status.insert(id, Status::Lost(reason.to_owned()));
+                }
             }
             if let Some(pairing) = &state.pairing
                 && !phones.iter().any(|phone| phone.id == pairing.id)
@@ -416,7 +475,8 @@ impl Report for Board {
                     }),
                 );
             }
-            state.attached = phones.to_vec();
+            state.attached.retain(|phone| phone.link != link);
+            state.attached.extend_from_slice(phones);
         }
         self.publish();
     }
@@ -525,17 +585,23 @@ mod tests {
     }
 
     fn phone(id: &str) -> Phone {
+        Phone::usb(id, Some("SM A716S".into()), None)
+    }
+
+    fn air(key: [u8; KEY_LEN]) -> Phone {
         Phone {
-            id: id.into(),
-            model: Some("SM A716S".into()),
+            id: "ble:1".into(),
+            model: Some("Galaxy A71".into()),
             blocked: None,
+            link: Link::Ble,
+            beacon: Some(beacon(&key)),
         }
     }
 
     #[test]
     fn pairing_from_the_window() {
         let (board, keys, requests) = board();
-        board.phones(&[phone("a")]);
+        board.phones(Link::Usb, &[phone("a")]);
         board.note("a", Note::Refused("등록되지 않은 상대".into()));
         assert!(board.snapshot().contains(r#""status":"refused""#));
 
@@ -576,7 +642,7 @@ mod tests {
     #[test]
     fn a_failed_pairing_closes_the_box_with_a_reason() {
         let (board, _, _) = board();
-        board.phones(&[phone("a")]);
+        board.phones(Link::Usb, &[phone("a")]);
         board.command(r#"{"pair":"a"}"#);
         let _reply = board.ask("a", "123456");
         board.note("a", Note::Refused("등록을 취소함".into()));
@@ -588,7 +654,7 @@ mod tests {
     #[test]
     fn the_box_waits_for_the_app_then_gives_up() {
         let (board, _, requests) = board_waiting(Duration::from_millis(100));
-        board.phones(&[phone("a")]);
+        board.phones(Link::Usb, &[phone("a")]);
         board.command(r#"{"pair":"a"}"#);
         board.note("a", Note::Lost("기기에서 SideDesk 앱을 열어 주세요".into()));
         board.note("a", Note::Refused("등록되지 않은 상대".into()));
@@ -607,10 +673,10 @@ mod tests {
     fn unplugging_turns_the_phone_red_and_ends_pairing() {
         let (board, keys, requests) = board();
         keys.trust([1; KEY_LEN], "SM A716S", "a").unwrap();
-        board.phones(&[phone("a"), phone("b")]);
+        board.phones(Link::Usb, &[phone("a"), phone("b")]);
         board.note("a", Note::Connected { key: [1; KEY_LEN] });
         board.command(r#"{"pair":"b"}"#);
-        board.phones(&[]);
+        board.phones(Link::Usb, &[]);
         let snapshot = board.snapshot();
         assert!(
             snapshot.contains(r#""status":"lost","reason":"USB 연결이 끊김""#),
@@ -624,7 +690,7 @@ mod tests {
     fn a_paired_phone_offers_no_pairing_while_disconnected() {
         let (board, keys, _) = board();
         keys.trust([1; KEY_LEN], "SM A716S", "a").unwrap();
-        board.phones(&[phone("a")]);
+        board.phones(Link::Usb, &[phone("a")]);
         board.note("a", Note::Connected { key: [1; KEY_LEN] });
         board.note("a", Note::Lost("기기에서 SideDesk 앱을 열어 주세요".into()));
         assert!(board.snapshot().contains(r#""paired":true"#));
@@ -633,7 +699,7 @@ mod tests {
     #[test]
     fn saying_no_closes_the_box_and_only_one_pairing_at_a_time() {
         let (board, _, requests) = board();
-        board.phones(&[phone("a"), phone("b")]);
+        board.phones(Link::Usb, &[phone("a"), phone("b")]);
         board.command(r#"{"pair":"a"}"#);
         board.command(r#"{"pair":"b"}"#);
         assert!(!requests.is_asked("b"));
@@ -647,15 +713,69 @@ mod tests {
     fn losing_adb_shows_its_reason_on_every_phone() {
         let (board, keys, _) = board();
         keys.trust([1; KEY_LEN], "SM A716S", "a").unwrap();
-        board.phones(&[phone("a")]);
+        board.phones(Link::Usb, &[phone("a")]);
         board.note("a", Note::Connected { key: [1; KEY_LEN] });
-        board.note("adb", Note::Lost("adb 서버에 접속하지 못함".into()));
+        board.link(Link::Usb, Some("adb 서버에 접속하지 못함".into()));
         let snapshot = board.snapshot();
         assert!(
             snapshot.contains(r#""status":"lost","reason":"adb 서버에 접속하지 못함""#),
             "{snapshot}"
         );
         assert!(snapshot.contains(r#""attached":[]"#));
+        assert!(snapshot.contains(r#""problems":["adb 서버에 접속하지 못함"]"#));
+        board.link(Link::Usb, None);
+        assert!(board.snapshot().contains(r#""problems":[]"#));
+    }
+
+    #[test]
+    fn a_registered_phone_shows_bluetooth_and_strangers_stay_hidden() {
+        let (board, keys, _) = board();
+        keys.trust([1; KEY_LEN], "SM A716S", "a").unwrap();
+        board.phones(
+            Link::Ble,
+            &[
+                air([1; KEY_LEN]),
+                Phone {
+                    id: "ble:2".into(),
+                    ..air([9; KEY_LEN])
+                },
+            ],
+        );
+        let snapshot = board.snapshot();
+        assert!(snapshot.contains(r#""link":"블루투스""#), "{snapshot}");
+        assert!(
+            snapshot.contains(r#""serial":"a""#),
+            "블루투스여도 저장한 일련번호를 보임"
+        );
+        assert!(
+            snapshot.contains(r#""attached":[]"#),
+            "등록 안 된 블루투스 기기는 숨김"
+        );
+    }
+
+    #[test]
+    fn bluetooth_list_does_not_wipe_usb() {
+        let (board, keys, _) = board();
+        keys.trust([1; KEY_LEN], "SM A716S", "a").unwrap();
+        board.phones(Link::Usb, &[phone("a")]);
+        board.note("a", Note::Connected { key: [1; KEY_LEN] });
+        board.phones(Link::Ble, &[]);
+        board.link(Link::Ble, Some("맥의 블루투스가 꺼져 있습니다".into()));
+        let snapshot = board.snapshot();
+        assert!(snapshot.contains(r#""link":"USB""#), "{snapshot}");
+        assert!(snapshot.contains(r#""status":"connected""#), "{snapshot}");
+    }
+
+    #[test]
+    fn a_late_bluetooth_drop_does_not_cover_usb() {
+        let (board, keys, _) = board();
+        keys.trust([1; KEY_LEN], "SM A716S", "a").unwrap();
+        board.phones(Link::Usb, &[phone("a")]);
+        board.phones(Link::Ble, &[air([1; KEY_LEN])]);
+        board.note("a", Note::Connected { key: [1; KEY_LEN] });
+        // 물러난 블루투스는 알리지 않으므로, 끊김이 와도 다른 id 에 붙는다.
+        board.note("ble:1", Note::Lost("끊김".into()));
+        assert!(board.snapshot().contains(r#""status":"connected""#));
     }
 
     #[test]

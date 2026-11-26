@@ -1,8 +1,9 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
+use std::fmt;
 use std::sync::Mutex;
 use std::sync::mpsc::Receiver;
 
-use sidedesk_core::{Identity, KEY_LEN};
+use sidedesk_core::{BEACON_LEN, Identity, KEY_LEN};
 
 #[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
 #[error("{0}")]
@@ -14,13 +15,45 @@ impl PortError {
     }
 }
 
+/// 기기와 이어지는 길
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum Link {
+    Usb,
+    Ble,
+}
+
+impl fmt::Display for Link {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            Self::Usb => "USB",
+            Self::Ble => "블루투스",
+        })
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Phone {
+    /// 링크 안에서 기기를 가리키는 값. USB 는 adb 일련번호, 블루투스는 `ble:` + 맥이 정한 식별자.
     pub id: String,
-    /// adb 가 알려 준 기기 이름
+    /// 기기가 알려 준 이름
     pub model: Option<String>,
     /// 지금 접속할 수 없으면 그 이유
     pub blocked: Option<String>,
+    pub link: Link,
+    /// 블루투스 알림 신호 지문. USB 는 없다.
+    pub beacon: Option<[u8; BEACON_LEN]>,
+}
+
+impl Phone {
+    pub fn usb(id: &str, model: Option<String>, blocked: Option<String>) -> Self {
+        Self {
+            id: id.to_owned(),
+            model,
+            blocked,
+            link: Link::Usb,
+            beacon: None,
+        }
+    }
 }
 
 pub enum Received {
@@ -37,6 +70,7 @@ pub trait Conn: Send {
 }
 
 pub trait PhoneLinks: Send + Sync {
+    fn link(&self) -> Link;
     fn attached(&self) -> Result<Vec<Phone>, PortError>;
     /// 붙은 폰 목록이 바뀔 때마다 알린다. 통로가 끊기면 돌아온다.
     fn watch(&self, changed: &mut dyn FnMut(Vec<Phone>)) -> Result<(), PortError>;
@@ -110,6 +144,46 @@ pub enum Note {
 pub trait Report: Send + Sync {
     fn note(&self, phone: &str, note: Note);
 
-    /// 붙은 폰 목록이 바뀌었다.
-    fn phones(&self, _phones: &[Phone]) {}
+    /// 한 링크의 기기 목록이 바뀌었다. 다른 링크의 목록은 건드리지 않는다.
+    fn phones(&self, _link: Link, _phones: &[Phone]) {}
+
+    /// 링크 자체의 문제(adb 없음, 블루투스 꺼짐, 권한 없음). None 이면 문제가 풀렸다.
+    fn link(&self, _link: Link, _problem: Option<String>) {}
+}
+
+/// 지금 붙어 있는 기기 키와 그 길, 그 연결의 id. 한 기기에는 연결 하나만 붙인다(USB 우선).
+#[derive(Default)]
+pub struct Active(Mutex<HashMap<[u8; KEY_LEN], (Link, String)>>);
+
+impl Active {
+    /// 이 연결로 붙어도 되면 자리를 잡고 true.
+    /// 블루투스는 USB 가 있거나, 같은 기기가 다른 블루투스 id(주소가 바뀐 경우)로 붙어 있으면 진다.
+    pub fn claim(&self, key: [u8; KEY_LEN], link: Link, id: &str) -> bool {
+        let mut held = self.lock();
+        let lose = match (held.get(&key), link) {
+            (Some((Link::Usb, _)), Link::Ble) => true,
+            (Some((Link::Ble, other)), Link::Ble) => other != id,
+            _ => false,
+        };
+        if !lose {
+            held.insert(key, (link, id.to_owned()));
+        }
+        !lose
+    }
+
+    /// 이 연결이 잡은 자리만 놓는다.
+    pub fn release(&self, key: [u8; KEY_LEN], id: &str) {
+        let mut held = self.lock();
+        if held.get(&key).is_some_and(|(_, holder)| holder == id) {
+            held.remove(&key);
+        }
+    }
+
+    pub fn holds(&self, key: [u8; KEY_LEN], link: Link) -> bool {
+        self.lock().get(&key).is_some_and(|(held, _)| *held == link)
+    }
+
+    fn lock(&self) -> std::sync::MutexGuard<'_, HashMap<[u8; KEY_LEN], (Link, String)>> {
+        self.0.lock().unwrap_or_else(|lock| lock.into_inner())
+    }
 }

@@ -9,7 +9,7 @@ import io.github.hyeonsikoh.sidedesk.link.KeyFiles
 import io.github.hyeonsikoh.sidedesk.link.PhoneLink
 
 class SideDeskApp : Application() {
-    val link: ComputerLink by lazy { PhoneLink(KeyFiles(filesDir)) }
+    val link: ComputerLink by lazy { PhoneLink(this, KeyFiles(filesDir)) }
 
     override fun onCreate() {
         super.onCreate()

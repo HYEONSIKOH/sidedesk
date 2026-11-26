@@ -23,7 +23,7 @@ pub fn generate_key_pair() -> KeyPair {
 pub enum PhoneEvent {
     PairingCode { code: String },
     Paired { computer_key: Vec<u8> },
-    Ready,
+    Ready { computer_key: Vec<u8> },
     ComputerName { name: String },
 }
 
@@ -62,6 +62,17 @@ fn key(bytes: &[u8]) -> Result<[u8; KEY_LEN], LinkError> {
 #[derive(uniffi::Object)]
 pub struct PhoneSession(Mutex<Session>);
 
+/// 블루투스 알림 신호의 서비스 데이터(PSM + 알림 신호 지문).
+#[uniffi::export]
+pub fn ble_service_data(psm: u16, public_key: Vec<u8>) -> Result<Vec<u8>, LinkError> {
+    Ok(crate::service_data(psm, &key(&public_key)?))
+}
+
+#[uniffi::export]
+pub fn ble_service_uuid() -> String {
+    crate::BLE_SERVICE.to_owned()
+}
+
 #[uniffi::export]
 impl PhoneSession {
     #[uniffi::constructor]
@@ -69,6 +80,7 @@ impl PhoneSession {
         private_key: Vec<u8>,
         public_key: Vec<u8>,
         computers: Vec<Vec<u8>>,
+        allow_pairing: bool,
     ) -> Result<Arc<Self>, LinkError> {
         let identity = Identity {
             private: key(&private_key)?,
@@ -78,12 +90,13 @@ impl PhoneSession {
             .iter()
             .map(|computer| key(computer))
             .collect::<Result<_, _>>()?;
-        Ok(Arc::new(Self(Mutex::new(Session::new(
-            Role::Phone,
-            &identity,
-            trusted,
-            false,
-        )))))
+        let session = Session::new(Role::Phone, &identity, trusted, false);
+        let session = if allow_pairing {
+            session
+        } else {
+            session.refusing_pairing()
+        };
+        Ok(Arc::new(Self(Mutex::new(session))))
     }
 
     pub fn feed(&self, bytes: Vec<u8>) -> Result<(), LinkError> {
@@ -102,7 +115,9 @@ impl PhoneSession {
                 Event::Paired { peer } => Some(PhoneEvent::Paired {
                     computer_key: peer.to_vec(),
                 }),
-                Event::Ready { .. } => Some(PhoneEvent::Ready),
+                Event::Ready { peer } => Some(PhoneEvent::Ready {
+                    computer_key: peer.to_vec(),
+                }),
                 Event::Message(Body::Hello(hello)) => Some(PhoneEvent::ComputerName {
                     name: hello.computer_name,
                 }),
@@ -136,6 +151,7 @@ mod tests {
             phone.private_key,
             phone.public_key,
             vec![computer.public.to_vec()],
+            true,
         )
         .unwrap();
         let mut c = Session::new(Role::Computer, &computer, vec![phone_key], false);
@@ -148,7 +164,12 @@ mod tests {
         }))
         .unwrap();
         session.feed(c.take_output()).unwrap();
-        assert_eq!(session.next_event(), Some(PhoneEvent::Ready));
+        assert_eq!(
+            session.next_event(),
+            Some(PhoneEvent::Ready {
+                computer_key: computer.public.to_vec()
+            })
+        );
         assert_eq!(
             session.next_event(),
             Some(PhoneEvent::ComputerName { name: "맥".into() })
@@ -157,6 +178,6 @@ mod tests {
 
     #[test]
     fn rejects_bad_keys() {
-        assert!(PhoneSession::new(vec![0; 3], vec![0; 32], Vec::new()).is_err());
+        assert!(PhoneSession::new(vec![0; 3], vec![0; 32], Vec::new(), true).is_err());
     }
 }

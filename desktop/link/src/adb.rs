@@ -2,7 +2,7 @@ use std::io::{self, ErrorKind, Read, Write};
 use std::net::{IpAddr, Ipv4Addr, SocketAddr, TcpStream};
 use std::time::Duration;
 
-use sidedesk_domain::{Conn, Phone, PhoneLinks, PortError, Received};
+use sidedesk_domain::{Conn, Link, Phone, PhoneLinks, PortError, Received};
 
 const SERVER: SocketAddr = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 5037);
 const SOCKET: &str = "localabstract:sidedesk";
@@ -57,6 +57,10 @@ impl AdbLinks {
 }
 
 impl PhoneLinks for AdbLinks {
+    fn link(&self) -> Link {
+        Link::Usb
+    }
+
     fn attached(&self) -> Result<Vec<Phone>, PortError> {
         let mut stream = self.open(Some(TRANSFER))?;
         request(&mut stream, "host:devices-l")?;
@@ -126,11 +130,7 @@ fn phones(list: &str) -> Vec<Phone> {
             let model = words
                 .find_map(|word| word.strip_prefix("model:"))
                 .map(|model| model.replace('_', " "));
-            Some(Phone {
-                id: id.to_owned(),
-                model,
-                blocked: blocked(state),
-            })
+            Some(Phone::usb(id, model, blocked(state)))
         })
         .collect()
 }

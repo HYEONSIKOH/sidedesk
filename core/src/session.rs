@@ -109,6 +109,7 @@ pub struct Session {
     private: [u8; KEY_LEN],
     trusted: Vec<[u8; KEY_LEN]>,
     wants_pairing: bool,
+    allow_pairing: bool,
     stage: Stage,
     preface: Vec<u8>,
     reader: FrameReader,
@@ -124,6 +125,12 @@ pub struct Session {
 }
 
 impl Session {
+    /// 폰 쪽에서 상대가 등록을 원해도 받지 않는다(블루투스 연결). 등록 요청은 `NotPaired` 로 끊는다.
+    pub fn refusing_pairing(mut self) -> Self {
+        self.allow_pairing = false;
+        self
+    }
+
     /// `wants_pairing` 은 컴퓨터만 쓴다. 폰은 컴퓨터가 열 때만 짝을 맺는다.
     pub fn new(
         role: Role,
@@ -136,6 +143,7 @@ impl Session {
             private: identity.private,
             trusted,
             wants_pairing: wants_pairing && role == Role::Computer,
+            allow_pairing: true,
             stage: Stage::Handshake,
             preface: Vec::new(),
             reader: FrameReader::default(),
@@ -352,6 +360,8 @@ impl Session {
                     self.write(Body::PairCommit(Pairing {
                         value: commit(&self.mine),
                     }))
+                } else if pairing && !self.allow_pairing {
+                    Err(SessionError::NotPaired)
                 } else if pairing {
                     self.stage = Stage::AwaitCommit;
                     Ok(())
@@ -662,6 +672,37 @@ mod tests {
         );
         assert_eq!(pair.pump().unwrap_err().1, SessionError::NotPaired);
         assert_eq!(Pair::code(&pair.phone_events), None);
+    }
+
+    #[test]
+    fn a_phone_refusing_pairing_shows_no_code() {
+        let (computer, phone) = keys();
+        let mut pair = Pair::new(
+            Session::new(Role::Computer, &computer, Vec::new(), true),
+            Session::new(Role::Phone, &phone, Vec::new(), false).refusing_pairing(),
+        );
+        assert_eq!(
+            pair.pump().unwrap_err(),
+            (Role::Phone, SessionError::NotPaired)
+        );
+        assert_eq!(Pair::code(&pair.phone_events), None);
+        assert_eq!(Pair::code(&pair.computer_events), None);
+    }
+
+    #[test]
+    fn a_phone_refusing_pairing_still_takes_a_known_computer() {
+        let (computer, phone) = keys();
+        let mut pair = Pair::new(
+            Session::new(Role::Computer, &computer, vec![phone.public], false),
+            Session::new(Role::Phone, &phone, vec![computer.public], false).refusing_pairing(),
+        );
+        pair.pump().unwrap();
+        assert_eq!(
+            pair.phone_events,
+            [Event::Ready {
+                peer: computer.public
+            }]
+        );
     }
 
     #[test]
