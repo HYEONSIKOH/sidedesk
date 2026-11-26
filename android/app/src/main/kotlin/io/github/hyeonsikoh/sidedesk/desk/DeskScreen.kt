@@ -23,7 +23,6 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawingPadding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
@@ -53,28 +52,18 @@ import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.TextUnit
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import androidx.compose.ui.window.Dialog
-import androidx.compose.ui.window.DialogProperties
 import io.github.hyeonsikoh.sidedesk.link.ProcessInfo
 import io.github.hyeonsikoh.sidedesk.link.Topic
+import io.github.hyeonsikoh.sidedesk.ui.Confirm
+import io.github.hyeonsikoh.sidedesk.ui.ConfirmModal
+import io.github.hyeonsikoh.sidedesk.ui.Palette
+import io.github.hyeonsikoh.sidedesk.ui.behindModal
 import kotlinx.coroutines.delay
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 import kotlin.math.PI
 import kotlin.math.sin
-
-private object Palette {
-    val ground = Color(0xFF15181C)
-    val panel = Color(0xFF22272E)
-    val card = Color(0xFF2C323A)
-    val side = Color(0xFF1D2127)
-    val liquid = Color(0xFF33475A)
-    val accent = Color(0xFF8FAECB)
-    val ink = Color(0xFFDCE1E7)
-    val muted = Color(0xFF8B939E)
-    val danger = Color(0xFFE6A6A6)
-}
 
 class DeskActions(
     val show: (Topic) -> Unit,
@@ -87,7 +76,23 @@ class DeskActions(
 
 @Composable
 fun DeskScreen(state: DeskState, actions: DeskActions) {
-    BoxWithConstraints(Modifier.fillMaxSize().background(Palette.ground).safeDrawingPadding().padding(12.dp)) {
+    Box(Modifier.fillMaxSize().background(Palette.ground)) {
+        Content(state, actions, Modifier.behindModal(state.asking != null))
+        ConfirmModal(state.asking?.let(::killConfirm), actions.confirmKill, actions.cancel)
+    }
+}
+
+private fun killConfirm(process: ProcessInfo) = Confirm(
+    title = "${eul(process.name)} 끝낼까요?",
+    description = "CPU %.1f%%, 메모리 %s\n저장하지 않은 내용은 사라질 수 있습니다".format(process.cpu, memory(process.memoryBytes)),
+    confirmLabel = "끝내기",
+    danger = true,
+    glyph = process.name.take(1).ifEmpty { "!" },
+)
+
+@Composable
+private fun Content(state: DeskState, actions: DeskActions, modifier: Modifier) {
+    BoxWithConstraints(modifier.fillMaxSize().safeDrawingPadding().padding(12.dp)) {
         val wide = maxWidth >= maxHeight
         val content = Modifier.alpha(if (state.dimmed) 0.4f else 1f)
         if (wide) {
@@ -105,45 +110,6 @@ fun DeskScreen(state: DeskState, actions: DeskActions) {
                 Big(state, actions, Modifier.weight(1f).fillMaxWidth())
             }
         }
-    }
-    state.asking?.let { process -> KillDialog(process, actions.cancel, actions.confirmKill) }
-}
-
-/** 칸과 같은 둥근 어두운 판에, 정렬 버튼과 같은 모양의 버튼 둘 */
-@Composable
-private fun KillDialog(process: ProcessInfo, onCancel: () -> Unit, onConfirm: () -> Unit) {
-    Dialog(onDismissRequest = onCancel, properties = DialogProperties(usePlatformDefaultWidth = false)) {
-        Column(
-            Modifier
-                .padding(24.dp)
-                .widthIn(max = 380.dp)
-                .fillMaxWidth()
-                .clip(RoundedCornerShape(22.dp))
-                .background(Palette.card)
-                .padding(20.dp),
-        ) {
-            Text("${eul(process.name)} 끝낼까요?", color = Palette.ink, fontSize = 18.sp, fontWeight = FontWeight.Medium)
-            Text(
-                "CPU %.1f%%, 메모리 %s".format(process.cpu, memory(process.memoryBytes)),
-                color = Palette.muted,
-                fontSize = 13.sp,
-                modifier = Modifier.padding(top = 6.dp),
-            )
-            Row(Modifier.padding(top = 20.dp).fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                DialogButton("취소", Palette.side, Palette.ink, Modifier.weight(1f), onCancel)
-                DialogButton("끝내기", Palette.danger, Palette.ground, Modifier.weight(1f), onConfirm)
-            }
-        }
-    }
-}
-
-@Composable
-private fun DialogButton(label: String, background: Color, ink: Color, modifier: Modifier, onClick: () -> Unit) {
-    Box(
-        modifier.height(44.dp).clip(RoundedCornerShape(14.dp)).background(background).clickable(onClick = onClick),
-        contentAlignment = Alignment.Center,
-    ) {
-        Text(label, color = ink, fontSize = 15.sp, fontWeight = FontWeight.Medium)
     }
 }
 
