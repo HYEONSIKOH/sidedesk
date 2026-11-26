@@ -41,23 +41,26 @@ final class World {
     var askingLocation = false
 
     @ObservationIgnored private let settings: any Settings
-    @ObservationIgnored private let location: CoarseLocation
+    @ObservationIgnored private let location: any LocationPermission
     @ObservationIgnored private var offered = false
     @ObservationIgnored private var started = false
 
-    init() {
-        let settings = DefaultsSettings()
+    convenience init() {
         #if DEBUG
             let link: any ComputerLink = Demo.on ? DemoLink() : PhoneLink()
         #else
             let link: any ComputerLink = PhoneLink()
         #endif
+        self.init(link: link, settings: DefaultsSettings(), location: CoarseLocation(link: link))
+    }
+
+    init(link: any ComputerLink, settings: any Settings, location: any LocationPermission) {
         self.link = link
         self.settings = settings
+        self.location = location
         home = HomeModel(link: link)
         desk = DeskModel(link: link, newCommandId: Core.newRequestId)
         clock = ClockModel(link: link, settings: settings)
-        location = CoarseLocation(link: link)
     }
 
     func foreground() {

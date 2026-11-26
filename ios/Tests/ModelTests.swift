@@ -304,3 +304,119 @@ struct KeysTests {
         #expect(try keys.computers() == [mac, otherMac])
     }
 }
+
+@MainActor
+final class FakeLocation: LocationPermission {
+    var undecided = true
+    var asked = 0
+    var refreshed = 0
+    var stopped = 0
+
+    func ask() { asked += 1 }
+    func refresh() { refreshed += 1 }
+    func stop() { stopped += 1 }
+}
+
+@MainActor
+struct LocationNoticeTests {
+    let link = FakeLink()
+    let settings = MemorySettings()
+    let location = FakeLocation()
+
+    func world() -> World {
+        World(link: link, settings: settings, location: location)
+    }
+
+    @Test func tappingOutsideClosesOnlyThisTime() {
+        let world = world()
+        world.askingLocation = true
+        world.answerLocation(nil)
+        #expect(!world.askingLocation)
+        #expect(!settings.askedLocation, "다음에 켤 때 다시 묻는다")
+        #expect(location.asked == 0)
+        #expect(link.locations.isEmpty)
+    }
+
+    @Test func notUsingSendsNoLocationAndRemembers() {
+        let world = world()
+        world.answerLocation(false)
+        #expect(settings.askedLocation)
+        #expect(link.locations == [.off])
+        #expect(location.asked == 0)
+    }
+
+    @Test func nextAsksTheSystemAndRemembers() {
+        let world = world()
+        world.answerLocation(true)
+        #expect(settings.askedLocation)
+        #expect(location.asked == 1)
+        #expect(link.locations.isEmpty)
+    }
+
+    @Test func foregroundStartsAndBackgroundStops() {
+        let world = world()
+        world.foreground()
+        #expect(link.started == 1)
+        #expect(location.refreshed == 1)
+        world.clock.pick()
+        world.background()
+        #expect(link.stopped == 1)
+        #expect(location.stopped == 1)
+        #expect(!world.clock.picking, "뒤로 가면 고르기를 닫는다")
+        #expect(link.subscriptions.last == Subscription.none)
+    }
+}
+
+@MainActor
+struct SettingsTests {
+    @Test func savedValuesComeBackAfterARestart() throws {
+        let name = "sidedesk.test.\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: name))
+        defer { defaults.removePersistentDomain(forName: name) }
+        let first = DefaultsSettings(defaults: defaults)
+        first.face = "Calendar"
+        first.theme = "Light"
+        first.askedLocation = true
+        let again = ClockModel(link: FakeLink(), settings: DefaultsSettings(defaults: try #require(UserDefaults(suiteName: name))))
+        #expect(again.face == .calendar)
+        #expect(again.theme == .light)
+        #expect(DefaultsSettings(defaults: defaults).askedLocation)
+    }
+}
+
+struct SmallRulesTests {
+    @Test func swipesNeedSixtyPointsSideways() {
+        #expect(swipeStep(CGSize(width: -61, height: 10)) == 1)
+        #expect(swipeStep(CGSize(width: 61, height: -10)) == -1)
+        #expect(swipeStep(CGSize(width: -59, height: 0)) == 0)
+        #expect(swipeStep(CGSize(width: -80, height: 120)) == 0, "세로가 더 크면 스크롤")
+    }
+
+    @Test func strangeTemperaturesDoNotCrash() {
+        #expect(degrees(3.6) == "4°")
+        #expect(degrees(-0.4) == "0°")
+        #expect(degrees(.nan) == "--°")
+        #expect(degrees(.infinity) == "--°")
+    }
+
+    @Test func datesUseTheGregorianCalendar() {
+        let time = ClockTime(Date(timeIntervalSince1970: 1_795_000_000))
+        #expect(ClockTime.calendar.identifier == .gregorian)
+        #expect((1 ... 12).contains(time.month))
+        #expect(time.daysInMonth >= 28)
+    }
+}
+
+@MainActor
+struct StaleBoundaryTests {
+    @Test func exactlyOneHourIsStillFresh() {
+        let link = FakeLink()
+        let now: Int64 = 50_000_000
+        let clock = ClockModel(link: link, settings: MemorySettings(), now: { Date(timeIntervalSince1970: Double(now) / 1000) })
+        link.feed.state = .connected(name: nil, via: .usb)
+        link.feed.weather = weather(fetchedAt: now - ClockModel.staleMillis)
+        #expect(!clock.weatherDimmed)
+        link.feed.weather = weather(fetchedAt: now - ClockModel.staleMillis - 1)
+        #expect(clock.weatherDimmed)
+    }
+}

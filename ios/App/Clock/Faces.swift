@@ -15,7 +15,14 @@ struct ClockTime {
     let daysInMonth: Int
     let firstWeekday: Int
 
-    init(_ date: Date, calendar: Calendar = .current) {
+    /// 기기 달력이 다른 력이어도 안드로이드처럼 그레고리력으로 센다.
+    static let calendar: Calendar = {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = .current
+        return calendar
+    }()
+
+    init(_ date: Date, calendar: Calendar = ClockTime.calendar) {
         let parts = calendar.dateComponents([.hour, .minute, .second, .month, .day, .weekday], from: date)
         hour = parts.hour ?? 0
         minute = parts.minute ?? 0
@@ -33,8 +40,10 @@ struct ClockTime {
     var dayName: String { days[weekday] }
 }
 
+/// 바깥 응답에서 온 값이라 숫자가 아니면 "--°"(Int 로 바꾸다 앱이 죽지 않게)
 func degrees(_ value: Float) -> String {
-    "\(Int(value.rounded()))°"
+    guard value.isFinite, abs(value) < 1000 else { return "--°" }
+    return "\(Int(value.rounded()))°"
 }
 
 /// 동그라미가 기준으로 삼을 묶음(숫자 시각, 큰 기온, 큰 날짜). 모양마다 하나만 붙인다.

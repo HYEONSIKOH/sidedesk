@@ -64,12 +64,10 @@ final class UsbListener: @unchecked Sendable {
 
     func stop() {
         lock.lock()
-        let fd = server
         running = false
+        // 대기 fd 는 accept 스레드가 250ms 안에 보고 닫는다.
         server = -1
         lock.unlock()
-        // close 만으로는 기다리는 accept 가 깨지 않는다.
-        if fd >= 0 { Darwin.shutdown(fd, SHUT_RDWR) }
         checking.clear()
     }
 
@@ -95,14 +93,23 @@ final class UsbListener: @unchecked Sendable {
         return fd
     }
 
+    /// 이 스레드가 대기 fd 를 닫는다. 다윈에서는 대기 소켓에 `shutdown` 을 해도 막힌 `accept` 가
+    /// 깨지지 않으므로, 논블로킹으로 두고 250ms 마다 그만둘지 본다.
     private func accept(_ fd: Int32) {
         defer { Darwin.close(fd) }
-        while true {
+        _ = fcntl(fd, F_SETFL, fcntl(fd, F_GETFL) | O_NONBLOCK)
+        while wanted(fd) {
+            var wait = pollfd(fd: fd, events: Int16(POLLIN), revents: 0)
+            let ready = Darwin.poll(&wait, 1, SocketPipe.poll)
+            if ready < 0, errno != EINTR { return }
+            if ready <= 0 { continue }
             let client = Darwin.accept(fd, nil, nil)
             if client < 0 {
-                if errno == EINTR { continue }
+                if errno == EINTR || errno == EAGAIN || errno == EWOULDBLOCK || errno == ECONNABORTED { continue }
                 return
             }
+            // 다윈은 받은 소켓이 대기 소켓의 논블로킹을 물려받는다. 읽기는 poll 로 기다리므로 막는 소켓으로 되돌린다.
+            _ = fcntl(client, F_SETFL, fcntl(client, F_GETFL) & ~O_NONBLOCK)
             let pipe = SocketPipe(client)
             lock.lock()
             guard running, server == fd else {
@@ -129,6 +136,12 @@ final class UsbListener: @unchecked Sendable {
             thread.start()
         }
     }
+
+    private func wanted(_ fd: Int32) -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return running && server == fd
+    }
 }
 
 /// 소켓 하나. 읽기는 250ms 까지 기다린다. 닫기는 끊기만 하고, 파일 번호는 놓을 때 닫는다.
@@ -144,6 +157,9 @@ final class SocketPipe: LinkPipe, @unchecked Sendable {
         var yes: Int32 = 1
         // 끊긴 소켓에 쓰면 앱이 죽지 않고 오류가 나게 한다.
         setsockopt(fd, SOL_SOCKET, SO_NOSIGPIPE, &yes, socklen_t(MemoryLayout<Int32>.size))
+        // 맥이 읽지 않으면 쓰기가 막혀 무응답 검사도 못 돈다. 블루투스처럼 5초에 끊는다.
+        var limit = timeval(tv_sec: 5, tv_usec: 0)
+        setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &limit, socklen_t(MemoryLayout<timeval>.size))
     }
 
     deinit {
@@ -172,7 +188,7 @@ final class SocketPipe: LinkPipe, @unchecked Sendable {
             let wrote = bytes.withUnsafeBytes { write(fd, $0.baseAddress! + sent, bytes.count - sent) }
             if wrote < 0 {
                 if errno == EINTR { continue }
-                throw PipeError(reason: "보내지 못함")
+                throw PipeError(reason: errno == EAGAIN ? "보내는 데 너무 오래 걸림" : "보내지 못함")
             }
             sent += wrote
         }

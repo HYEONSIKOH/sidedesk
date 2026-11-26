@@ -142,10 +142,11 @@ struct DeskView: View {
         // 안쪽 목록의 세로 스크롤을 막지 않게 함께 받는다. 가로가 더 클 때만 민 것으로 본다.
         .simultaneousGesture(
             DragGesture(minimumDistance: 20).onEnded { drag in
-                let moved = drag.translation.width
-                guard abs(moved) > abs(drag.translation.height) else { return }
-                if moved <= -60 { picking ? clock.nextFace() : desk.next() }
-                if moved >= 60 { picking ? clock.previousFace() : desk.previous() }
+                switch swipeStep(drag.translation) {
+                case 1: picking ? clock.nextFace() : desk.next()
+                case -1: picking ? clock.previousFace() : desk.previous()
+                default: break
+                }
             }
         )
         // 홈에서는 판 어디를 길게 눌러도 고르기. 손가락이 움직이면 밀기다.
@@ -245,7 +246,7 @@ private struct Percent: View {
     @Environment(\.palette) private var palette
 
     var body: some View {
-        (Text(value.map { "\(Int($0))" } ?? "-").font(.system(size: size, weight: .medium))
+        (Text(value.flatMap { $0.isFinite && abs($0) < 1e6 ? "\(Int($0))" : nil } ?? "-").font(.system(size: size, weight: .medium))
             + Text("%").font(.system(size: size * 0.45, weight: .medium)))
             .foregroundStyle(palette.ink)
             .lineLimit(1)
@@ -444,4 +445,13 @@ func rateText(_ bytes: Int64?) -> (String, String) {
 func memoryText(_ bytes: Int64) -> String {
     if bytes >= 1_000_000_000 { return String(format: "%.1f GB", Double(bytes) / 1_000_000_000) }
     return "\(bytes / 1_000_000) MB"
+}
+
+/// 밀기 한 번이 몇 칸인지. 왼쪽으로 60pt 넘게 밀면 다음(1), 오른쪽이면 앞(-1).
+/// 세로가 더 크면 목록 스크롤이라 0.
+func swipeStep(_ translation: CGSize) -> Int {
+    guard abs(translation.width) > abs(translation.height) else { return 0 }
+    if translation.width <= -60 { return 1 }
+    if translation.width >= 60 { return -1 }
+    return 0
 }
