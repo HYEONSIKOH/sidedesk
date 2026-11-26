@@ -294,17 +294,29 @@ fn talk(forget: bool) -> (Result<Ended, ServeError>, Vec<Body>, Counts) {
     talk_with(forget, None)
 }
 
-/// `deck` 이 있으면 종료 대신 단축키 1번 실행 명령을 보낸다.
 fn talk_with(
     forget: bool,
     deck: Option<Arc<sidedesk_domain::Deck>>,
 ) -> (Result<Ended, ServeError>, Vec<Body>, Counts) {
+    talk_full(forget, deck, None)
+}
+
+/// `deck` 이 있으면 종료 대신 단축키 1번 실행, `music` 이 있으면 재생/멈춤 명령을 보낸다.
+fn talk_full(
+    forget: bool,
+    deck: Option<Arc<sidedesk_domain::Deck>>,
+    music: Option<Arc<sidedesk_domain::Jukebox>>,
+) -> (Result<Ended, ServeError>, Vec<Body>, Counts) {
     let counts = Counts::default();
     let book = deck.as_ref().map(|_| 77);
-    let hub = match deck {
+    let playing = music.is_some();
+    let mut hub = match deck {
         Some(deck) => hub(&counts).with_shortcuts(deck),
         None => hub(&counts),
     };
+    if let Some(music) = music.clone() {
+        hub = hub.with_music(music);
+    }
     let phone_identity = Identity::generate();
     let computer = Computer {
         identity: Identity::generate(),
@@ -333,6 +345,7 @@ fn talk_with(
     let mut got = Vec::new();
     let ended = thread::scope(|scope| {
         scope.spawn(|| hub.run());
+        scope.spawn(|| hub.run_music());
         let _stopper = Stopper(&hub);
         let served = scope.spawn(|| {
             serve(
@@ -367,7 +380,15 @@ fn talk_with(
                             pid: 42,
                             started_at: 1_000,
                         };
-                        if let Some(book) = book {
+                        if playing {
+                            let command = sidedesk_core::MusicCommand {
+                                request_id: 5,
+                                action: sidedesk_core::MusicAction::PlayPause as i32,
+                                level: 0,
+                            };
+                            session.send(Body::MusicCommand(command)).unwrap();
+                            session.send(Body::MusicCommand(command)).unwrap();
+                        } else if let Some(book) = book {
                             let run = sidedesk_core::RunShortcut {
                                 request_id: 5,
                                 shortcut_id: 1,
@@ -867,4 +888,62 @@ fn shortcut_subscriptions_and_a_hub_without_a_deck() {
     phone.set(&watch(View::Performance, &[]));
     phone.set(&watch(View::Shortcuts, &[]));
     assert_eq!(lists(&phone), 1);
+}
+
+/// 재생/멈춤 수를 세는 가짜 플레이어
+struct Deejay(Arc<AtomicUsize>);
+
+impl sidedesk_domain::Player for Deejay {
+    fn now(&self) -> Result<(sidedesk_domain::Track, Option<sidedesk_domain::Picture>), PortError> {
+        Ok((sidedesk_domain::Track::nothing(), None))
+    }
+    fn command(&self, _: sidedesk_core::MusicAction) -> Result<(), PortError> {
+        self.0.fetch_add(1, Ordering::SeqCst);
+        Ok(())
+    }
+    fn watch(&self, _: Option<sidedesk_domain::Changed>) {}
+}
+
+struct Mute;
+
+impl sidedesk_domain::Speaker for Mute {
+    fn read(&self) -> Option<sidedesk_domain::Level> {
+        None
+    }
+    fn set(&self, _: u32) -> Result<(), PortError> {
+        Err(PortError::new("볼륨을 바꿀 수 없는 장치입니다"))
+    }
+}
+
+fn jukebox() -> (Arc<sidedesk_domain::Jukebox>, Arc<AtomicUsize>) {
+    let plays = Arc::new(AtomicUsize::new(0));
+    (
+        Arc::new(sidedesk_domain::Jukebox::new(
+            Box::new(Deejay(Arc::clone(&plays))),
+            Box::new(Mute),
+            sidedesk_domain::MusicCadence::default(),
+        )),
+        plays,
+    )
+}
+
+#[test]
+fn a_music_command_runs_once_over_the_link() {
+    let (music, plays) = jukebox();
+    let (ended, got, _) = talk_full(false, None, Some(music));
+    assert_eq!(ended, Ok(Ended::Stopped));
+    let results = got
+        .iter()
+        .filter(|body| matches!(body, Body::CommandResult(r) if r.ok && r.request_id == 5))
+        .count();
+    assert_eq!(results, 2, "{got:?}");
+    assert_eq!(plays.load(Ordering::SeqCst), 1);
+}
+
+#[test]
+fn a_forgotten_phone_cannot_control_music() {
+    let (music, plays) = jukebox();
+    let (ended, _, _) = talk_full(true, None, Some(music));
+    assert_eq!(ended, Err(ServeError::Forgotten));
+    assert_eq!(plays.load(Ordering::SeqCst), 0);
 }
