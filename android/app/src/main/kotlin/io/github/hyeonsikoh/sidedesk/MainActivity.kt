@@ -22,6 +22,21 @@ import io.github.hyeonsikoh.sidedesk.clock.ClockViewModel
 import io.github.hyeonsikoh.sidedesk.desk.AiPart
 import io.github.hyeonsikoh.sidedesk.desk.ShortcutPart
 import io.github.hyeonsikoh.sidedesk.desk.MusicPart
+import io.github.hyeonsikoh.sidedesk.rest.BatteryWatch
+import io.github.hyeonsikoh.sidedesk.rest.Hold
+import io.github.hyeonsikoh.sidedesk.rest.RestPanel
+import io.github.hyeonsikoh.sidedesk.rest.RestScreen
+import io.github.hyeonsikoh.sidedesk.rest.RestViewModel
+import io.github.hyeonsikoh.sidedesk.rest.applyWindow
+import io.github.hyeonsikoh.sidedesk.rest.keepScreenOn
+import io.github.hyeonsikoh.sidedesk.clock.rememberNow
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.input.pointer.PointerEventPass
+import androidx.compose.ui.input.pointer.pointerInput
 import io.github.hyeonsikoh.sidedesk.music.MusicActions
 import io.github.hyeonsikoh.sidedesk.music.MusicViewModel
 import io.github.hyeonsikoh.sidedesk.shortcut.ShortcutViewModel
@@ -56,17 +71,25 @@ class MainActivity : ComponentActivity() {
         viewModelFactory { initializer { DeskViewModel(app.link) { newRequestId().toLong() } } }
     }
     private val ai: AiViewModel by viewModels {
-        viewModelFactory { initializer { AiViewModel(app.link, PhoneBuzzer(app)) } }
+        viewModelFactory { initializer { AiViewModel(app.link, buzzer) } }
     }
     private val shortcuts: ShortcutViewModel by viewModels {
-        viewModelFactory { initializer { ShortcutViewModel(app.link, PhoneBuzzer(app)) { newRequestId().toLong() } } }
+        viewModelFactory { initializer { ShortcutViewModel(app.link, buzzer) { newRequestId().toLong() } } }
     }
     private val music: MusicViewModel by viewModels {
-        viewModelFactory { initializer { MusicViewModel(app.link, PhoneBuzzer(app), { newRequestId().toLong() }) } }
+        viewModelFactory { initializer { MusicViewModel(app.link, buzzer, { newRequestId().toLong() }) } }
     }
     private val clock: ClockViewModel by viewModels {
         viewModelFactory { initializer { ClockViewModel(app.link, settings) } }
     }
+    private val rest: RestViewModel by viewModels {
+        viewModelFactory { initializer { RestViewModel(settings, ai.state) } }
+    }
+
+    /** 세 화면(AI, 단축키, 음악)이 함께 쓰는 진동. 세기와 끔은 쉬기 설정을 따른다. */
+    private val buzzer by lazy { PhoneBuzzer(app) { rest.state.value.vibration } }
+    private val battery by lazy { BatteryWatch(this) { charging, percent -> power = charging to percent; fitWindow() } }
+    private var power: Pair<Boolean, Int?> = false to null
 
     /** 위치 권한을 묻기 전에 한 번 보이는 안내 */
     private val askLocation = mutableStateOf(false)
@@ -87,40 +110,87 @@ class MainActivity : ComponentActivity() {
             }
         }
         if (BuildConfig.DEBUG && savedInstanceState == null) openForCheck()
+        // 쉼은 Compose 를 거치지 않고 바로 넘긴다. Compose 의 모으기는 화면이 안 보이면 멈추기 때문이다.
+        lifecycleScope.launch {
+            rest.state.collect {
+                desk.setResting(it.resting)
+                fitWindow()
+            }
+        }
+        lifecycleScope.launch { clock.state.collect { rest.hold(Hold.Picking, it.picking) } }
+        lifecycleScope.launch { desk.state.collect { rest.hold(Hold.Confirm, it.asking != null || askLocation.value) } }
+        lifecycleScope.launch {
+            home.state.collect { rest.hold(Hold.Pairing, it.pairingCode != null || it.problem != null) }
+        }
+        fitWindow()
         setContent {
             val clockState = clock.state.collectAsStateWithLifecycle().value
-            LaunchedEffect(clockState.theme) { barsFor(clockState.theme) }
+            val restState = rest.state.collectAsStateWithLifecycle().value
+            LaunchedEffect(clockState.theme) {
+                barsFor(clockState.theme)
+                fitWindow()
+            }
+            LaunchedEffect(askLocation.value) { rest.hold(Hold.Confirm, askLocation.value || desk.state.value.asking != null) }
             SideDeskTheme(clockState.theme) {
-                val state = home.state.collectAsStateWithLifecycle().value
-                if (state.pairingCode != null || state.problem != null) {
-                    HomeScreen(state, home::answer)
-                } else {
-                    val actions = remember {
-                        DeskActions(
-                            desk::show, desk::next, desk::previous, desk::sortBy, desk::ask, desk::cancel,
-                            desk::confirmKill, desk::dismissNotice,
+                Box(
+                    Modifier
+                        .fillMaxSize()
+                        // 누름(down)마다 쉬기 타이머를 다시 잰다. 보기만 하고 소비하지 않는다.
+                        .pointerInput(Unit) {
+                            awaitEachGesture {
+                                awaitFirstDown(requireUnconsumed = false, pass = PointerEventPass.Initial)
+                                rest.touched()
+                            }
+                        },
+                ) {
+                    val state = home.state.collectAsStateWithLifecycle().value
+                    if (state.pairingCode != null || state.problem != null) {
+                        HomeScreen(state, home::answer)
+                    } else {
+                        val actions = remember {
+                            DeskActions(
+                                desk::show, desk::next, desk::previous, desk::sortBy, desk::ask, desk::cancel,
+                                desk::confirmKill, desk::dismissNotice,
+                            )
+                        }
+                        val pick = remember { PickActions(clock::setFace, clock::setTheme, clock::done) }
+                        val panel = RestPanel(
+                            restState, buzzer.canSetStrength,
+                            rest::setKeepOn, rest::setRestAfter, rest::setWakeOnAlert, rest::setVibration,
+                        )
+                        val part = ClockPart(clockState, System::currentTimeMillis, clock::pick, clock::nextFace, clock::previousFace, pick, state.notice, panel)
+                        val aiPart = AiPart(ai.state.collectAsStateWithLifecycle().value, ai::selectTab)
+                        DeskScreen(
+                            desk.state.collectAsStateWithLifecycle().value,
+                            part,
+                            actions,
+                            aiPart,
+                            ShortcutPart(shortcuts.state.collectAsStateWithLifecycle().value, shortcuts::press),
+                            MusicPart(
+                                music.state.collectAsStateWithLifecycle().value,
+                                { System.nanoTime() / 1_000_000 },
+                                remember { MusicActions(music::playPause, music::next, music::previous, music::dragVolume, music::releaseVolume) },
+                            ),
+                            modal = if (askLocation.value) LOCATION_NOTICE else null,
+                            onModal = ::answerLocation,
                         )
                     }
-                    val pick = remember { PickActions(clock::setFace, clock::setTheme, clock::done) }
-                    val part = ClockPart(clockState, System::currentTimeMillis, clock::pick, clock::nextFace, clock::previousFace, pick, state.notice)
-                    val aiPart = AiPart(ai.state.collectAsStateWithLifecycle().value, ai::selectTab)
-                    DeskScreen(
-                        desk.state.collectAsStateWithLifecycle().value,
-                        part,
-                        actions,
-                        aiPart,
-                        ShortcutPart(shortcuts.state.collectAsStateWithLifecycle().value, shortcuts::press),
-                        MusicPart(
-                            music.state.collectAsStateWithLifecycle().value,
-                            { System.nanoTime() / 1_000_000 },
-                            remember { MusicActions(music::playPause, music::next, music::previous, music::dragVolume, music::releaseVolume) },
-                        ),
-                        modal = if (askLocation.value) LOCATION_NOTICE else null,
-                        onModal = ::answerLocation,
-                    )
+                    RestScreen(restState.resting, restState, clockState, rememberNow(System::currentTimeMillis), rest::touched)
                 }
             }
         }
+    }
+
+    /** 쉼과 켜 두기 설정, 배터리로 창(켜 두기, 밝기, 바 숨김)을 다시 건다. */
+    private fun fitWindow() {
+        val now = rest.state.value
+        applyWindow(now.resting, keepScreenOn(now.keepOn, power.first, power.second))
+    }
+
+    override fun onWindowFocusChanged(hasFocus: Boolean) {
+        super.onWindowFocusChanged(hasFocus)
+        // 시스템 권한 창이 앞에 있으면 그 안의 누름을 앱이 못 보므로 쉬지 않는다.
+        rest.hold(Hold.NoFocus, !hasFocus)
     }
 
     private fun granted(permission: String) = ContextCompat.checkSelfPermission(this, permission) ==
@@ -175,11 +245,17 @@ class MainActivity : ComponentActivity() {
         super.onStart()
         desk.setVisible(true)
         clock.setVisible(true)
+        rest.setVisible(true)
+        battery.start()
         location.refresh()
     }
 
     override fun onStop() {
         desk.setVisible(false)
+        desk.setResting(false)
+        rest.setVisible(false)
+        battery.stop()
+        fitWindow()
         clock.setVisible(false)
         location.stop()
         clock.done()

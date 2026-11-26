@@ -230,4 +230,27 @@ class DeskViewModelTest {
         desk.show(Screen.Shortcuts)
         assertEquals(Subscription(Topic.Shortcuts, setOf(Topic.Weather, Topic.Ai, Topic.Perf, Topic.Processes, Topic.Music)), link.subscriptions.last())
     }
+
+    @Test
+    fun restingAsksOnlyForWeatherAndAi() {
+        val desk = DeskViewModel(link) { 1L }
+        desk.setVisible(true)
+        desk.show(Screen.Perf)
+        desk.setResting(true)
+        assertEquals(Subscription(Topic.Weather, setOf(Topic.Ai)), link.subscriptions.last())
+        desk.setResting(false)
+        assertEquals(Subscription(Topic.Perf, setOf(Topic.Weather, Topic.Ai, Topic.Processes, Topic.Shortcuts, Topic.Music)), link.subscriptions.last())
+    }
+
+    @Test
+    fun comingBackAfterRestingAsksForTheUsualTable() {
+        val desk = DeskViewModel(link) { 1L }
+        desk.setVisible(true)
+        desk.setResting(true)
+        // onStop 은 보이기와 쉼을 함께 푼다.
+        desk.setVisible(false)
+        desk.setResting(false)
+        desk.setVisible(true)
+        assertEquals(Subscription(Topic.Weather, setOf(Topic.Ai, Topic.Perf, Topic.Processes, Topic.Shortcuts, Topic.Music)), link.subscriptions.last())
+    }
 }

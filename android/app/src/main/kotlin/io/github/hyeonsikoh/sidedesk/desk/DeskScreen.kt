@@ -58,6 +58,7 @@ import io.github.hyeonsikoh.sidedesk.ai.AiScreenState
 import io.github.hyeonsikoh.sidedesk.ai.AiTile
 import io.github.hyeonsikoh.sidedesk.ai.ForgeTab
 import io.github.hyeonsikoh.sidedesk.clock.ClockState
+import io.github.hyeonsikoh.sidedesk.rest.RestPanel
 import io.github.hyeonsikoh.sidedesk.music.MusicActions
 import io.github.hyeonsikoh.sidedesk.music.MusicBig
 import io.github.hyeonsikoh.sidedesk.music.MusicState
@@ -131,6 +132,10 @@ class ClockPart(
     val actions: PickActions,
     /** 블루투스를 쓸 수 없는 이유. USB 는 된다. */
     val notice: String? = null,
+    /** 고르기 판의 쉬기 설정 */
+    val rest: RestPanel? = null,
+    /** 고르기 판을 쉬기 설정부터 열지(그림 시험용) */
+    val restOpen: Boolean = false,
 )
 
 @Composable
@@ -269,7 +274,7 @@ private fun Big(state: DeskState, parts: Parts, now: Long, actions: DeskActions,
                 Text(it, color = Palette.muted, fontSize = 12.sp, textAlign = TextAlign.Center, modifier = Modifier.align(Alignment.TopCenter))
             }
         }
-        if (picking) Picker(clock.state, clock.actions, Modifier.align(Alignment.BottomCenter).fillMaxWidth())
+        if (picking) Picker(clock.state, clock.actions, Modifier.align(Alignment.BottomCenter).fillMaxWidth(), clock.rest, clock.restOpen)
         state.notice?.let { notice ->
             LaunchedEffect(notice) {
                 delay(4_000)

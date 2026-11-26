@@ -66,6 +66,23 @@ val LightColors = Colors(
     dark = false,
 )
 
+/** 쉬는 화면 색. 검은 바탕에 어두운 회색 한 색이라 판과 칸은 보이지 않고 내용만 어둡게 남는다. */
+val RestColors = DarkColors.copy(
+    ground = Color.Black,
+    panel = Color.Black,
+    card = Color.Black,
+    raised = Color.Black,
+    side = Color.Black,
+    liquid = Color.Black,
+    accent = Color(0xFF3A3F46),
+    ink = Color(0xFF3A3F46),
+    muted = Color(0xFF3A3F46),
+    hot = Color.Black,
+    waiting = Color(0xFF3A3F46),
+    digitTop = Color(0xFF3A3F46),
+    digitBottom = Color(0xFF3A3F46),
+)
+
 val LocalPalette = staticCompositionLocalOf { DarkColors }
 
 /** 지금 테마의 색 */

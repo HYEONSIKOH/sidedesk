@@ -139,9 +139,24 @@ class DeskViewModel(
 
     fun dismissNotice() = _state.update { it.copy(notice = null) }
 
+    private var resting = false
+
+    /** 쉬는 동안은 시계와 AI 알림만 쓰므로 날씨와 AI 만 받는다. 깨면 원래 표로 돌아간다. */
+    fun setResting(value: Boolean) {
+        if (resting == value) return
+        resting = value
+        tellComputer()
+    }
+
     private fun tellComputer() {
         val now = _state.value
-        link.subscribe(if (visible) Subscription(now.big.topic, now.small.map { it.topic }.toSet()) else Subscription.NONE)
+        link.subscribe(
+            when {
+                !visible -> Subscription.NONE
+                resting -> Subscription(Topic.Weather, setOf(Topic.Ai))
+                else -> Subscription(now.big.topic, now.small.map { it.topic }.toSet())
+            },
+        )
     }
 
     private fun sorted(list: List<ProcessInfo>, sort: Sort) = when (sort) {
