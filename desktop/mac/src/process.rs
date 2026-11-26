@@ -114,7 +114,7 @@ impl ProcessTable for MacProcesses {
         Err(match std::io::Error::last_os_error().raw_os_error() {
             Some(libc::ESRCH) => gone(),
             Some(libc::EPERM) => PortError::new("이 프로세스를 끝낼 권한이 없습니다"),
-            _ => PortError::new("프로세스를 끝내지 못했습니다"),
+            _ => PortError::new("알 수 없는 오류가 났습니다"),
         })
     }
 }
