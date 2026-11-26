@@ -96,9 +96,13 @@ jobs:
           toolchain: stable
           targets: aarch64-apple-ios,aarch64-apple-ios-sim
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+      # 첫 실행(Xcode 26.6)에서 통과한 판으로 고정한다. 서버 이미지에서 빠지면 여기서 멈춘다.
       - name: 도구
         run: |
-          xcodebuild -version
+          xcode=$(ls -d /Applications/Xcode_26.6*.app | head -1)
+          test -n "$xcode" || { echo "Xcode 26.6 이 서버에 없음"; ls -d /Applications/Xcode*.app; exit 1; }
+          echo "DEVELOPER_DIR=$xcode/Contents/Developer" >> "$GITHUB_ENV"
+          DEVELOPER_DIR="$xcode/Contents/Developer" xcodebuild -version
           command -v xcodegen > /dev/null || brew install xcodegen
       - name: 공용 코어
         run: scripts/build-ios.sh
