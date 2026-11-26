@@ -185,6 +185,10 @@ fn run(
                     }
                 }
                 Event::Message(Body::KillProcess(command)) if subscriber.is_some() => {
+                    // Ping 주기를 기다리지 않고, 명령마다 등록이 남아 있는지 본다.
+                    if !is_trusted(context, peer)? {
+                        return Err(ServeError::Forgotten);
+                    }
                     let result = context.hub.kill(&command);
                     session.send(Body::CommandResult(result))?;
                 }
@@ -220,13 +224,7 @@ fn run(
         }
         if Instant::now() >= next_ping {
             // 그 사이 짝을 끊었으면 더 붙어 있지 않는다.
-            if let Some(key) = peer
-                && !context
-                    .keys
-                    .trusted()?
-                    .iter()
-                    .any(|paired| paired.key == key)
-            {
+            if !is_trusted(context, peer)? {
                 return Err(ServeError::Forgotten);
             }
             session.ping()?;
@@ -252,6 +250,18 @@ fn run(
             Received::Closed => return Ok(Ended::Closed),
         }
     }
+}
+
+/// 아직 상대를 모르면(준비 전) 막지 않는다.
+fn is_trusted(context: &Context, peer: Option<[u8; KEY_LEN]>) -> Result<bool, ServeError> {
+    let Some(key) = peer else {
+        return Ok(true);
+    };
+    Ok(context
+        .keys
+        .trusted()?
+        .iter()
+        .any(|paired| paired.key == key))
 }
 
 /// 이름이나 일련번호 없이 저장된 옛 기록을 채운다. 실패해도 연결은 잇는다.

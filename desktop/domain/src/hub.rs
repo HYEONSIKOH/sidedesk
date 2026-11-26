@@ -1,6 +1,7 @@
 //! 구독과 수집. 폰 여러 대가 수집 하나를 함께 쓰고, 아무도 안 보면 수집을 멈춘다.
 
 use std::collections::{HashMap, VecDeque};
+use std::panic::{self, AssertUnwindSafe};
 use std::sync::{Condvar, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
@@ -8,7 +9,7 @@ use sidedesk_core::{
     Body, CommandResult, KillProcess, Performance, Process, Processes, Subscribe, View,
 };
 
-use crate::port::{Meter, ProcessTable};
+use crate::port::{Meter, PortError, ProcessTable};
 
 /// CPU 상위와 메모리 상위를 이만큼씩 골라 합친다.
 const TOP: usize = 30;
@@ -221,8 +222,8 @@ impl Hub {
                     state.processes.tried(now);
                 }
                 drop(state);
-                let performance = performance.then(|| self.meter.performance());
-                let processes = processes.then(|| self.table.processes().map(top));
+                let performance = performance.then(|| guarded(|| self.meter.performance()));
+                let processes = processes.then(|| guarded(|| self.table.processes()).map(top));
                 state = self.lock();
                 let now = Instant::now();
                 if let Some(Ok(value)) = performance {
@@ -324,6 +325,12 @@ impl Drop for Subscriber<'_> {
         drop(state);
         self.hub.changed.notify_all();
     }
+}
+
+/// 수집기가 panic 해도 수집 스레드는 살아 다음 주기에 다시 시도한다.
+fn guarded<T>(collect: impl FnOnce() -> Result<T, PortError>) -> Result<T, PortError> {
+    panic::catch_unwind(AssertUnwindSafe(collect))
+        .unwrap_or_else(|_| Err(PortError::new("수집기가 멈춤")))
 }
 
 /// CPU 상위와 메모리 상위를 합친 목록. 이름은 길이를 줄인다.

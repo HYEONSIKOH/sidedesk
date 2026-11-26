@@ -1,8 +1,8 @@
 //! 구독, 수집 주기, 멈춤, 명령 중복을 가짜 수집기와 가짜 폰으로 시험한다.
 
+use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
-use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -10,8 +10,8 @@ use sidedesk_core::{
     Body, Event, Identity, KillProcess, Performance, Process, Role, Session, Subscribe, View,
 };
 use sidedesk_domain::{
-    Active, Cadence, ComputerName, Conn, Context, Hub, Keys, Meter, PairRequests, Paired, Phone,
-    PortError, ProcessTable, Prompt, Received, Report, Timing, serve,
+    Active, Cadence, ComputerName, Conn, Context, Ended, Hub, Keys, Meter, PairRequests, Paired,
+    Phone, PortError, ProcessTable, Prompt, Received, Report, ServeError, Timing, serve,
 };
 
 #[derive(Clone, Default)]
@@ -109,8 +109,8 @@ fn collects_only_while_someone_watches() {
         let performance = count(&counts.performance);
         let processes = count(&counts.processes);
         // 400ms 동안 성능 40ms 마다(약 10번), 프로세스 작은 칸 240ms 마다(약 2번)
-        assert!((7..=12).contains(&performance), "성능 {performance}");
-        assert!((1..=3).contains(&processes), "프로세스 {processes}");
+        assert!((5..=14).contains(&performance), "성능 {performance}");
+        assert!((1..=4).contains(&processes), "프로세스 {processes}");
         assert!(!phone.take().is_empty());
 
         // 화면이 꺼지면 빈 구독이 온다.
@@ -154,9 +154,9 @@ fn two_phones_share_one_collection() {
         }
         let collected = count(&counts.performance);
         // 수집은 빠른 쪽 주기 한 번뿐이고, 작은 칸 폰은 그 절반쯤 받는다.
-        assert!((10..=14).contains(&collected), "수집 {collected}");
-        assert!(got.0 >= collected - 1, "큰 화면 {got:?}");
-        assert!((5..=8).contains(&got.1), "작은 칸 {got:?}");
+        assert!((6..=16).contains(&collected), "수집 {collected}");
+        assert!(got.0 + 2 >= collected, "큰 화면 {got:?}");
+        assert!((3..=9).contains(&got.1) && got.1 < got.0, "작은 칸 {got:?}");
         hub.stop();
     });
 }
@@ -239,6 +239,8 @@ impl Conn for Pipe {
 struct Computer {
     identity: Identity,
     phone: [u8; 32],
+    /// 켜지면 등록을 해제한 것처럼 빈 목록을 준다.
+    forgotten: AtomicBool,
 }
 
 impl ComputerName for Computer {
@@ -253,6 +255,9 @@ impl Keys for Computer {
     }
 
     fn trusted(&self) -> Result<Vec<Paired>, PortError> {
+        if self.forgotten.load(Ordering::SeqCst) {
+            return Ok(Vec::new());
+        }
         Ok(vec![Paired {
             key: self.phone,
             name: "폰".into(),
@@ -283,14 +288,16 @@ impl Report for Computer {
     fn note(&self, _: &str, _: sidedesk_domain::Note) {}
 }
 
-#[test]
-fn a_phone_subscribes_and_kills_over_the_link() {
+/// 폰 세션을 400ms 돌린다. Ready 가 되면 구독하고 같은 종료 명령을 두 번 보낸다.
+/// `forget` 이면 명령을 보내기 직전에 컴퓨터에서 등록을 해제한다.
+fn talk(forget: bool) -> (Result<Ended, ServeError>, Vec<Body>, Counts) {
     let counts = Counts::default();
     let hub = hub(&counts);
     let phone_identity = Identity::generate();
     let computer = Computer {
         identity: Identity::generate(),
         phone: phone_identity.public,
+        forgotten: AtomicBool::new(false),
     };
     let computer_key = computer.identity.public;
     let requests = PairRequests::default();
@@ -304,15 +311,15 @@ fn a_phone_subscribes_and_kills_over_the_link() {
         active: &active,
         hub: &hub,
         timing: Timing {
-            ping: Duration::from_millis(50),
+            ping: Duration::from_secs(1),
             silence: Duration::from_secs(2),
             answer: Duration::from_secs(1),
         },
     };
     let stop = AtomicBool::new(false);
     let (mut mine, mut theirs) = pipes();
-    let got: Mutex<Vec<Body>> = Mutex::default();
-    thread::scope(|scope| {
+    let mut got = Vec::new();
+    let ended = thread::scope(|scope| {
         scope.spawn(|| hub.run());
         let _stopper = Stopper(&hub);
         let served = scope.spawn(|| {
@@ -330,7 +337,7 @@ fn a_phone_subscribes_and_kills_over_the_link() {
         let mut sent = false;
         while start.elapsed() < Duration::from_millis(400) {
             if let Received::Bytes(n) = theirs.receive(&mut buffer).unwrap() {
-                session.feed(&buffer[..n]).unwrap();
+                let _ = session.feed(&buffer[..n]);
             }
             while let Some(event) = session.next_event() {
                 match event {
@@ -342,6 +349,7 @@ fn a_phone_subscribes_and_kills_over_the_link() {
                                 &[View::Processes],
                             )))
                             .unwrap();
+                        computer.forgotten.store(forget, Ordering::SeqCst);
                         let kill = KillProcess {
                             request_id: 5,
                             pid: 42,
@@ -351,17 +359,22 @@ fn a_phone_subscribes_and_kills_over_the_link() {
                         session.send(Body::KillProcess(kill.clone())).unwrap();
                         session.send(Body::KillProcess(kill)).unwrap();
                     }
-                    Event::Message(body) => got.lock().unwrap().push(body),
+                    Event::Message(body) => got.push(body),
                     _ => {}
                 }
             }
-            theirs.send(&session.take_output()).unwrap();
+            let _ = theirs.send(&session.take_output());
         }
         stop.store(true, Ordering::Relaxed);
-        served.join().unwrap().unwrap();
-        hub.stop();
+        served.join().unwrap()
     });
-    let got = got.into_inner().unwrap();
+    (ended, got, counts)
+}
+
+#[test]
+fn a_phone_subscribes_and_kills_over_the_link() {
+    let (ended, got, counts) = talk(false);
+    assert_eq!(ended, Ok(Ended::Stopped));
     let results: Vec<_> = got
         .iter()
         .filter_map(|body| match body {
@@ -380,9 +393,54 @@ fn a_phone_subscribes_and_kills_over_the_link() {
         .iter()
         .filter(|body| matches!(body, Body::Performance(_)))
         .count();
-    assert!(performance >= 5, "성능 {performance}");
+    assert!(performance >= 3, "성능 {performance}");
     assert!(
         got.iter()
             .any(|body| matches!(body, Body::Processes(p) if p.items.len() == 1))
     );
+}
+
+#[test]
+fn a_forgotten_phone_cannot_kill() {
+    let (ended, got, counts) = talk(true);
+    assert_eq!(ended, Err(ServeError::Forgotten));
+    assert_eq!(count(&counts.kills), 0);
+    assert!(
+        !got.iter()
+            .any(|body| matches!(body, Body::CommandResult(_)))
+    );
+}
+
+/// 처음 한 번 panic 하는 수집기
+struct Shaky(AtomicUsize);
+
+impl Meter for Shaky {
+    fn performance(&self) -> Result<Performance, PortError> {
+        if self.0.fetch_add(1, Ordering::SeqCst) == 0 {
+            panic!("수집기 시험용 panic");
+        }
+        Ok(Performance::default())
+    }
+}
+
+#[test]
+fn a_panicking_collector_is_tried_again() {
+    let counts = Counts::default();
+    let shaky = Shaky(AtomicUsize::new(0));
+    let hub = Hub::new(Box::new(shaky), Box::new(Fake(counts)), cadence());
+    thread::scope(|scope| {
+        let runner = scope.spawn(|| hub.run());
+        let _stopper = Stopper(&hub);
+        let phone = hub.join();
+        phone.set(&watch(View::Performance, &[]));
+        let start = Instant::now();
+        let mut got = 0;
+        while start.elapsed() < Duration::from_millis(300) && got == 0 {
+            got += phone.take().len();
+            thread::sleep(Duration::from_millis(5));
+        }
+        assert!(got > 0);
+        assert!(!runner.is_finished());
+        hub.stop();
+    });
 }

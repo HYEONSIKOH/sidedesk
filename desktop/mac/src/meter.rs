@@ -201,7 +201,7 @@ fn disk() -> Result<f32, PortError> {
     Err(PortError::new("디스크 사용량을 읽지 못함"))
 }
 
-/// 루프백을 뺀 모든 연결의 받은 바이트, 보낸 바이트(64비트 계수)
+/// 루프백과 점대점(VPN)을 뺀 연결의 받은 바이트, 보낸 바이트(64비트 계수)
 fn network() -> Result<(u64, u64), PortError> {
     let broken = || PortError::new("네트워크 사용량을 읽지 못함");
     let mut mib = [libc::CTL_NET, libc::PF_ROUTE, 0, 0, libc::NET_RT_IFLIST2, 0];
@@ -253,7 +253,8 @@ fn network() -> Result<(u64, u64), PortError> {
             // SAFETY: 종류가 RTM_IFINFO2 이고 크기가 남아 있다.
             let message: libc::if_msghdr2 =
                 unsafe { std::ptr::read_unaligned(buffer[offset..].as_ptr().cast()) };
-            if message.ifm_flags & libc::IFF_LOOPBACK == 0 {
+            // 루프백과 VPN 같은 점대점 연결은 실제 연결과 겹쳐 세지 않게 뺀다.
+            if message.ifm_flags & (libc::IFF_LOOPBACK | libc::IFF_POINTOPOINT) == 0 {
                 total.0 += message.ifm_data.ifi_ibytes;
                 total.1 += message.ifm_data.ifi_obytes;
             }
