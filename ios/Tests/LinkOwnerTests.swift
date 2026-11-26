@@ -25,15 +25,15 @@ final class Closes: @unchecked Sendable {
 
 final class Results: @unchecked Sendable {
     private let lock = NSLock()
-    private var items: [KillResult] = []
+    private var items: [CommandResult] = []
 
-    var all: [KillResult] {
+    var all: [CommandResult] {
         lock.lock()
         defer { lock.unlock() }
         return items
     }
 
-    var emit: @Sendable (KillResult) -> Void {
+    var emit: @Sendable (CommandResult) -> Void {
         { [self] result in
             lock.lock()
             items.append(result)
@@ -48,7 +48,7 @@ struct LinkOwnerTests {
 
     func owner() -> LinkOwner {
         let clock = clock
-        return LinkOwner(clock: { clock.now }, emitKill: results.emit)
+        return LinkOwner(clock: { clock.now }, emitResult: results.emit)
     }
 
     @Test func usbTakesOverAndClosesBluetooth() {
@@ -109,16 +109,16 @@ struct LinkOwnerTests {
         let owner = owner()
         let mine = owner.takeUsb(close: {})!
         owner.ready(mine, computer: mac)
-        owner.kill(KillCommand(commandId: 5, pid: 1, startedAt: 2))
-        #expect(owner.pendingKills(computer: mac).map(\.commandId) == [5])
-        owner.receivedKill(KillResult(commandId: 5, ok: true))
-        #expect(owner.pendingKills(computer: mac).isEmpty)
-        #expect(results.all == [KillResult(commandId: 5, ok: true)])
+        owner.send(.kill(KillCommand(commandId: 5, pid: 1, startedAt: 2)))
+        #expect(owner.pendingCommands(computer: mac).map(\.commandId) == [5])
+        owner.receivedResult(CommandResult(commandId: 5, ok: true))
+        #expect(owner.pendingCommands(computer: mac).isEmpty)
+        #expect(results.all == [CommandResult(commandId: 5, ok: true)])
     }
 
     @Test func dropsResultsOfUnknownCommands() {
         let owner = owner()
-        owner.receivedKill(KillResult(commandId: 9, ok: true))
+        owner.receivedResult(CommandResult(commandId: 9, ok: true))
         #expect(results.all.isEmpty)
     }
 
@@ -126,33 +126,33 @@ struct LinkOwnerTests {
         let owner = owner()
         let mine = owner.takeBluetooth(computer: mac, close: {})!
         owner.release(mine)
-        owner.kill(KillCommand(commandId: 1, pid: 1, startedAt: 1))
-        #expect(owner.pendingKills(computer: otherMac).isEmpty)
-        #expect(owner.pendingKills(computer: mac).count == 1)
+        owner.send(.kill(KillCommand(commandId: 1, pid: 1, startedAt: 1)))
+        #expect(owner.pendingCommands(computer: otherMac).isEmpty)
+        #expect(owner.pendingCommands(computer: mac).count == 1)
     }
 
     @Test func stopsSendingAfterTheLimit() {
         let owner = owner()
         _ = owner.takeBluetooth(computer: mac, close: {})
-        owner.kill(KillCommand(commandId: 1, pid: 1, startedAt: 1))
+        owner.send(.kill(KillCommand(commandId: 1, pid: 1, startedAt: 1)))
         clock.advance(LinkOwner.killLimit + 1)
-        #expect(owner.pendingKills(computer: mac).isEmpty)
+        #expect(owner.pendingCommands(computer: mac).isEmpty)
     }
 
     @Test func givingUpRemovesAndReportsOnce() {
         let owner = owner()
         _ = owner.takeBluetooth(computer: mac, close: {})
-        owner.kill(KillCommand(commandId: 1, pid: 1, startedAt: 1))
+        owner.send(.kill(KillCommand(commandId: 1, pid: 1, startedAt: 1)))
         owner.giveUp(1)
         owner.giveUp(1)
-        owner.receivedKill(KillResult(commandId: 1, ok: true))
-        #expect(results.all == [KillResult(commandId: 1, ok: false, reason: LinkOwner.notConnected)])
+        owner.receivedResult(CommandResult(commandId: 1, ok: true))
+        #expect(results.all == [CommandResult(commandId: 1, ok: false, reason: LinkOwner.notConnected)])
     }
 
     @Test func failsAtOnceWithoutAnyComputer() {
         let owner = owner()
-        owner.kill(KillCommand(commandId: 3, pid: 1, startedAt: 1))
-        #expect(results.all == [KillResult(commandId: 3, ok: false, reason: LinkOwner.notConnected)])
+        owner.send(.kill(KillCommand(commandId: 3, pid: 1, startedAt: 1)))
+        #expect(results.all == [CommandResult(commandId: 3, ok: false, reason: LinkOwner.notConnected)])
     }
 
     @Test func takesValuesOnlyFromTheCurrentConnection() {

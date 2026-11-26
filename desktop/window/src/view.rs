@@ -60,6 +60,9 @@ enum Change {
     Ready,
     /// 메뉴 막대(트레이) 메뉴
     Menu(MenuId),
+    /// 단축키 칸의 고르기 창(폴더면 true). 웹뷰 메시지 처리기 안에서 모달 창을 돌리면
+    /// 다시 들어오기 문제가 있어 이벤트 루프에서 띄운다.
+    Pick(bool),
     /// 시험이 화면에서 읽은 글자
     #[cfg(all(test, target_os = "windows"))]
     Read(String),
@@ -119,23 +122,39 @@ fn close<T>(shown: &mut Option<T>, can_reopen: bool) -> bool {
     !can_reopen
 }
 
-/// 메뉴 막대 아이콘: 둥근 네모(폰) 테두리
-fn tray_icon() -> Option<Icon> {
-    const SIDE: u32 = 32;
-    let mut rgba = vec![0u8; (SIDE * SIDE * 4) as usize];
-    for y in 0..SIDE {
-        for x in 0..SIDE {
-            let inside = (9..=22).contains(&x) && (3..=28).contains(&y);
-            let edge = inside && (x <= 11 || x >= 20 || y <= 5 || y >= 26);
-            let corner = (x == 9 || x == 22) && (y == 3 || y == 28);
-            let dot = (15..=16).contains(&x) && (23..=24).contains(&y);
-            if (edge && !corner) || dot {
-                let at = ((y * SIDE + x) * 4) as usize;
+const TRAY_SIDE: u32 = 32;
+
+/// 아이콘 모양(폰 테두리와 아래 점)에 드는 칸인지
+fn tray_shape(x: i64, y: i64) -> bool {
+    let inside = (9..=22).contains(&x) && (3..=28).contains(&y);
+    let edge = inside && (x <= 11 || x >= 20 || y <= 5 || y >= 26);
+    let corner = (x == 9 || x == 22) && (y == 3 || y == 28);
+    let dot = (15..=16).contains(&x) && (23..=24).contains(&y);
+    (edge && !corner) || dot
+}
+
+/// 메뉴 막대 아이콘: 둥근 네모(폰) 테두리. 맥은 검정 템플릿(밝기에 맞춰 색이 바뀜).
+/// 윈도우는 작업 표시줄이 밝든 어둡든 보이게 흰 모양에 검은 테두리를 두른다.
+fn tray_pixels(outlined: bool) -> Vec<u8> {
+    let side = i64::from(TRAY_SIDE);
+    let mut rgba = vec![0u8; (TRAY_SIDE * TRAY_SIDE * 4) as usize];
+    for y in 0..side {
+        for x in 0..side {
+            let at = ((y * side + x) * 4) as usize;
+            if tray_shape(x, y) {
+                let fill = if outlined { 255 } else { 0 };
+                rgba[at..at + 4].copy_from_slice(&[fill, fill, fill, 255]);
+            } else if outlined && (-1..=1).any(|dy| (-1..=1).any(|dx| tray_shape(x + dx, y + dy))) {
                 rgba[at..at + 4].copy_from_slice(&[0, 0, 0, 255]);
             }
         }
     }
-    Icon::from_rgba(rgba, SIDE, SIDE).ok()
+    rgba
+}
+
+fn tray_icon() -> Option<Icon> {
+    let rgba = tray_pixels(cfg!(not(target_os = "macos")));
+    Icon::from_rgba(rgba, TRAY_SIDE, TRAY_SIDE).ok()
 }
 
 fn make_tray(open_item: &MenuItem, quit_item: &MenuItem) -> Option<TrayIcon> {
@@ -313,6 +332,8 @@ fn build(
                 let _ = ipc.send_event(Change::Mode(chosen));
             } else if body.trim() == r#"{"ready":true}"# {
                 let _ = ipc.send_event(Change::Ready);
+            } else if let Some(folder) = crate::shortcuts::pick_request(body) {
+                let _ = ipc.send_event(Change::Pick(folder));
             } else if !SHORTCUTS.get().is_some_and(|panel| panel.command(body))
                 && !MUSIC.get().is_some_and(|panel| panel.command(body))
             {
@@ -369,6 +390,11 @@ fn handle(parts: &Parts, event: Event<'_, Change>, mode_file: &Path) -> bool {
         }
         Event::UserEvent(Change::Script(script)) => {
             let _ = webview.evaluate_script(&script);
+        }
+        Event::UserEvent(Change::Pick(folder)) => {
+            if let Some(panel) = SHORTCUTS.get() {
+                panel.pick(folder);
+            }
         }
         Event::UserEvent(Change::Drag) => {
             let _ = window.drag_window();
@@ -432,10 +458,11 @@ mod tests {
         }
     }
 
-    /// 창을 띄우고, 화면이 그려진 뒤 컴퓨터 이름 칸의 글자를 읽어 맞춘다.
+    /// 트레이 아이콘을 만들고, 창을 띄워 컴퓨터 이름을 읽고, 창을 닫았다가(화면, 자료 설정, 창을 버림)
+    /// 같은 자료 폴더로 다시 열어 또 읽는다. 끝나면 트레이 아이콘을 지운다.
     #[test]
-    #[ignore = "화면 세션에 창을 띄운다. CI 윈도우 작업에서 돌린다"]
-    fn windows_only_the_window_opens_and_shows_the_computer_name() {
+    #[ignore = "화면 세션에 창과 트레이 아이콘을 띄운다. CI 윈도우 작업에서 돌린다"]
+    fn windows_only_the_window_opens_closes_and_reopens_from_the_tray() {
         let name = "시험-PC";
         let board: &'static Board = Box::leak(Box::new(Board::new(
             Computer {
@@ -447,36 +474,52 @@ mod tests {
             Box::leak(Box::<PairRequests>::default()),
         )));
         let folder = std::env::temp_dir().join(format!("sidedesk-view-{}", std::process::id()));
+        let data = folder.join("WebView2");
         let mode_file = folder.join("mode.txt");
         let mut event_loop = EventLoopBuilder::<Change>::with_user_event()
             .with_any_thread(true)
             .build();
-        let parts = build(
-            &event_loop,
-            event_loop.create_proxy(),
-            board,
-            "auto",
-            &folder.join("WebView2"),
-        )
-        .unwrap();
-        let reader = event_loop.create_proxy();
-        let read: Mutex<Option<String>> = Mutex::new(None);
+        let proxy = event_loop.create_proxy();
+        let open_item = MenuItem::new("설정 열기", true, None);
+        let quit_item = MenuItem::new("끝내기", true, None);
+        let mut shown = Some(build(&event_loop, proxy.clone(), board, "auto", &data).unwrap());
+        let mut tray: Option<TrayIcon> = None;
+        let mut tray_made = false;
+        let reads: Mutex<Vec<String>> = Mutex::new(Vec::new());
         let started = Instant::now();
-        let limit = started + Duration::from_secs(60);
-        event_loop.run_return(|event, _, flow| {
+        let limit = started + Duration::from_secs(90);
+        event_loop.run_return(|event, target, flow| {
             *flow = ControlFlow::WaitUntil(limit);
             match event {
+                Event::NewEvents(StartCause::Init) => {
+                    tray = make_tray(&open_item, &quit_item);
+                    tray_made = tray.is_some();
+                }
                 Event::NewEvents(StartCause::ResumeTimeReached { .. }) => {
                     *flow = ControlFlow::Exit;
                 }
                 Event::UserEvent(Change::Read(text)) => {
-                    *read.lock().unwrap() = Some(text);
-                    *flow = ControlFlow::Exit;
+                    let count = {
+                        let mut reads = reads.lock().unwrap();
+                        reads.push(text);
+                        reads.len()
+                    };
+                    // 처음 읽은 뒤에는 창을 닫았다가 같은 자료 폴더로 다시 연다(트레이의 "설정 열기"와 같은 길).
+                    assert!(close(&mut shown, tray.is_some()) == !tray_made);
+                    if count == 1 {
+                        shown = build(target, proxy.clone(), board, "auto", &data).ok();
+                        assert!(shown.is_some(), "다시 열지 못함");
+                    } else {
+                        drop(tray.take());
+                        *flow = ControlFlow::Exit;
+                    }
                 }
-                // 화면이 다 뜨면 지금 값을 그리고(handle) 이어서 읽는다.
                 Event::UserEvent(Change::Ready) => {
-                    handle(&parts, event, &mode_file);
-                    let reader = reader.clone();
+                    let Some(parts) = &shown else {
+                        return;
+                    };
+                    handle(parts, event, &mode_file);
+                    let reader = proxy.clone();
                     let _ = parts.webview.evaluate_script_with_callback(
                         "document.getElementById('computer-name').textContent",
                         move |text| {
@@ -485,18 +528,52 @@ mod tests {
                     );
                 }
                 other => {
-                    handle(&parts, other, &mode_file);
+                    if let Some(parts) = &shown {
+                        handle(parts, other, &mode_file);
+                    }
                 }
             }
         });
-        eprintln!("창이 뜨고 글자를 읽기까지 {:?}", started.elapsed());
-        drop(parts);
+        eprintln!(
+            "트레이 {tray_made}, 두 번 열고 읽기까지 {:?}",
+            started.elapsed()
+        );
+        drop(shown);
+        drop(tray);
         let _ = std::fs::remove_dir_all(&folder);
-        let read = read
-            .into_inner()
-            .unwrap()
-            .expect("60초 안에 화면을 읽지 못함");
-        assert_eq!(read, format!("\"{name}\""));
+        assert!(tray_made, "트레이 아이콘을 만들지 못함");
+        let reads = reads.into_inner().unwrap();
+        assert_eq!(
+            reads,
+            vec![format!("\"{name}\""), format!("\"{name}\"")],
+            "두 번 다 화면을 읽어야 함"
+        );
+    }
+
+    #[test]
+    fn the_tray_icon_is_visible_on_light_and_dark_taskbars() {
+        let pixels = tray_pixels(true);
+        let colors: std::collections::HashSet<[u8; 4]> =
+            pixels.chunks(4).map(|p| [p[0], p[1], p[2], p[3]]).collect();
+        assert!(colors.contains(&[255, 255, 255, 255]), "흰 모양");
+        assert!(colors.contains(&[0, 0, 0, 255]), "검은 테두리");
+        assert!(tray_icon().is_some());
+    }
+
+    #[test]
+    fn pick_requests_go_to_the_event_loop() {
+        assert_eq!(
+            crate::shortcuts::pick_request(r#"{"shortcut-pick":true}"#),
+            Some(false)
+        );
+        assert_eq!(
+            crate::shortcuts::pick_request(r#"{"shortcut-pick-folder":true}"#),
+            Some(true)
+        );
+        assert_eq!(
+            crate::shortcuts::pick_request(r#"{"shortcut-save":{}}"#),
+            None
+        );
     }
 }
 

@@ -12,6 +12,15 @@ use sidedesk_domain::{
 
 type Listener = Box<dyn Fn(String) + Send>;
 
+/// 화면이 보낸 것이 고르기 창 요청이면 폴더인지 여부
+pub(crate) fn pick_request(body: &str) -> Option<bool> {
+    match body.trim() {
+        r#"{"shortcut-pick":true}"# => Some(false),
+        r#"{"shortcut-pick-folder":true}"# => Some(true),
+        _ => None,
+    }
+}
+
 #[derive(Default)]
 struct State {
     apps: Option<Vec<AppChoice>>,
@@ -108,8 +117,14 @@ impl ShortcutsPanel {
                 self.lock().detail = detail.map(|s| json!(s));
                 Ok(None)
             }
+            // 창에서는 view 가 먼저 가로채 이벤트 루프에서 pick() 을 부른다. 이 길은 시험과 창 없는 쪽에서만 쓴다.
             "shortcut-pick" => {
                 let picked = self.help.pick_path();
+                self.lock().picked = picked;
+                Ok(None)
+            }
+            "shortcut-pick-folder" => {
+                let picked = self.help.pick_folder();
                 self.lock().picked = picked;
                 Ok(None)
             }
@@ -128,6 +143,17 @@ impl ShortcutsPanel {
         drop(state);
         self.publish();
         true
+    }
+
+    /// 고르기 창을 띄우고 고른 것을 화면에 알린다. 이벤트 루프(UI 스레드)에서 부른다.
+    pub fn pick(&self, folder: bool) {
+        let picked = if folder {
+            self.help.pick_folder()
+        } else {
+            self.help.pick_path()
+        };
+        self.lock().picked = picked;
+        self.publish();
     }
 
     /// 앱 목록과 단축어 목록은 느릴 수 있어 따로 스레드에서 한 번
@@ -205,6 +231,8 @@ impl ShortcutsPanel {
             "needsKeys": needs_keys,
             "apps": apps,
             "focus": state.focus,
+            "focusSupported": self.help.focus_supported(),
+            "folderPick": self.help.separate_folder_pick(),
             "loading": state.loading,
             "message": state.message.as_ref().map(|(text, good)| json!({"text": text, "good": good})),
             // 한 번만 보내는 것
@@ -453,5 +481,11 @@ mod tests {
         let now = snapshot(panel);
         assert_eq!(now["apps"][0]["bundle"], "dev.sample.editor");
         assert_eq!(now["focus"][0], "집중 켜기");
+        // 기본값: 방해 금지를 고를 수 있고 폴더 고르기는 따로 없다(맥).
+        assert_eq!(now["focusSupported"], true);
+        assert_eq!(now["folderPick"], false);
+        // 폴더 고르기를 지원하지 않으면 고른 것이 없다.
+        assert!(panel.command(r#"{"shortcut-pick-folder":true}"#));
+        assert!(snapshot(panel)["picked"].is_null());
     }
 }

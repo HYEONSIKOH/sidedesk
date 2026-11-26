@@ -173,7 +173,12 @@ fn two_phones_share_one_collection() {
             "수집 {collected}, {elapsed}ms"
         );
         assert!(got.0 + 2 >= collected, "큰 화면 {got:?}");
-        assert!(got.1 >= 2 && got.1 < got.0, "작은 칸 {got:?}");
+        // 작은 칸은 80ms 주기라 흐른 시간으로 위 한도를 본다. 느린 서버에서 큰 화면 40ms 주기가
+        // 80ms 넘게 밀리면 둘이 같은 수를 받을 수 있어 "덜 받음"은 같거나 적음으로 본다.
+        assert!(
+            got.1 >= 2 && got.1 <= got.0 && got.1 <= elapsed / 80 + 3,
+            "작은 칸 {got:?}, {elapsed}ms"
+        );
         hub.stop();
     });
 }

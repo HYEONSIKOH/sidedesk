@@ -12,6 +12,12 @@ struct Colors: Sendable {
     let ink: Color
     let muted: Color
     let danger: Color
+    /// 일이 있는 작은 칸과 작업 중 카드 바탕(hero 의 AI 칸)
+    let hot: Color
+    /// 답변 대기처럼 사람 손이 필요한 것
+    let waiting: Color
+    /// 음악 진행 바의 빈 쪽
+    let track: Color
     /// 시계 숫자 위아래 그라데이션
     let digitTop: Color
     let digitBottom: Color
@@ -28,6 +34,9 @@ struct Colors: Sendable {
         ink: Color(hex: 0xDCE1E7),
         muted: Color(hex: 0x8B939E),
         danger: Color(hex: 0xE5484D),
+        hot: Color(hex: 0x2B3744),
+        waiting: Color(hex: 0xE0A458),
+        track: Color(hex: 0x3A424C),
         digitTop: Color(hex: 0xD3DEE9),
         digitBottom: Color(hex: 0x7D93AB),
         dark: true
@@ -44,10 +53,23 @@ struct Colors: Sendable {
         ink: Color(hex: 0x2C333C),
         muted: Color(hex: 0x6E7783),
         danger: Color(hex: 0xD93D42),
+        hot: Color(hex: 0xDCE4EC),
+        waiting: Color(hex: 0xB7791F),
+        track: Color(hex: 0xD5DCE4),
         digitTop: Color(hex: 0x7F97B0),
         digitBottom: Color(hex: 0xAABCCE),
         dark: false
     )
+
+    /// 쉬는 화면 색. 검은 바탕에 어두운 회색 한 색이라 판과 칸은 보이지 않고 내용만 어둡게 남는다.
+    static let rest: Colors = {
+        let dim = Color(hex: 0x3A3F46)
+        return Colors(
+            ground: .black, panel: .black, card: .black, raised: .black, side: .black, liquid: .black,
+            accent: dim, ink: dim, muted: dim, danger: dim, hot: .black, waiting: dim, track: .black,
+            digitTop: dim, digitBottom: dim, dark: true
+        )
+    }()
 
     static func of(_ theme: Theme) -> Colors {
         theme == .light ? .light : .dark

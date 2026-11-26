@@ -38,6 +38,9 @@ for theme in Dark Light; do
         shot "home-$orient-$lower" -theme "$theme" -face Digits -landscape "$landscape"
         shot "perf-$orient-$lower" -theme "$theme" -face Digits -screen perf -landscape "$landscape"
         shot "processes-$orient-$lower" -theme "$theme" -face Digits -screen processes -landscape "$landscape"
+        shot "ai-$orient-$lower" -theme "$theme" -face Digits -screen ai -landscape "$landscape"
+        shot "shortcuts-$orient-$lower" -theme "$theme" -face Digits -screen shortcuts -landscape "$landscape"
+        shot "music-$orient-$lower" -theme "$theme" -face Digits -screen music -landscape "$landscape"
     done
 done
 for face in Dial Weather Calendar Overview; do
@@ -48,4 +51,7 @@ shot kill-confirm -theme Dark -face Digits -screen processes -ask YES
 shot location-notice -theme Dark -face Digits -locationNotice YES
 shot pairing -theme Dark -pairing 123456
 shot lost -theme Dark -face Digits -lost YES
+shot ai-alert -theme Dark -face Digits -alert YES
+shot rest -theme Dark -face Digits -rest YES
+shot rest-panel -theme Dark -face Digits -restPanel YES
 xcrun simctl terminate "$sim" "$bundle" 2> /dev/null || true

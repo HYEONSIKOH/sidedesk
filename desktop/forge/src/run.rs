@@ -25,10 +25,36 @@ pub trait Runner: Send + Sync {
     fn stop(&self) {}
 }
 
+/// 돌고 있는 자식. 윈도우는 손자까지 끝내려고 작업 개체에 넣는다.
+struct Running {
+    child: Child,
+    #[cfg(windows)]
+    job: Option<crate::job::Job>,
+}
+
+impl Running {
+    fn new(child: Child) -> Self {
+        Self {
+            #[cfg(windows)]
+            job: crate::job::Job::hold(&child),
+            child,
+        }
+    }
+
+    fn end(&mut self) {
+        #[cfg(windows)]
+        if let Some(job) = &self.job {
+            job.kill();
+        }
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+    }
+}
+
 pub struct System {
     timeout: Duration,
     home: PathBuf,
-    child: Mutex<Option<Child>>,
+    child: Mutex<Option<Running>>,
     /// 끄는 중. 이 뒤의 실행은 바로 돌아온다.
     stopped: AtomicBool,
 }
@@ -43,7 +69,7 @@ impl System {
         }
     }
 
-    fn lock(&self) -> std::sync::MutexGuard<'_, Option<Child>> {
+    fn lock(&self) -> std::sync::MutexGuard<'_, Option<Running>> {
         self.child.lock().unwrap_or_else(|lock| lock.into_inner())
     }
 }
@@ -64,7 +90,11 @@ impl Runner for System {
             };
         }
         // 작업 폴더가 저장소면 그 원격을 따라가지 않게 홈에서 돌린다.
-        let spawned = Command::new(program)
+        let mut command = Command::new(program);
+        // 창 프로그램(트레이 앱)이 콘솔 프로그램을 띄울 때 검은 창이 번쩍이지 않게 한다.
+        #[cfg(windows)]
+        std::os::windows::process::CommandExt::creation_flags(&mut command, CREATE_NO_WINDOW);
+        let spawned = command
             .args(args)
             .current_dir(&self.home)
             .env("GH_PROMPT_DISABLED", "1")
@@ -81,32 +111,31 @@ impl Runner for System {
         // 파이프가 차서 막히지 않게 끝까지 읽는다.
         let out = child.stdout.take().map(drain);
         let err = child.stderr.take().map(drain);
+        let mut running = Running::new(child);
         {
             let mut slot = self.lock();
             // 띄우는 사이 stop 이 왔으면 바로 끝낸다.
             if self.stopped.load(Ordering::SeqCst) {
-                let _ = child.kill();
-                let _ = child.wait();
+                running.end();
             } else {
-                *slot = Some(child);
+                *slot = Some(running);
             }
         }
         let start = Instant::now();
         let code = loop {
             let mut slot = self.lock();
-            let Some(child) = slot.as_mut() else {
+            let Some(running) = slot.as_mut() else {
                 // stop 이 끝냈다.
                 break None;
             };
-            match child.try_wait() {
+            match running.child.try_wait() {
                 Ok(Some(status)) => {
                     slot.take();
                     break status.code();
                 }
                 Ok(None) if start.elapsed() < self.timeout => {}
                 _ => {
-                    let _ = child.kill();
-                    let _ = child.wait();
+                    running.end();
                     slot.take();
                     break None;
                 }
@@ -124,9 +153,8 @@ impl Runner for System {
 
     fn stop(&self) {
         self.stopped.store(true, Ordering::SeqCst);
-        if let Some(mut child) = self.lock().take() {
-            let _ = child.kill();
-            let _ = child.wait();
+        if let Some(mut running) = self.lock().take() {
+            running.end();
         }
     }
 }
@@ -146,18 +174,42 @@ fn drain(mut pipe: impl Read + Send + 'static) -> thread::JoinHandle<Vec<u8>> {
     })
 }
 
+#[cfg(windows)]
+const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+
 /// 앱(.app)은 PATH 가 짧아 Homebrew 자리를 먼저 본다.
+#[cfg(not(windows))]
+fn fixed_places(home: &Path) -> Vec<PathBuf> {
+    vec![
+        PathBuf::from("/opt/homebrew/bin"),
+        PathBuf::from("/usr/local/bin"),
+        home.join(".local/bin"),
+    ]
+}
+
+/// 윈도우 설치 자리(공식 설치 파일, winget, scoop). glab 자리는 확인하지 못해 PATH 에 기댄다.
+#[cfg(windows)]
+fn fixed_places(home: &Path) -> Vec<PathBuf> {
+    let env = |name: &str| std::env::var_os(name).map(PathBuf::from);
+    let mut places = Vec::new();
+    if let Some(programs) = env("ProgramFiles") {
+        places.push(programs.join("GitHub CLI"));
+        places.push(programs.join("glab"));
+    }
+    if let Some(local) = env("LOCALAPPDATA") {
+        places.push(local.join("Microsoft\\WinGet\\Links"));
+    }
+    places.push(home.join("scoop\\shims"));
+    places
+}
+
 pub fn locate(name: &str, home: &Path) -> Option<PathBuf> {
     let file = if cfg!(windows) {
         format!("{name}.exe")
     } else {
         name.to_owned()
     };
-    let fixed = [
-        PathBuf::from("/opt/homebrew/bin"),
-        PathBuf::from("/usr/local/bin"),
-        home.join(".local/bin"),
-    ];
+    let fixed = fixed_places(home);
     let path = std::env::var_os("PATH").unwrap_or_default();
     fixed
         .into_iter()
@@ -235,5 +287,53 @@ mod tests {
         );
         assert_eq!(locate("sidedesk-nowhere", &home), None);
         let _ = std::fs::remove_dir_all(&home);
+    }
+}
+
+#[cfg(all(test, windows))]
+mod windows_tests {
+    use super::*;
+
+    fn cmd() -> PathBuf {
+        locate("cmd", Path::new("C:\\")).expect("PATH 의 cmd.exe")
+    }
+
+    fn system(timeout: Duration) -> System {
+        System::new(std::env::temp_dir(), timeout)
+    }
+
+    #[test]
+    fn runs_and_keeps_the_output() {
+        let ran = system(Duration::from_secs(10)).run(&cmd(), &["/c", "echo", "sidedesk"]);
+        assert_eq!(ran.code, Some(0));
+        assert!(String::from_utf8_lossy(&ran.stdout).contains("sidedesk"));
+    }
+
+    #[test]
+    fn slow_programs_and_their_children_are_ended() {
+        // cmd 가 손자 ping 을 띄운다. 작업 개체로 손자까지 끝내야 파이프가 닫혀 시간 안에 돌아온다.
+        let start = Instant::now();
+        let ran =
+            system(Duration::from_millis(500)).run(&cmd(), &["/c", "ping", "-n", "6", "127.0.0.1"]);
+        assert_eq!(ran.code, None);
+        assert!(
+            start.elapsed() < Duration::from_secs(4),
+            "{:?}",
+            start.elapsed()
+        );
+    }
+
+    #[test]
+    fn stop_ends_a_running_program() {
+        let runner = std::sync::Arc::new(system(Duration::from_secs(10)));
+        let worker = {
+            let runner = std::sync::Arc::clone(&runner);
+            thread::spawn(move || runner.run(&cmd(), &["/c", "ping", "-n", "6", "127.0.0.1"]))
+        };
+        thread::sleep(Duration::from_millis(300));
+        let start = Instant::now();
+        runner.stop();
+        assert_eq!(worker.join().unwrap().code, None);
+        assert!(start.elapsed() < Duration::from_secs(3));
     }
 }

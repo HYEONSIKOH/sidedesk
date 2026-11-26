@@ -4,6 +4,13 @@ import SwiftUI
 struct DeskView: View {
     let desk: DeskModel
     let clock: ClockModel
+    let ai: AiModel
+    let shortcuts: ShortcutModel
+    let music: MusicModel
+    /// 고르기 판의 쉬기 설정
+    var rest: RestModel?
+    /// 고르기 판을 쉬기 설정부터 열지(그림 시험용)
+    var restOpen = false
     /// 블루투스를 쓸 수 없는 이유. USB 는 된다.
     let notice: String?
     /// 끝내기 확인이 없을 때 띄울 안내 창(위치)
@@ -17,10 +24,9 @@ struct DeskView: View {
         let shown = desk.asking.map(Self.killConfirm) ?? modal
         ZStack {
             palette.ground.ignoresSafeArea()
-            TimelineView(.periodic(from: .now, by: 1)) { context in
-                content(now: context.date)
-            }
-            .behindModal(shown != nil)
+            // 시각은 쓰는 칸(홈 큰 화면, 홈 작은 칸, AI 지난 시간)이 각자 분 단위로 읽는다(SD-14).
+            content
+                .behindModal(shown != nil)
             ConfirmModal(
                 confirm: shown,
                 onConfirm: { desk.asking != nil ? desk.confirmKill() : onModal(true) },
@@ -40,25 +46,29 @@ struct DeskView: View {
         )
     }
 
-    private func content(now: Date) -> some View {
+    private var content: some View {
         GeometryReader { proxy in
             let wide = proxy.size.width >= proxy.size.height
             Group {
                 if wide {
                     HStack(spacing: 12) {
-                        big(now: now)
+                        big
                         VStack(spacing: 10) {
-                            tiles(now: now).frame(height: 72)
+                            // 다섯 칸이 다 들어가지 않으면 칸을 낮춘다.
+                            tiles(desk.small).frame(maxHeight: 72)
                         }
                         .frame(width: 132)
                         .frame(maxHeight: .infinity, alignment: .top)
                     }
                 } else {
                     VStack(spacing: 12) {
-                        HStack(spacing: 10) {
-                            tiles(now: now).frame(maxWidth: .infinity).frame(height: 72)
+                        // 작은 칸이 다섯이면 한 줄에 넣기에 좁아 두 줄(위 셋, 아래 둘)로 나눈다.
+                        ForEach(tileRows(desk.small), id: \.self) { row in
+                            HStack(spacing: 10) {
+                                tiles(row).frame(maxWidth: .infinity).frame(height: 72)
+                            }
                         }
-                        big(now: now)
+                        big
                     }
                 }
             }
@@ -67,14 +77,18 @@ struct DeskView: View {
     }
 
     @ViewBuilder
-    private func tiles(now: Date) -> some View {
+    private func tiles(_ screens: [Screen]) -> some View {
         // 고르는 중에 작은 칸을 누르면 고르기를 닫고 그 화면으로 간다.
-        ForEach(desk.small, id: \.self) { screen in
+        ForEach(screens, id: \.self) { screen in
             Group {
                 switch screen {
-                case .home: HomeTile(clock: clock, now: now)
+                case .home:
+                    TimelineView(MinuteSchedule()) { context in HomeTile(clock: clock, now: context.date) }
+                case .ai: AiTile(ai: ai)
                 case .perf: CpuTile(cpu: desk.perf?.cpu).dim(desk.dimmed)
                 case .processes: TopProcessTile(top: desk.rows.first).dim(desk.dimmed)
+                case .shortcuts: ShortcutTile(shortcuts: shortcuts)
+                case .music: MusicTile(music: music)
                 }
             }
             .contentShape(Rectangle())
@@ -85,22 +99,30 @@ struct DeskView: View {
         }
     }
 
-    private func big(now: Date) -> some View {
+    private var big: some View {
         let home = desk.big == .home
         let picking = home && clock.picking
         return ZStack {
             switch desk.big {
             case .home:
-                HomeBig(clock: clock, now: now) {
-                    // 길게 눌러 고르는 중이면 출처 링크를 열지 않는다.
-                    if !clock.picking, let url = URL(string: "https://open-meteo.com/") {
-                        UIApplication.shared.open(url)
+                TimelineView(MinuteSchedule()) { context in
+                    HomeBig(clock: clock, now: context.date) {
+                        // 길게 눌러 고르는 중이면 출처 링크를 열지 않는다.
+                        if !clock.picking, let url = URL(string: "https://open-meteo.com/") {
+                            UIApplication.shared.open(url)
+                        }
                     }
                 }
+            case .ai:
+                AiBig(ai: ai)
             case .perf:
                 PerfScreen(desk: desk).dim(desk.dimmed)
             case .processes:
                 ProcessScreen(desk: desk).dim(desk.dimmed)
+            case .shortcuts:
+                ShortcutBig(shortcuts: shortcuts)
+            case .music:
+                MusicBig(music: music)
             }
             if home, !picking, let notice {
                 VStack {
@@ -111,7 +133,7 @@ struct DeskView: View {
             if picking {
                 VStack {
                     Spacer()
-                    FacePicker(clock: clock)
+                    FacePicker(clock: clock, rest: rest, restOpen: restOpen)
                 }
             }
             if let notice = desk.notice {
@@ -207,36 +229,6 @@ private struct PerfGauge: View {
         }
         .background(RoundedRectangle(cornerRadius: 22).fill(palette.card))
         .clipShape(RoundedRectangle(cornerRadius: 22))
-    }
-}
-
-/// 값만큼 아래에서 차오르는 물결
-private struct Liquid: View {
-    let value: Float?
-    @Environment(\.palette) private var palette
-
-    var body: some View {
-        let level = Double(min(max(value ?? 0, 0), 100)) / 100
-        TimelineView(.animation(minimumInterval: 1 / 30)) { context in
-            let phase = context.date.timeIntervalSinceReferenceDate.truncatingRemainder(dividingBy: 4) / 4 * 2 * .pi
-            Canvas { canvas, size in
-                guard level > 0 else { return }
-                let top = size.height * (1 - level)
-                let amp = 4.0
-                var path = Path()
-                path.move(to: CGPoint(x: 0, y: size.height))
-                var x = 0.0
-                while x <= size.width {
-                    path.addLine(to: CGPoint(x: x, y: top + amp * sin(x / size.width * 2 * .pi + phase)))
-                    x += 4
-                }
-                path.addLine(to: CGPoint(x: size.width, y: top + amp * sin(2 * .pi + phase)))
-                path.addLine(to: CGPoint(x: size.width, y: size.height))
-                path.closeSubpath()
-                canvas.fill(path, with: .color(palette.liquid))
-            }
-        }
-        .animation(.easeOut(duration: 0.6), value: level)
     }
 }
 
@@ -401,19 +393,32 @@ private struct ProcessRow: View {
     }
 }
 
+/// 이보다 좁은 작은 칸은 글자를 위아래로 쌓는다.
+let narrowTile = 96.0
+
 private struct CpuTile: View {
     let cpu: Float?
     @Environment(\.palette) private var palette
 
     var body: some View {
-        ZStack {
-            Liquid(value: cpu)
-            HStack {
-                Text("CPU").font(.system(size: 12)).foregroundStyle(palette.ink)
-                Spacer()
-                Percent(value: cpu, size: 26)
+        GeometryReader { proxy in
+            ZStack {
+                Liquid(value: cpu)
+                if proxy.size.width < narrowTile {
+                    // 좁은 세로에서 작은 칸이 넷 이상이면 칸이 72pt 남짓이라 글자를 위아래로 쌓는다.
+                    VStack(spacing: 0) {
+                        Text("CPU").font(.system(size: 11)).foregroundStyle(palette.ink).lineLimit(1)
+                        Percent(value: cpu, size: 20)
+                    }
+                } else {
+                    HStack {
+                        Text("CPU").font(.system(size: 12)).foregroundStyle(palette.ink).lineLimit(1)
+                        Spacer()
+                        Percent(value: cpu, size: 26)
+                    }
+                    .padding(.horizontal, 14)
+                }
             }
-            .padding(.horizontal, 14)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(RoundedRectangle(cornerRadius: 20).fill(palette.side))
@@ -426,12 +431,15 @@ private struct TopProcessTile: View {
     @Environment(\.palette) private var palette
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            Text(top?.name ?? "프로세스").font(.system(size: 14, weight: .medium)).foregroundStyle(palette.ink).lineLimit(1)
-            Text(top.map { String(format: "%.1f%%", $0.cpu) } ?? "-").font(.system(size: 12)).foregroundStyle(palette.muted)
+        GeometryReader { proxy in
+            let narrow = proxy.size.width < narrowTile
+            VStack(alignment: narrow ? .center : .leading, spacing: 0) {
+                Text(top?.name ?? "프로세스").font(.system(size: narrow ? 12 : 14, weight: .medium)).foregroundStyle(palette.ink).lineLimit(1)
+                Text(top.map { String(format: "%.1f%%", $0.cpu) } ?? "-").font(.system(size: narrow ? 11 : 12)).foregroundStyle(palette.muted).lineLimit(1)
+            }
+            .padding(.horizontal, narrow ? 8 : 14)
+            .frame(width: proxy.size.width, height: proxy.size.height, alignment: narrow ? .center : .leading)
         }
-        .padding(.horizontal, 14)
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
         .background(RoundedRectangle(cornerRadius: 20).fill(palette.side))
     }
 }
@@ -454,4 +462,10 @@ func swipeStep(_ translation: CGSize) -> Int {
     if translation.width <= -60 { return 1 }
     if translation.width >= 60 { return -1 }
     return 0
+}
+
+/// 세로에서 작은 칸이 다섯 이상이면 위 셋, 아래 나머지
+func tileRows(_ small: [Screen]) -> [[Screen]] {
+    guard small.count > 4 else { return [small] }
+    return stride(from: 0, to: small.count, by: 3).map { Array(small[$0 ..< min($0 + 3, small.count)]) }
 }

@@ -121,7 +121,7 @@ struct DeskModelTests {
     @Test func startsAtHome() {
         let desk = desk()
         #expect(desk.big == .home)
-        #expect(desk.small == [.perf, .processes])
+        #expect(desk.small == [.ai, .perf, .processes, .shortcuts, .music])
     }
 
     @Test func showsTheLatestPerfAndKeepsTheLastMinuteOfNetwork() {
@@ -148,7 +148,7 @@ struct DeskModelTests {
         desk.show(.perf)
         #expect(link.subscriptions.allSatisfy { $0 == .none }, "보이기 전에는 빈 구독만 보낸다")
         desk.setVisible(true)
-        #expect(link.subscriptions.last == Subscription(big: .perf, small: [.weather, .processes]))
+        #expect(link.subscriptions.last == Subscription(big: .perf, small: [.weather, .ai, .processes, .shortcuts, .music]))
         desk.setVisible(false)
         #expect(link.subscriptions.last == Subscription.none)
     }
@@ -156,12 +156,13 @@ struct DeskModelTests {
     @Test func swipingGoesAroundTheScreens() {
         let desk = desk()
         desk.next()
+        #expect(desk.big == .ai)
+        desk.next()
         #expect(desk.big == .perf)
-        desk.next()
-        desk.next()
+        for _ in 0 ..< 4 { desk.next() }
         #expect(desk.big == .home)
         desk.previous()
-        #expect(desk.big == .processes)
+        #expect(desk.big == .music)
     }
 
     @Test func tappingAProcessAsksWithTheSharedConfirm() {
@@ -196,9 +197,9 @@ struct DeskModelTests {
         desk.confirmKill()
         #expect(link.kills == [KillCommand(commandId: 11, pid: 4, startedAt: 100)])
         #expect(desk.notice == "빌드를 끝내는 중")
-        link.feed.emit(KillResult(commandId: 99, ok: true))
+        link.feed.emit(CommandResult(commandId: 99, ok: true))
         #expect(desk.notice == "빌드를 끝내는 중", "다른 명령 결과는 무시")
-        link.feed.emit(KillResult(commandId: 11, ok: false, reason: "권한이 없습니다"))
+        link.feed.emit(CommandResult(commandId: 11, ok: false, reason: "권한이 없습니다"))
         #expect(desk.notice == "빌드를 끝내지 못했습니다. 권한이 없습니다")
     }
 
