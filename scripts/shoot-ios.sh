@@ -17,6 +17,10 @@ shot() {
     xcrun simctl launch "$sim" "$bundle" -demo YES "$@" > /dev/null
     sleep 3
     xcrun simctl io "$sim" screenshot --type=png "$out/$name.png" > /dev/null
+    # 화면 찍기는 기기 세로 방향으로 나오므로, 가로로 그린 화면은 돌려 둔다.
+    case "$name" in
+        *landscape*) sips -r 270 "$out/$name.png" > /dev/null ;;
+    esac
     echo "$out/$name.png"
 }
 

@@ -67,7 +67,6 @@
                 ComputerProcess(pid: 109, startedAt: 1, name: "Docker", cpu: 4.4, memoryBytes: 1_500_000_000),
                 ComputerProcess(pid: 110, startedAt: 1, name: "메모", cpu: 0.2, memoryBytes: 90_000_000),
             ]
-            for _ in 0 ..< 40 { step() }
         }
 
         private func step() {
@@ -87,6 +86,10 @@
 
         func start() {
             guard timer == nil else { return }
+            // 그래프가 듣기 시작한 뒤 1분치를 채운다.
+            if tick == 0 {
+                for _ in 0 ..< 60 { step() }
+            }
             timer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
                 MainActor.assumeIsolated { self?.step() }
             }

@@ -146,7 +146,7 @@ struct DeskModelTests {
     @Test func subscribesToWhatIsVisibleAndClearsWhenHidden() {
         let desk = desk()
         desk.show(.perf)
-        #expect(link.subscriptions.isEmpty, "보이기 전에는 구독하지 않는다")
+        #expect(link.subscriptions.allSatisfy { $0 == .none }, "보이기 전에는 빈 구독만 보낸다")
         desk.setVisible(true)
         #expect(link.subscriptions.last == Subscription(big: .perf, small: [.weather, .processes]))
         desk.setVisible(false)

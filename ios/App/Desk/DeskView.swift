@@ -139,7 +139,8 @@ struct DeskView: View {
         .clipShape(RoundedRectangle(cornerRadius: 28))
         .contentShape(RoundedRectangle(cornerRadius: 28))
         // 옆으로 60pt 넘게 밀면 다음 화면, 고르는 중이면 다음 모양.
-        .gesture(
+        // 안쪽 목록의 세로 스크롤을 막지 않게 함께 받는다. 가로가 더 클 때만 민 것으로 본다.
+        .simultaneousGesture(
             DragGesture(minimumDistance: 20).onEnded { drag in
                 let moved = drag.translation.width
                 guard abs(moved) > abs(drag.translation.height) else { return }
