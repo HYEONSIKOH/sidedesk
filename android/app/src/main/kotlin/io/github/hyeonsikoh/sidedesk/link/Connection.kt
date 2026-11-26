@@ -71,7 +71,7 @@ class Connection(
             var ready = false
             var computer = ByteArray(0)
             var subscribed: Subscription? = null
-            var located: LocationState = LocationState.Unknown
+            val location = LocationGate()
             val sentKills = HashSet<Long>()
             fun flush() = session.takeOutput().takeIf { it.isNotEmpty() }?.let(pipe::send)
 
@@ -83,10 +83,8 @@ class Connection(
                     subscribed = now
                 }
                 // 위치는 Ready 뒤 이 안에서만 보낸다. 모르면 보내지 않는다.
-                val place = owner.location.get()
-                if (place != located && place != LocationState.Unknown) {
+                location.take(owner.location.get())?.let { place ->
                     session.sendLocation((place as? LocationState.At)?.let { Place(it.latitude, it.longitude) })
-                    located = place
                 }
                 for (kill in owner.pendingKills(computer)) {
                     if (!sentKills.add(kill.commandId)) continue

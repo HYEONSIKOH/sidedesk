@@ -3,7 +3,9 @@ package io.github.hyeonsikoh.sidedesk.shots
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.platform.UriHandler
-import androidx.compose.ui.test.junit4.createComposeRule
+import androidx.activity.ComponentActivity
+import androidx.compose.ui.test.junit4.createAndroidComposeRule
+import org.junit.After
 import androidx.compose.ui.test.longClick
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
@@ -35,13 +37,18 @@ import java.util.TimeZone
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [34], qualifiers = "w914dp-h411dp")
 class DeskGestureTest {
-    private val compose = createComposeRule()
+    private val compose = createAndroidComposeRule<ComponentActivity>()
 
     @get:Rule
     val rules: RuleChain = RuleChain.outerRule(registerActivity).around(compose)
 
     private val calls = mutableListOf<String>()
     private val opened = mutableListOf<String>()
+
+    private val zone = TimeZone.getDefault()
+
+    @After
+    fun tearDown() = TimeZone.setDefault(zone)
 
     @Before
     fun setUp() {
@@ -120,6 +127,24 @@ class DeskGestureTest {
         settle()
         assertEquals(listOf("https://open-meteo.com/"), opened)
         assertEquals(emptyList<String>(), calls)
+    }
+
+    @Test
+    fun longPressOnTheCreditStillOpensThePicker() {
+        show(ClockState(weather = DeskShots.SUNNY))
+        compose.onNodeWithText("날씨 자료 Open-Meteo.com").performTouchInput { longClick() }
+        settle()
+        assertEquals(listOf("pick"), calls)
+        assertEquals(emptyList<String>(), opened)
+    }
+
+    @Test
+    fun backWhilePickingOnlyClosesThePicker() {
+        show(ClockState(picking = true))
+        compose.runOnUiThread { compose.activity.onBackPressedDispatcher.onBackPressed() }
+        settle()
+        assertEquals(listOf("done"), calls)
+        assertEquals(false, compose.activity.isFinishing)
     }
 
     @Test

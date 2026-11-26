@@ -13,7 +13,8 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.combine
-import kotlinx.coroutines.flow.flow
+import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.flow.transformLatest
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 
@@ -50,6 +51,7 @@ data class ClockState(
     }
 }
 
+@OptIn(ExperimentalCoroutinesApi::class)
 class ClockViewModel(
     private val link: ComputerLink,
     private val settings: Settings,
@@ -62,13 +64,15 @@ class ClockViewModel(
         ),
     )
     val state: StateFlow<ClockState> = _state.asStateFlow()
+    private val visible = MutableStateFlow(true)
 
     init {
-        // 받기가 계속 실패해 오래된 값도 흐리게 하려고 1분마다 다시 본다.
-        val minutes = flow {
-            while (true) {
-                emit(Unit)
+        // 받기가 계속 실패해 오래된 값도 흐리게 하려고, 보이는 동안만 1분마다 다시 본다.
+        val minutes = visible.transformLatest { shown ->
+            emit(Unit)
+            while (shown) {
                 delay(60_000)
+                emit(Unit)
             }
         }
         viewModelScope.launch {
@@ -83,6 +87,11 @@ class ClockViewModel(
                 }
             }
         }
+    }
+
+    /** 화면이 보이는지. 안 보이면 1분 확인을 멈춘다. */
+    fun setVisible(value: Boolean) {
+        visible.value = value
     }
 
     fun pick() = _state.update { it.copy(picking = true) }

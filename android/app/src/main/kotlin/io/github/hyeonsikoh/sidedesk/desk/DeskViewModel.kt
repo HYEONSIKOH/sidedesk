@@ -85,7 +85,7 @@ class DeskViewModel(
             }
         }
         viewModelScope.launch {
-            link.state.collect { link -> _state.update { it.copy(dimmed = link is LinkState.Lost) } }
+            link.state.collect { link -> _state.update { it.copy(dimmed = link !is LinkState.Connected) } }
         }
         viewModelScope.launch {
             link.killResults.collect { result ->

@@ -20,6 +20,7 @@ class CoarseLocation(private val context: Context, private val link: ComputerLin
     private val manager = context.getSystemService(LocationManager::class.java)
     private val main = Handler(Looper.getMainLooper())
     private var cancel: CancellationSignal? = null
+    private var pending: Runnable? = null
 
     fun allowed() = ContextCompat.checkSelfPermission(context, Manifest.permission.ACCESS_COARSE_LOCATION) ==
         PackageManager.PERMISSION_GRANTED
@@ -34,19 +35,43 @@ class CoarseLocation(private val context: Context, private val link: ComputerLin
         if (manager == null || !manager.isProviderEnabled(LocationManager.NETWORK_PROVIDER)) return
         stop()
         val signal = CancellationSignal().also { cancel = it }
-        val timeout = Runnable { signal.cancel() }
+        // 취소하면 아래 콜백이 오지 않으므로, 시간이 넘으면 여기서 마지막 위치로 대신한다.
+        val timeout = Runnable {
+            signal.cancel()
+            use(null)
+        }
+        pending = timeout
         main.postDelayed(timeout, TIMEOUT_MILLIS)
         val run = Executor { main.post(it) }
-        LocationManagerCompat.getCurrentLocation(manager, LocationManager.NETWORK_PROVIDER, signal, run) { found: Location? ->
+        try {
+            LocationManagerCompat.getCurrentLocation(manager, LocationManager.NETWORK_PROVIDER, signal, run) { found: Location? ->
+                main.removeCallbacks(timeout)
+                use(found)
+            }
+        } catch (error: SecurityException) {
+            // 확인과 요청 사이에 권한을 거둔 경우
             main.removeCallbacks(timeout)
-            val place = found ?: manager.getLastKnownLocation(LocationManager.NETWORK_PROVIDER)
-            if (place != null) link.setLocation(LocationState.At(place.latitude, place.longitude))
+            link.setLocation(LocationState.Off)
         }
+    }
+
+    /** 받은 위치, 없으면 마지막 위치를 넘긴다. 둘 다 없으면 그대로 둔다. */
+    @SuppressLint("MissingPermission")
+    private fun use(found: Location?) {
+        val place = try {
+            found ?: manager?.getLastKnownLocation(LocationManager.NETWORK_PROVIDER)
+        } catch (error: SecurityException) {
+            link.setLocation(LocationState.Off)
+            return
+        }
+        if (place != null) link.setLocation(LocationState.At(place.latitude, place.longitude))
     }
 
     fun stop() {
         cancel?.cancel()
         cancel = null
+        pending?.let(main::removeCallbacks)
+        pending = null
     }
 
     private companion object {

@@ -125,7 +125,7 @@ private fun SunCircle(now: Long, modifier: Modifier) {
 @Composable
 private fun DateLine(clock: ClockState, now: Long, size: TextUnit) {
     Row(verticalAlignment = Alignment.CenterVertically) {
-        Text(dateText(now), color = Palette.ink, fontSize = size, fontWeight = FontWeight.SemiBold, maxLines = 1)
+        Text(dateText(now), color = Palette.ink, fontSize = size, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
         clock.via?.let { ViaIcon(it, Palette.muted, Modifier.padding(start = 8.dp).size(with(LocalDensity.current) { size.toDp() })) }
     }
 }
@@ -162,7 +162,7 @@ private fun WeatherLine(clock: ClockState, size: TextUnit) {
         if (weather != null) {
             SkyIcon(weather.sky, weather.isDay, Palette.ink, Modifier.size(with(LocalDensity.current) { (size * 1.3f).toDp() }).padding(end = 6.dp))
         }
-        Text(weather?.let { degrees(it.temperature) } ?: "--°", color = Palette.ink, fontSize = size * 1.15f, fontWeight = FontWeight.Medium, maxLines = 1)
+        Text(weather?.let { degrees(it.temperature) } ?: "--°", color = Palette.ink, fontSize = size * 1.15f, fontWeight = FontWeight.Medium, maxLines = 1, overflow = TextOverflow.Ellipsis)
         if (weather != null) {
             Text(
                 "  최고 ${degrees(weather.high)} 최저 ${degrees(weather.low)}",
@@ -223,10 +223,10 @@ private fun DialFace(clock: ClockState, now: Long, w: Dp, h: Dp) {
             DateLine(clock, now, line)
             val weather = clock.weather
             Column(Modifier.alpha(if (clock.weatherDimmed) DIM else 1f), horizontalAlignment = if (wide) Alignment.Start else Alignment.CenterHorizontally) {
-                Text(weather?.let { degrees(it.temperature) } ?: "--°", color = Palette.ink, fontSize = line * 2.4f, fontWeight = FontWeight.Medium, maxLines = 1)
+                Text(weather?.let { degrees(it.temperature) } ?: "--°", color = Palette.ink, fontSize = line * 2.4f, fontWeight = FontWeight.Medium, maxLines = 1, overflow = TextOverflow.Ellipsis)
                 if (weather != null) {
-                    Text(skyName(weather.sky), color = Palette.muted, fontSize = line, maxLines = 1)
-                    Text("최고 ${degrees(weather.high)} 최저 ${degrees(weather.low)}", color = Palette.muted, fontSize = line, maxLines = 1)
+                    Text(skyName(weather.sky), color = Palette.muted, fontSize = line, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    Text("최고 ${degrees(weather.high)} 최저 ${degrees(weather.low)}", color = Palette.muted, fontSize = line, maxLines = 1, overflow = TextOverflow.Ellipsis)
                 }
             }
             Credit(clock, modifier = Modifier.padding(top = 6.dp))
@@ -313,12 +313,12 @@ private fun WeatherFace(clock: ClockState, now: Long, w: Dp, h: Dp) {
     val weather = clock.weather
     Column(Modifier.fillMaxSize().padding(16.dp), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.Center) {
         Row(Modifier.alpha(if (clock.weatherDimmed) DIM else 1f), verticalAlignment = Alignment.CenterVertically) {
-            Text(weather?.let { degrees(it.temperature) } ?: "--°", color = Palette.ink, fontSize = big, fontWeight = FontWeight.Light, maxLines = 1)
+            Text(weather?.let { degrees(it.temperature) } ?: "--°", color = Palette.ink, fontSize = big, fontWeight = FontWeight.Light, maxLines = 1, overflow = TextOverflow.Ellipsis)
             if (weather != null) {
                 Column(Modifier.padding(start = 16.dp)) {
                     SkyIcon(weather.sky, weather.isDay, Palette.ink, Modifier.size(with(LocalDensity.current) { (line * 2.6f).toDp() }))
-                    Text(skyName(weather.sky), color = Palette.ink, fontSize = line, maxLines = 1)
-                    Text("최고 ${degrees(weather.high)} 최저 ${degrees(weather.low)}", color = Palette.muted, fontSize = line * 0.9f, maxLines = 1)
+                    Text(skyName(weather.sky), color = Palette.ink, fontSize = line, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    Text("최고 ${degrees(weather.high)} 최저 ${degrees(weather.low)}", color = Palette.muted, fontSize = line * 0.9f, maxLines = 1, overflow = TextOverflow.Ellipsis)
                 }
             }
         }
@@ -336,8 +336,8 @@ private fun CalendarFace(now: Long, w: Dp, h: Dp) {
     val line = fit(min(w.value * 0.04f, h.value * 0.055f).coerceIn(12f, 22f).dp)
     val left = @Composable {
         Column(horizontalAlignment = if (wide) Alignment.Start else Alignment.CenterHorizontally) {
-            Text("${c.get(Calendar.MONTH) + 1}월 ${DAYS[c.get(Calendar.DAY_OF_WEEK) - 1]}요일", color = Palette.muted, fontSize = line, maxLines = 1)
-            Text("${c.get(Calendar.DAY_OF_MONTH)}", color = Palette.ink, fontSize = line * 5f, fontWeight = FontWeight.Light, maxLines = 1)
+            Text("${c.get(Calendar.MONTH) + 1}월 ${DAYS[c.get(Calendar.DAY_OF_WEEK) - 1]}요일", color = Palette.muted, fontSize = line, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            Text("${c.get(Calendar.DAY_OF_MONTH)}", color = Palette.ink, fontSize = line * 5f, fontWeight = FontWeight.Light, maxLines = 1, overflow = TextOverflow.Ellipsis)
             Digits(timeText(now), line * 2.2f)
         }
     }
@@ -412,17 +412,17 @@ private fun OverviewFace(clock: ClockState, now: Long) {
                     val weather = clock.weather
                     Column(Modifier.alpha(if (clock.weatherDimmed) DIM else 1f), horizontalAlignment = Alignment.CenterHorizontally) {
                         if (weather != null) SkyIcon(weather.sky, weather.isDay, Palette.ink, Modifier.size(with(LocalDensity.current) { (line * 2f).toDp() }))
-                        Text(weather?.let { degrees(it.temperature) } ?: "--°", color = Palette.ink, fontSize = line * 2.4f, fontWeight = FontWeight.Medium, maxLines = 1)
-                        if (weather != null) Text("최고 ${degrees(weather.high)} 최저 ${degrees(weather.low)}", color = Palette.muted, fontSize = line * 0.9f, maxLines = 1)
+                        Text(weather?.let { degrees(it.temperature) } ?: "--°", color = Palette.ink, fontSize = line * 2.4f, fontWeight = FontWeight.Medium, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        if (weather != null) Text("최고 ${degrees(weather.high)} 최저 ${degrees(weather.low)}", color = Palette.muted, fontSize = line * 0.9f, maxLines = 1, overflow = TextOverflow.Ellipsis)
                     }
                     Credit(clock, size = line * 0.7f, modifier = Modifier.padding(top = 4.dp))
                 }
             },
             { m ->
                 Column(m.then(cell).padding(14.dp), verticalArrangement = Arrangement.Center, horizontalAlignment = Alignment.CenterHorizontally) {
-                    Text("${c.get(Calendar.MONTH) + 1}월", color = Palette.muted, fontSize = line, maxLines = 1)
-                    Text("${c.get(Calendar.DAY_OF_MONTH)}", color = Palette.ink, fontSize = line * 3.4f, fontWeight = FontWeight.Light, maxLines = 1)
-                    Text("${DAYS[c.get(Calendar.DAY_OF_WEEK) - 1]}요일", color = Palette.ink, fontSize = line, maxLines = 1)
+                    Text("${c.get(Calendar.MONTH) + 1}월", color = Palette.muted, fontSize = line, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    Text("${c.get(Calendar.DAY_OF_MONTH)}", color = Palette.ink, fontSize = line * 3.4f, fontWeight = FontWeight.Light, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    Text("${DAYS[c.get(Calendar.DAY_OF_WEEK) - 1]}요일", color = Palette.ink, fontSize = line, maxLines = 1, overflow = TextOverflow.Ellipsis)
                 }
             },
             { m ->
@@ -455,11 +455,11 @@ internal fun overviewGrid(width: Float, height: Float, gap: Float): Pair<Int, In
 fun HomeTile(clock: ClockState, now: Long, modifier: Modifier) {
     Box(modifier.clip(RoundedCornerShape(20.dp)).background(Palette.side).padding(horizontal = 12.dp, vertical = 6.dp)) {
         Row(Modifier.align(Alignment.Center), verticalAlignment = Alignment.CenterVertically) {
-            Text(timeText(now), color = Palette.ink, fontSize = fit(24.dp), fontWeight = FontWeight.Medium, maxLines = 1)
+            Text(timeText(now), color = Palette.ink, fontSize = fit(24.dp), fontWeight = FontWeight.Medium, maxLines = 1, overflow = TextOverflow.Ellipsis)
             val weather = clock.weather
             Column(Modifier.padding(start = 6.dp).alpha(if (clock.weatherDimmed) DIM else 1f), horizontalAlignment = Alignment.CenterHorizontally) {
                 if (weather != null) SkyIcon(weather.sky, weather.isDay, Palette.ink, Modifier.size(14.dp))
-                Text(weather?.let { degrees(it.temperature) } ?: "--°", color = Palette.ink, fontSize = fit(11.dp), maxLines = 1)
+                Text(weather?.let { degrees(it.temperature) } ?: "--°", color = Palette.ink, fontSize = fit(11.dp), maxLines = 1, overflow = TextOverflow.Ellipsis)
             }
         }
         clock.shortCredit?.let {
@@ -501,7 +501,8 @@ fun Picker(clock: ClockState, actions: PickActions, modifier: Modifier) {
             Text(
                 "완료",
                 color = Palette.panel,
-                fontSize = 14.sp,
+                fontSize = fit(14.dp),
+                maxLines = 1,
                 fontWeight = FontWeight.SemiBold,
                 modifier = Modifier
                     .clip(CircleShape)
@@ -518,7 +519,7 @@ private fun Chip(label: String, on: Boolean, onClick: () -> Unit) {
     Text(
         label,
         color = if (on) Palette.panel else Palette.ink,
-        fontSize = 13.sp,
+        fontSize = fit(13.dp),
         fontWeight = if (on) FontWeight.SemiBold else FontWeight.Normal,
         maxLines = 1,
         modifier = Modifier

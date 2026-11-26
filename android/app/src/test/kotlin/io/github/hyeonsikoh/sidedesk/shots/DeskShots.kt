@@ -85,6 +85,11 @@ class DeskShots(private val device: String, private val width: Int, private val 
     /** 찍을 화면. 창을 다시 띄우지 않고 내용만 바꾼다. */
     private var current by mutableStateOf<(@Composable () -> Unit)?>(null)
 
+    private val zone = TimeZone.getDefault()
+
+    @org.junit.After
+    fun tearDown() = TimeZone.setDefault(zone)
+
     @Before
     fun setUp() {
         // 물결과 1초 시계가 계속 돌아 그리기가 끝나지 않으므로 시계를 손으로만 돌린다.
@@ -142,6 +147,7 @@ class DeskShots(private val device: String, private val width: Int, private val 
                 shot("font${scale}-home-${face.name.lowercase()}", Theme.Dark, desk(), clock(face, Theme.Dark), scale)
             }
             shot("font$scale-perf", Theme.Dark, desk(Screen.Perf), clock(theme = Theme.Dark), scale)
+            shot("font$scale-home-picking", Theme.Dark, desk(), clock(Face.Digits, Theme.Dark, picking = true), scale)
         }
     }
 }

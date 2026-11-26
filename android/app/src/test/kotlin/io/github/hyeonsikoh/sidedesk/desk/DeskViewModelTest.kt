@@ -204,4 +204,13 @@ class DeskViewModelTest {
         link.state.value = LinkState.Connected("맥")
         assertEquals(false, desk.state.value.dimmed)
     }
+
+    @Test
+    fun dimsLikeTheWeatherWhileNotConnected() {
+        val desk = DeskViewModel(link) { 1L }
+        link.state.value = LinkState.Connected("맥")
+        assertEquals(false, desk.state.value.dimmed)
+        link.state.value = LinkState.Waiting
+        assertTrue(desk.state.value.dimmed)
+    }
 }

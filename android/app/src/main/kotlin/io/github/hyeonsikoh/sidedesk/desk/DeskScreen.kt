@@ -59,8 +59,8 @@ import io.github.hyeonsikoh.sidedesk.clock.HomeTile
 import io.github.hyeonsikoh.sidedesk.clock.PickActions
 import io.github.hyeonsikoh.sidedesk.clock.Picker
 import io.github.hyeonsikoh.sidedesk.clock.rememberNow
+import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
-import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.testTag
@@ -68,6 +68,7 @@ import io.github.hyeonsikoh.sidedesk.ui.Confirm
 import io.github.hyeonsikoh.sidedesk.ui.ConfirmModal
 import io.github.hyeonsikoh.sidedesk.ui.Palette
 import io.github.hyeonsikoh.sidedesk.ui.fit
+import io.github.hyeonsikoh.sidedesk.ui.longPressAnywhere
 import io.github.hyeonsikoh.sidedesk.ui.behindModal
 import kotlinx.coroutines.delay
 import java.text.SimpleDateFormat
@@ -100,14 +101,22 @@ class ClockPart(
 )
 
 @Composable
-fun DeskScreen(state: DeskState, clock: ClockPart, actions: DeskActions, modal: Confirm? = null, onModal: (Boolean) -> Unit = {}) {
+fun DeskScreen(
+    state: DeskState,
+    clock: ClockPart,
+    actions: DeskActions,
+    modal: Confirm? = null,
+    /** 안내 창 답. true 확인, false 취소 버튼, null 바깥 누르기나 뒤로 가기 */
+    onModal: (Boolean?) -> Unit = {},
+) {
     val shown = state.asking?.let(::killConfirm) ?: modal
     Box(Modifier.fillMaxSize().background(Palette.ground)) {
         Content(state, clock, actions, Modifier.behindModal(shown != null))
         ConfirmModal(
             shown,
             onConfirm = { if (state.asking != null) actions.confirmKill() else onModal(true) },
-            onDismiss = { if (state.asking != null) actions.cancel() else onModal(false) },
+            onDismiss = { if (state.asking != null) actions.cancel() else onModal(null) },
+            onCancel = { if (state.asking != null) actions.cancel() else onModal(false) },
         )
     }
 }
@@ -170,6 +179,8 @@ private fun Big(state: DeskState, clock: ClockPart, now: Long, actions: DeskActi
     val home = state.big == Screen.Home
     val picking = home && clock.state.picking
     val swipe = with(LocalDensity.current) { 60.dp.toPx() }
+    // 고르는 중 뒤로 가기는 고르기만 닫는다.
+    BackHandler(enabled = picking) { clock.actions.done() }
     Box(
         modifier
             .testTag(BIG)
@@ -186,7 +197,7 @@ private fun Big(state: DeskState, clock: ClockPart, now: Long, actions: DeskActi
                     },
                 ) { _, amount -> moved += amount }
             }
-            .then(if (home) Modifier.pointerInput(Unit) { detectTapGestures(onLongPress = { clock.pick() }) } else Modifier)
+            .then(if (home) Modifier.longPressAnywhere { clock.pick() } else Modifier)
             .padding(14.dp),
     ) {
         when (state.big) {
@@ -210,8 +221,9 @@ private fun Big(state: DeskState, clock: ClockPart, now: Long, actions: DeskActi
                 color = Palette.ground,
                 fontSize = 14.sp,
                 modifier = Modifier
-                    .align(Alignment.BottomCenter)
-                    .padding(bottom = 8.dp)
+                    // 고르기 줄과 겹치지 않게 고르는 중에는 위에 띄운다.
+                    .align(if (picking) Alignment.TopCenter else Alignment.BottomCenter)
+                    .padding(vertical = 8.dp)
                     .clip(RoundedCornerShape(20.dp))
                     .background(Palette.ink)
                     .padding(horizontal = 18.dp, vertical = 10.dp),

@@ -147,4 +147,17 @@ class ClockViewModelTest {
         link.weather.value = weather(source = WeatherSource.Unknown)
         assertNull(clock.state.value.credit)
     }
+
+    @Test
+    fun stopsCheckingWhileHidden() {
+        val clock = clock()
+        link.state.value = LinkState.Connected("맥")
+        link.weather.value = weather(fetchedAt = now)
+        clock.setVisible(false)
+        now += ClockViewModel.STALE_MILLIS + 1
+        main.scheduler.advanceTimeBy(5 * 60_000)
+        assertFalse(clock.state.value.weatherDimmed)
+        clock.setVisible(true)
+        assertTrue(clock.state.value.weatherDimmed)
+    }
 }

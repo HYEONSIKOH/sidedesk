@@ -56,6 +56,9 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        // 첫 그림부터 저장된 테마의 상태 표시줄로 그린다.
+        barsFor(clock.state.value.theme)
+        askLocation.value = savedInstanceState?.getBoolean(ASKING_LOCATION) ?: false
         if (savedInstanceState == null) {
             val missing = PermissionResults.BLUETOOTH.filter { !granted(it) }
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S && missing.isNotEmpty()) {
@@ -101,14 +104,21 @@ class MainActivity : ComponentActivity() {
         if (!granted(PermissionResults.LOCATION) && !settings.askedLocation) askLocation.value = true
     }
 
-    private fun answerLocation(next: Boolean) {
+    /** 바깥 누르기나 뒤로 가기(null)는 이번만 닫고, 다음에 켤 때 다시 묻는다. */
+    private fun answerLocation(next: Boolean?) {
         askLocation.value = false
+        if (next == null) return
         settings.askedLocation = true
         if (next) {
             requestPermissions(arrayOf(PermissionResults.LOCATION), ASK_LOCATION)
         } else {
             app.link.setLocation(LocationState.Off)
         }
+    }
+
+    override fun onSaveInstanceState(outState: Bundle) {
+        super.onSaveInstanceState(outState)
+        outState.putBoolean(ASKING_LOCATION, askLocation.value)
     }
 
     /** 상태 표시줄 아이콘 색을 시스템 설정이 아니라 앱 테마에 맞춘다. */
@@ -137,11 +147,13 @@ class MainActivity : ComponentActivity() {
     override fun onStart() {
         super.onStart()
         desk.setVisible(true)
+        clock.setVisible(true)
         location.refresh()
     }
 
     override fun onStop() {
         desk.setVisible(false)
+        clock.setVisible(false)
         location.stop()
         clock.done()
         super.onStop()
@@ -164,6 +176,7 @@ class MainActivity : ComponentActivity() {
     private companion object {
         const val ASK_BLUETOOTH = 1
         const val ASK_LOCATION = 2
+        const val ASKING_LOCATION = "askingLocation"
         val LOCATION_NOTICE = Confirm(
             title = "날씨에 대략적인 위치를 씁니다",
             description = "대략적인 위치(소수 첫째 자리)를 컴퓨터를 거쳐 날씨 제공처(기상청 또는 Open-Meteo)로 보냅니다",
