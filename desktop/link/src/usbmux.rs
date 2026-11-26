@@ -62,6 +62,23 @@ impl Dial for UnixDial {
     }
 }
 
+/// 윈도우 애플 장치 서비스의 usbmuxd. 이미 열려 있는 127.0.0.1:27015 에 접속만 한다.
+pub struct TcpDial(pub std::net::SocketAddr);
+
+impl Default for TcpDial {
+    fn default() -> Self {
+        Self(std::net::SocketAddr::from(([127, 0, 0, 1], 27015)))
+    }
+}
+
+impl Dial for TcpDial {
+    fn open(&self) -> io::Result<Box<dyn MuxStream>> {
+        let stream = std::net::TcpStream::connect_timeout(&self.0, Duration::from_secs(1))?;
+        stream.set_write_timeout(Some(TRANSFER))?;
+        Ok(Box::new(stream))
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct Device {
     serial: String,
@@ -894,5 +911,20 @@ mod tests {
         let not_a_list = wrap("<key>MessageType</key><string>Result</string>");
         let links = links(vec![Box::new(move |end| reply(end, &not_a_list))]);
         assert!(links.attached().unwrap_err().0.contains("이상함"));
+    }
+}
+
+#[cfg(test)]
+mod tcp_dial_tests {
+    use super::*;
+
+    #[test]
+    fn tcp_dial_reaches_a_listening_service_and_reports_a_missing_one() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        assert!(TcpDial(address).open().is_ok());
+        drop(listener);
+        assert!(TcpDial(address).open().is_err());
+        assert_eq!(TcpDial::default().0.port(), 27015);
     }
 }
