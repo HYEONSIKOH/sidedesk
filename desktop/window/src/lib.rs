@@ -2,7 +2,9 @@
 
 mod board;
 mod json;
+mod shortcuts;
 mod view;
 
 pub use board::{Board, Computer};
-pub use view::{on_exit, open};
+pub use shortcuts::ShortcutsPanel;
+pub use view::{on_exit, open, with_shortcuts};

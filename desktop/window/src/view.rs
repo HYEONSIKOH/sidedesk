@@ -50,6 +50,8 @@ fn unified_title(window: &tao::window::Window) {
 
 enum Change {
     Render(String),
+    /// 화면에서 그대로 돌릴 글(단축키 칸 그리기)
+    Script(String),
     Drag,
     Mode(&'static str),
 }
@@ -79,6 +81,13 @@ pub fn on_exit(work: impl Fn() + Send + Sync + 'static) {
     let _ = ON_EXIT.set(Box::new(work));
 }
 
+/// 단축키 칸. 기기 칸(Board)과 따로 그린다.
+static SHORTCUTS: std::sync::OnceLock<&'static crate::ShortcutsPanel> = std::sync::OnceLock::new();
+
+pub fn with_shortcuts(panel: &'static crate::ShortcutsPanel) {
+    let _ = SHORTCUTS.set(panel);
+}
+
 /// 설정 창을 띄운다. 창을 닫으면 프로세스를 끝낸다(연결 스레드를 기다리지 않는다).
 /// `mode_file` 에 고른 화면 모드를 저장한다.
 pub fn open(board: &'static Board, mode_file: PathBuf) -> Result<(), String> {
@@ -88,6 +97,12 @@ pub fn open(board: &'static Board, mode_file: PathBuf) -> Result<(), String> {
         .unwrap_or("auto");
     let event_loop = EventLoopBuilder::<Change>::with_user_event().build();
     let proxy = event_loop.create_proxy();
+    if let Some(panel) = SHORTCUTS.get() {
+        let proxy = event_loop.create_proxy();
+        panel.on_change(move |snapshot| {
+            let _ = proxy.send_event(Change::Script(format!("renderShortcuts({snapshot})")));
+        });
+    }
     board.on_change(move |snapshot| {
         let _ = proxy.send_event(Change::Render(snapshot));
     });
@@ -131,7 +146,7 @@ pub fn open(board: &'static Board, mode_file: PathBuf) -> Result<(), String> {
                 let _ = ipc.send_event(Change::Drag);
             } else if let Some(chosen) = body.strip_prefix("mode:").and_then(mode) {
                 let _ = ipc.send_event(Change::Mode(chosen));
-            } else {
+            } else if !SHORTCUTS.get().is_some_and(|panel| panel.command(body)) {
                 board.command(body);
             }
         })
@@ -158,6 +173,9 @@ pub fn open(board: &'static Board, mode_file: PathBuf) -> Result<(), String> {
         match event {
             Event::UserEvent(Change::Render(snapshot)) => {
                 let _ = webview.evaluate_script(&format!("render({snapshot})"));
+            }
+            Event::UserEvent(Change::Script(script)) => {
+                let _ = webview.evaluate_script(&script);
             }
             Event::UserEvent(Change::Drag) => {
                 let _ = window.drag_window();

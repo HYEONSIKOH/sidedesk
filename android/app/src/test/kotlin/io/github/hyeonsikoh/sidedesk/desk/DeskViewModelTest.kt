@@ -2,7 +2,7 @@ package io.github.hyeonsikoh.sidedesk.desk
 
 import io.github.hyeonsikoh.sidedesk.link.FakeLink
 import io.github.hyeonsikoh.sidedesk.link.KillCommand
-import io.github.hyeonsikoh.sidedesk.link.KillResult
+import io.github.hyeonsikoh.sidedesk.link.CommandResult
 import io.github.hyeonsikoh.sidedesk.link.LinkOwner
 import io.github.hyeonsikoh.sidedesk.link.LinkState
 import io.github.hyeonsikoh.sidedesk.link.Perf
@@ -79,9 +79,9 @@ class DeskViewModelTest {
         desk.setVisible(false)
         assertEquals(
             listOf(
-                Subscription(Topic.Weather, setOf(Topic.Ai, Topic.Perf, Topic.Processes)),
-                Subscription(Topic.Perf, setOf(Topic.Weather, Topic.Ai, Topic.Processes)),
-                Subscription(Topic.Processes, setOf(Topic.Weather, Topic.Ai, Topic.Perf)),
+                Subscription(Topic.Weather, setOf(Topic.Ai, Topic.Perf, Topic.Processes, Topic.Shortcuts)),
+                Subscription(Topic.Perf, setOf(Topic.Weather, Topic.Ai, Topic.Processes, Topic.Shortcuts)),
+                Subscription(Topic.Processes, setOf(Topic.Weather, Topic.Ai, Topic.Perf, Topic.Shortcuts)),
                 Subscription.NONE,
             ),
             link.subscriptions,
@@ -92,7 +92,7 @@ class DeskViewModelTest {
     fun startsAtHome() {
         val desk = DeskViewModel(link) { 1L }
         assertEquals(Screen.Home, desk.state.value.big)
-        assertEquals(listOf(Screen.Ai, Screen.Perf, Screen.Processes), desk.state.value.small)
+        assertEquals(listOf(Screen.Ai, Screen.Perf, Screen.Processes, Screen.Shortcuts), desk.state.value.small)
     }
 
     @Test
@@ -103,10 +103,13 @@ class DeskViewModelTest {
         desk.next()
         assertEquals(Screen.Perf, desk.state.value.big)
         desk.next()
+        assertEquals(Screen.Processes, desk.state.value.big)
+        desk.next()
+        assertEquals(Screen.Shortcuts, desk.state.value.big)
         desk.next()
         assertEquals(Screen.Home, desk.state.value.big)
         desk.previous()
-        assertEquals(Screen.Processes, desk.state.value.big)
+        assertEquals(Screen.Shortcuts, desk.state.value.big)
     }
 
     @Test
@@ -150,9 +153,9 @@ class DeskViewModelTest {
         assertEquals(listOf(KillCommand(1_000, 10, 100), KillCommand(1_001, 20, 200)), link.kills)
         assertNull(desk.state.value.asking)
 
-        link.killResults.tryEmit(KillResult(1_000, true))
+        link.results.tryEmit(CommandResult(1_000, true))
         assertEquals("빌드를 끝냈습니다", desk.state.value.notice)
-        link.killResults.tryEmit(KillResult(1_001, false, "이미 끝난 프로그램입니다"))
+        link.results.tryEmit(CommandResult(1_001, false, "이미 끝난 프로그램입니다"))
         assertEquals("편집기를 끝내지 못했습니다. 이미 끝난 프로그램입니다", desk.state.value.notice)
         desk.dismissNotice()
         assertNull(desk.state.value.notice)
@@ -164,11 +167,11 @@ class DeskViewModelTest {
         val desk = DeskViewModel(link) { next++ }
         desk.ask(ProcessInfo(1, 1, "음악", 0f, 0))
         desk.confirmKill()
-        link.killResults.tryEmit(KillResult(1, false))
+        link.results.tryEmit(CommandResult(1, false))
         assertEquals("음악을 끝내지 못했습니다", desk.state.value.notice)
         desk.ask(ProcessInfo(2, 2, "Safari", 0f, 0))
         desk.confirmKill()
-        link.killResults.tryEmit(KillResult(2, true))
+        link.results.tryEmit(CommandResult(2, true))
         assertEquals("Safari을(를) 끝냈습니다", desk.state.value.notice)
     }
 
@@ -192,7 +195,7 @@ class DeskViewModelTest {
     @Test
     fun ignoresResultsOfOtherCommands() {
         val desk = DeskViewModel(link) { 1L }
-        link.killResults.tryEmit(KillResult(7, true))
+        link.results.tryEmit(CommandResult(7, true))
         assertNull(desk.state.value.notice)
     }
 
@@ -221,6 +224,8 @@ class DeskViewModelTest {
         val desk = DeskViewModel(link) { 1L }
         desk.setVisible(true)
         desk.show(Screen.Ai)
-        assertEquals(Subscription(Topic.Ai, setOf(Topic.Weather, Topic.Perf, Topic.Processes)), link.subscriptions.last())
+        assertEquals(Subscription(Topic.Ai, setOf(Topic.Weather, Topic.Perf, Topic.Processes, Topic.Shortcuts)), link.subscriptions.last())
+        desk.show(Screen.Shortcuts)
+        assertEquals(Subscription(Topic.Shortcuts, setOf(Topic.Weather, Topic.Ai, Topic.Perf, Topic.Processes)), link.subscriptions.last())
     }
 }

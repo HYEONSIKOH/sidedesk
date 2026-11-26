@@ -58,6 +58,9 @@ import io.github.hyeonsikoh.sidedesk.ai.AiScreenState
 import io.github.hyeonsikoh.sidedesk.ai.AiTile
 import io.github.hyeonsikoh.sidedesk.ai.ForgeTab
 import io.github.hyeonsikoh.sidedesk.clock.ClockState
+import io.github.hyeonsikoh.sidedesk.shortcut.ShortcutBig
+import io.github.hyeonsikoh.sidedesk.shortcut.ShortcutState
+import io.github.hyeonsikoh.sidedesk.shortcut.ShortcutTile
 import io.github.hyeonsikoh.sidedesk.clock.HomeBig
 import io.github.hyeonsikoh.sidedesk.clock.HomeTile
 import io.github.hyeonsikoh.sidedesk.clock.PickActions
@@ -99,6 +102,13 @@ class AiPart(val state: AiScreenState, val selectTab: (ForgeTab) -> Unit) {
     }
 }
 
+/** 단축키 쪽 상태와 할 일 */
+class ShortcutPart(val state: ShortcutState, val press: (Int) -> Unit) {
+    companion object {
+        val EMPTY = ShortcutPart(ShortcutState()) {}
+    }
+}
+
 /** 시계 쪽 상태와 할 일. 홈 큰 화면, 홈 작은 칸, 고르기에 쓴다. */
 class ClockPart(
     val state: ClockState,
@@ -117,13 +127,14 @@ fun DeskScreen(
     clock: ClockPart,
     actions: DeskActions,
     ai: AiPart = AiPart.EMPTY,
+    shortcuts: ShortcutPart = ShortcutPart.EMPTY,
     modal: Confirm? = null,
     /** 안내 창 답. true 확인, false 취소 버튼, null 바깥 누르기나 뒤로 가기 */
     onModal: (Boolean?) -> Unit = {},
 ) {
     val shown = state.asking?.let(::killConfirm) ?: modal
     Box(Modifier.fillMaxSize().background(Palette.ground)) {
-        Content(state, clock, ai, actions, Modifier.behindModal(shown != null))
+        Content(state, clock, ai, shortcuts, actions, Modifier.behindModal(shown != null))
         ConfirmModal(
             shown,
             onConfirm = { if (state.asking != null) actions.confirmKill() else onModal(true) },
@@ -142,27 +153,30 @@ private fun killConfirm(process: ProcessInfo) = Confirm(
 )
 
 @Composable
-private fun Content(state: DeskState, clock: ClockPart, ai: AiPart, actions: DeskActions, modifier: Modifier) {
+private fun Content(state: DeskState, clock: ClockPart, ai: AiPart, shortcuts: ShortcutPart, actions: DeskActions, modifier: Modifier) {
     val now = rememberNow(clock.now)
     BoxWithConstraints(modifier.fillMaxSize().safeDrawingPadding().padding(12.dp)) {
         val wide = maxWidth >= maxHeight
         if (wide) {
             Row(Modifier.fillMaxSize(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                Big(state, clock, ai, now, actions, Modifier.weight(1f).fillMaxHeight())
+                Big(state, clock, ai, shortcuts, now, actions, Modifier.weight(1f).fillMaxHeight())
                 Column(Modifier.width(132.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                    SmallTiles(state, clock, ai, now, actions, Modifier.fillMaxWidth().height(72.dp))
+                    SmallTiles(state, clock, ai, shortcuts, now, actions, Modifier.fillMaxWidth().weight(1f, fill = false).height(72.dp))
                 }
             }
         } else {
             Column(Modifier.fillMaxSize(), verticalArrangement = Arrangement.spacedBy(12.dp)) {
                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                    SmallTiles(state, clock, ai, now, actions, Modifier.weight(1f).height(72.dp))
+                    SmallTiles(state, clock, ai, shortcuts, now, actions, Modifier.weight(1f).height(72.dp))
                 }
-                Big(state, clock, ai, now, actions, Modifier.weight(1f).fillMaxWidth())
+                Big(state, clock, ai, shortcuts, now, actions, Modifier.weight(1f).fillMaxWidth())
             }
         }
     }
 }
+
+/** 이보다 좁은 작은 칸은 글자를 위아래로 쌓는다. */
+internal val NARROW = 96.dp
 
 /** 큰 화면 판. 시험에서 찾는다. */
 const val BIG = "big"
@@ -171,7 +185,7 @@ const val BIG = "big"
 private fun Modifier.dim(dimmed: Boolean) = alpha(if (dimmed) 0.4f else 1f)
 
 @Composable
-private fun SmallTiles(state: DeskState, clock: ClockPart, ai: AiPart, now: Long, actions: DeskActions, tile: Modifier) {
+private fun SmallTiles(state: DeskState, clock: ClockPart, ai: AiPart, shortcuts: ShortcutPart, now: Long, actions: DeskActions, tile: Modifier) {
     // 고르는 중에 작은 칸을 누르면 고르기를 닫고 그 화면으로 간다.
     fun go(screen: Screen) {
         clock.actions.done()
@@ -183,12 +197,13 @@ private fun SmallTiles(state: DeskState, clock: ClockPart, ai: AiPart, now: Long
             Screen.Ai -> AiTile(ai.state, tile.clickable { go(Screen.Ai) })
             Screen.Perf -> CpuTile(state.perf?.cpu, tile.clickable { go(Screen.Perf) }.dim(state.dimmed))
             Screen.Processes -> TopProcessTile(state.rows.firstOrNull(), tile.clickable { go(Screen.Processes) }.dim(state.dimmed))
+            Screen.Shortcuts -> ShortcutTile(shortcuts.state, tile.clickable { go(Screen.Shortcuts) })
         }
     }
 }
 
 @Composable
-private fun Big(state: DeskState, clock: ClockPart, ai: AiPart, now: Long, actions: DeskActions, modifier: Modifier) {
+private fun Big(state: DeskState, clock: ClockPart, ai: AiPart, shortcuts: ShortcutPart, now: Long, actions: DeskActions, modifier: Modifier) {
     val home = state.big == Screen.Home
     val picking = home && clock.state.picking
     val swipe = with(LocalDensity.current) { 60.dp.toPx() }
@@ -218,6 +233,7 @@ private fun Big(state: DeskState, clock: ClockPart, ai: AiPart, now: Long, actio
             Screen.Ai -> AiBig(ai.state, now, ai.selectTab)
             Screen.Perf -> PerfScreen(state, Modifier.dim(state.dimmed))
             Screen.Processes -> ProcessScreen(state, actions, Modifier.dim(state.dimmed))
+            Screen.Shortcuts -> ShortcutBig(shortcuts.state, shortcuts.press)
         }
         if (home && !picking) {
             clock.notice?.let {
@@ -455,24 +471,43 @@ private fun ProcessRow(process: ProcessInfo, share: Float, onClick: () -> Unit) 
 
 @Composable
 private fun CpuTile(cpu: Float?, modifier: Modifier) {
-    Box(modifier.clip(RoundedCornerShape(20.dp)).background(Palette.side)) {
+    BoxWithConstraints(modifier.clip(RoundedCornerShape(20.dp)).background(Palette.side)) {
         Liquid(cpu, Modifier.fillMaxSize())
-        Row(Modifier.fillMaxSize().padding(horizontal = 14.dp), verticalAlignment = Alignment.CenterVertically) {
-            Text("CPU", color = Palette.ink, fontSize = 12.sp)
-            Spacer(Modifier.weight(1f))
-            Percent(cpu, 26.sp)
+        if (maxWidth < NARROW) {
+            // 좁은 세로에서 작은 칸이 넷이면 칸이 72dp 남짓이라 글자를 위아래로 쌓는다.
+            Column(Modifier.fillMaxSize(), verticalArrangement = Arrangement.Center, horizontalAlignment = Alignment.CenterHorizontally) {
+                Text("CPU", color = Palette.ink, fontSize = fit(11.dp), maxLines = 1)
+                Percent(cpu, fit(20.dp))
+            }
+        } else {
+            Row(Modifier.fillMaxSize().padding(horizontal = 14.dp), verticalAlignment = Alignment.CenterVertically) {
+                Text("CPU", color = Palette.ink, fontSize = 12.sp)
+                Spacer(Modifier.weight(1f))
+                Percent(cpu, 26.sp)
+            }
         }
     }
 }
 
 @Composable
 private fun TopProcessTile(top: ProcessInfo?, modifier: Modifier) {
-    Column(
-        modifier.clip(RoundedCornerShape(20.dp)).background(Palette.side).padding(horizontal = 14.dp),
-        verticalArrangement = Arrangement.Center,
-    ) {
-        Text(top?.name ?: "프로세스", color = Palette.ink, fontSize = 14.sp, fontWeight = FontWeight.Medium, maxLines = 1, overflow = TextOverflow.Ellipsis)
-        Text(top?.let { "%.1f%%".format(it.cpu) } ?: "-", color = Palette.muted, fontSize = 12.sp)
+    BoxWithConstraints(modifier.clip(RoundedCornerShape(20.dp)).background(Palette.side)) {
+        val narrow = maxWidth < NARROW
+        Column(
+            Modifier.fillMaxSize().padding(horizontal = if (narrow) 8.dp else 14.dp),
+            verticalArrangement = Arrangement.Center,
+            horizontalAlignment = if (narrow) Alignment.CenterHorizontally else Alignment.Start,
+        ) {
+            Text(
+                top?.name ?: "프로세스",
+                color = Palette.ink,
+                fontSize = if (narrow) fit(12.dp) else 14.sp,
+                fontWeight = FontWeight.Medium,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+            Text(top?.let { "%.1f%%".format(it.cpu) } ?: "-", color = Palette.muted, fontSize = if (narrow) fit(11.dp) else 12.sp, maxLines = 1)
+        }
     }
 }
 

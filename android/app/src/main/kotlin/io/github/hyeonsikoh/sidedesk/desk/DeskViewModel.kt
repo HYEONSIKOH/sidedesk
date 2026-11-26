@@ -4,7 +4,7 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import io.github.hyeonsikoh.sidedesk.link.ComputerLink
 import io.github.hyeonsikoh.sidedesk.link.KillCommand
-import io.github.hyeonsikoh.sidedesk.link.KillResult
+import io.github.hyeonsikoh.sidedesk.link.CommandResult
 import io.github.hyeonsikoh.sidedesk.link.LinkState
 import io.github.hyeonsikoh.sidedesk.link.Perf
 import io.github.hyeonsikoh.sidedesk.link.ProcessInfo
@@ -21,7 +21,13 @@ import kotlinx.coroutines.launch
 enum class Sort { Cpu, Memory }
 
 /** 큰 화면에 띄울 수 있는 것. 옆으로 밀면 이 차례로 돈다. */
-enum class Screen(val topic: Topic) { Home(Topic.Weather), Ai(Topic.Ai), Perf(Topic.Perf), Processes(Topic.Processes) }
+enum class Screen(val topic: Topic) {
+    Home(Topic.Weather),
+    Ai(Topic.Ai),
+    Perf(Topic.Perf),
+    Processes(Topic.Processes),
+    Shortcuts(Topic.Shortcuts),
+}
 
 data class DeskState(
     val big: Screen = Screen.Home,
@@ -88,7 +94,7 @@ class DeskViewModel(
             link.state.collect { link -> _state.update { it.copy(dimmed = link !is LinkState.Connected) } }
         }
         viewModelScope.launch {
-            link.killResults.collect { result ->
+            link.results.collect { result ->
                 val name = names.remove(result.commandId) ?: return@collect
                 _state.update { it.copy(notice = message(name, result)) }
             }
@@ -122,7 +128,7 @@ class DeskViewModel(
         val target = _state.value.asking ?: return
         val id = newCommandId()
         names[id] = target.name
-        link.kill(KillCommand(id, target.pid, target.startedAt))
+        link.send(KillCommand(id, target.pid, target.startedAt))
         viewModelScope.launch {
             delay(LinkOwner.KILL_LIMIT_MILLIS)
             link.giveUp(id)
@@ -142,7 +148,7 @@ class DeskViewModel(
         Sort.Memory -> list.sortedByDescending { it.memoryBytes }
     }
 
-    private fun message(name: String, result: KillResult) = when {
+    private fun message(name: String, result: CommandResult) = when {
         result.ok -> "${eul(name)} 끝냈습니다"
         result.reason.isBlank() -> "${eul(name)} 끝내지 못했습니다"
         else -> "${eul(name)} 끝내지 못했습니다. ${result.reason}"

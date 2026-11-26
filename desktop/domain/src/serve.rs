@@ -189,6 +189,15 @@ fn run(
                         subscriber.place(&location);
                     }
                 }
+                Event::Message(Body::RunShortcut(command)) => {
+                    // 키 보내기, 잠금처럼 넓은 일을 하므로 명령마다 등록이 남아 있는지 본다.
+                    if let Some(subscriber) = &subscriber {
+                        if !is_trusted(context, peer)? {
+                            return Err(ServeError::Forgotten);
+                        }
+                        subscriber.run_shortcut(&command);
+                    }
+                }
                 Event::Message(Body::KillProcess(command)) if subscriber.is_some() => {
                     // Ping 주기를 기다리지 않고, 명령마다 등록이 남아 있는지 본다.
                     if !is_trusted(context, peer)? {
