@@ -1,7 +1,7 @@
 package io.github.hyeonsikoh.sidedesk.link
 
 /** 컴퓨터가 모아 보낼 수 있는 것. 시계는 폰 시각을 써서 없다. */
-enum class Topic { Weather, Perf, Processes }
+enum class Topic { Weather, Ai, Perf, Processes }
 
 enum class Sky { Unknown, Clear, PartlyCloudy, Cloudy, Fog, Drizzle, Rain, Snow, Shower, Thunderstorm }
 
@@ -18,6 +18,34 @@ data class Weather(
     val fetchedAt: Long,
     val source: WeatherSource,
 )
+
+enum class AiTool { Unknown, ClaudeCode, Codex }
+
+/** 세션 단계. Unknown 은 기록 모양을 몰라 정하지 못한 것이다. */
+enum class AiState { Unknown, Working, Waiting, Done }
+
+/** since 는 지금 단계가 된 때(유닉스 밀리초), open 은 프로그램이 아직 떠 있는지 */
+data class AiSession(
+    val id: String,
+    val tool: AiTool,
+    val title: String,
+    val project: String,
+    val state: AiState,
+    val since: Long,
+    val open: Boolean,
+)
+
+enum class AlertKind { Unknown, Done, Waiting }
+
+/** 작업 중에서 끝남이나 답변 대기로 바뀐 순간. id 는 컴퓨터가 늘려 간다. */
+data class AiAlert(val id: Long, val sessionId: String, val title: String, val kind: AlertKind, val at: Long)
+
+enum class ForgeState { Unknown, Ok, Missing, SignedOut, Failed }
+
+/** 검토 요청, 내가 연 요청, 읽지 않은 알림 수 */
+data class ForgeCounts(val state: ForgeState, val reviews: Int, val mine: Int, val notices: Int)
+
+data class Forge(val github: ForgeCounts, val gitlab: ForgeCounts)
 
 /** 기기 위치. 반올림과 바뀜 판단은 core 가 한다. */
 sealed interface LocationState {

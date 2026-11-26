@@ -21,7 +21,7 @@ import kotlinx.coroutines.launch
 enum class Sort { Cpu, Memory }
 
 /** 큰 화면에 띄울 수 있는 것. 옆으로 밀면 이 차례로 돈다. */
-enum class Screen(val topic: Topic) { Home(Topic.Weather), Perf(Topic.Perf), Processes(Topic.Processes) }
+enum class Screen(val topic: Topic) { Home(Topic.Weather), Ai(Topic.Ai), Perf(Topic.Perf), Processes(Topic.Processes) }
 
 data class DeskState(
     val big: Screen = Screen.Home,

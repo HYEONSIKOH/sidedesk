@@ -16,7 +16,10 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.lifecycleScope
 import androidx.lifecycle.viewmodel.initializer
 import androidx.lifecycle.viewmodel.viewModelFactory
+import io.github.hyeonsikoh.sidedesk.ai.AiViewModel
+import io.github.hyeonsikoh.sidedesk.ai.PhoneBuzzer
 import io.github.hyeonsikoh.sidedesk.clock.ClockViewModel
+import io.github.hyeonsikoh.sidedesk.desk.AiPart
 import io.github.hyeonsikoh.sidedesk.clock.PickActions
 import io.github.hyeonsikoh.sidedesk.clock.PrefsSettings
 import io.github.hyeonsikoh.sidedesk.desk.ClockPart
@@ -47,6 +50,9 @@ class MainActivity : ComponentActivity() {
     private val desk: DeskViewModel by viewModels {
         viewModelFactory { initializer { DeskViewModel(app.link) { newRequestId().toLong() } } }
     }
+    private val ai: AiViewModel by viewModels {
+        viewModelFactory { initializer { AiViewModel(app.link, PhoneBuzzer(app)) } }
+    }
     private val clock: ClockViewModel by viewModels {
         viewModelFactory { initializer { ClockViewModel(app.link, settings) } }
     }
@@ -56,6 +62,8 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        // 알림은 어느 화면에서든 받아야 하므로 화면과 상관없이 처음부터 만든다.
+        ai.state
         // 첫 그림부터 저장된 테마의 상태 표시줄로 그린다.
         barsFor(clock.state.value.theme)
         askLocation.value = savedInstanceState?.getBoolean(ASKING_LOCATION) ?: false
@@ -84,10 +92,12 @@ class MainActivity : ComponentActivity() {
                     }
                     val pick = remember { PickActions(clock::setFace, clock::setTheme, clock::done) }
                     val part = ClockPart(clockState, System::currentTimeMillis, clock::pick, clock::nextFace, clock::previousFace, pick, state.notice)
+                    val aiPart = AiPart(ai.state.collectAsStateWithLifecycle().value, ai::selectTab)
                     DeskScreen(
                         desk.state.collectAsStateWithLifecycle().value,
                         part,
                         actions,
+                        aiPart,
                         modal = if (askLocation.value) LOCATION_NOTICE else null,
                         onModal = ::answerLocation,
                     )

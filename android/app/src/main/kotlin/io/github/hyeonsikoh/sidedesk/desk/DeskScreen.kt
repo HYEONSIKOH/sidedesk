@@ -53,6 +53,10 @@ import androidx.compose.ui.unit.TextUnit
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import io.github.hyeonsikoh.sidedesk.link.ProcessInfo
+import io.github.hyeonsikoh.sidedesk.ai.AiBig
+import io.github.hyeonsikoh.sidedesk.ai.AiScreenState
+import io.github.hyeonsikoh.sidedesk.ai.AiTile
+import io.github.hyeonsikoh.sidedesk.ai.ForgeTab
 import io.github.hyeonsikoh.sidedesk.clock.ClockState
 import io.github.hyeonsikoh.sidedesk.clock.HomeBig
 import io.github.hyeonsikoh.sidedesk.clock.HomeTile
@@ -88,6 +92,13 @@ class DeskActions(
     val dismissNotice: () -> Unit,
 )
 
+/** AI 세션 쪽 상태와 할 일 */
+class AiPart(val state: AiScreenState, val selectTab: (ForgeTab) -> Unit) {
+    companion object {
+        val EMPTY = AiPart(AiScreenState()) {}
+    }
+}
+
 /** 시계 쪽 상태와 할 일. 홈 큰 화면, 홈 작은 칸, 고르기에 쓴다. */
 class ClockPart(
     val state: ClockState,
@@ -105,13 +116,14 @@ fun DeskScreen(
     state: DeskState,
     clock: ClockPart,
     actions: DeskActions,
+    ai: AiPart = AiPart.EMPTY,
     modal: Confirm? = null,
     /** 안내 창 답. true 확인, false 취소 버튼, null 바깥 누르기나 뒤로 가기 */
     onModal: (Boolean?) -> Unit = {},
 ) {
     val shown = state.asking?.let(::killConfirm) ?: modal
     Box(Modifier.fillMaxSize().background(Palette.ground)) {
-        Content(state, clock, actions, Modifier.behindModal(shown != null))
+        Content(state, clock, ai, actions, Modifier.behindModal(shown != null))
         ConfirmModal(
             shown,
             onConfirm = { if (state.asking != null) actions.confirmKill() else onModal(true) },
@@ -130,23 +142,23 @@ private fun killConfirm(process: ProcessInfo) = Confirm(
 )
 
 @Composable
-private fun Content(state: DeskState, clock: ClockPart, actions: DeskActions, modifier: Modifier) {
+private fun Content(state: DeskState, clock: ClockPart, ai: AiPart, actions: DeskActions, modifier: Modifier) {
     val now = rememberNow(clock.now)
     BoxWithConstraints(modifier.fillMaxSize().safeDrawingPadding().padding(12.dp)) {
         val wide = maxWidth >= maxHeight
         if (wide) {
             Row(Modifier.fillMaxSize(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                Big(state, clock, now, actions, Modifier.weight(1f).fillMaxHeight())
+                Big(state, clock, ai, now, actions, Modifier.weight(1f).fillMaxHeight())
                 Column(Modifier.width(132.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                    SmallTiles(state, clock, now, actions, Modifier.fillMaxWidth().height(72.dp))
+                    SmallTiles(state, clock, ai, now, actions, Modifier.fillMaxWidth().height(72.dp))
                 }
             }
         } else {
             Column(Modifier.fillMaxSize(), verticalArrangement = Arrangement.spacedBy(12.dp)) {
                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                    SmallTiles(state, clock, now, actions, Modifier.weight(1f).height(72.dp))
+                    SmallTiles(state, clock, ai, now, actions, Modifier.weight(1f).height(72.dp))
                 }
-                Big(state, clock, now, actions, Modifier.weight(1f).fillMaxWidth())
+                Big(state, clock, ai, now, actions, Modifier.weight(1f).fillMaxWidth())
             }
         }
     }
@@ -159,7 +171,7 @@ const val BIG = "big"
 private fun Modifier.dim(dimmed: Boolean) = alpha(if (dimmed) 0.4f else 1f)
 
 @Composable
-private fun SmallTiles(state: DeskState, clock: ClockPart, now: Long, actions: DeskActions, tile: Modifier) {
+private fun SmallTiles(state: DeskState, clock: ClockPart, ai: AiPart, now: Long, actions: DeskActions, tile: Modifier) {
     // 고르는 중에 작은 칸을 누르면 고르기를 닫고 그 화면으로 간다.
     fun go(screen: Screen) {
         clock.actions.done()
@@ -168,6 +180,7 @@ private fun SmallTiles(state: DeskState, clock: ClockPart, now: Long, actions: D
     state.small.forEach { screen ->
         when (screen) {
             Screen.Home -> HomeTile(clock.state, now, tile.clickable { go(Screen.Home) })
+            Screen.Ai -> AiTile(ai.state, tile.clickable { go(Screen.Ai) })
             Screen.Perf -> CpuTile(state.perf?.cpu, tile.clickable { go(Screen.Perf) }.dim(state.dimmed))
             Screen.Processes -> TopProcessTile(state.rows.firstOrNull(), tile.clickable { go(Screen.Processes) }.dim(state.dimmed))
         }
@@ -175,7 +188,7 @@ private fun SmallTiles(state: DeskState, clock: ClockPart, now: Long, actions: D
 }
 
 @Composable
-private fun Big(state: DeskState, clock: ClockPart, now: Long, actions: DeskActions, modifier: Modifier) {
+private fun Big(state: DeskState, clock: ClockPart, ai: AiPart, now: Long, actions: DeskActions, modifier: Modifier) {
     val home = state.big == Screen.Home
     val picking = home && clock.state.picking
     val swipe = with(LocalDensity.current) { 60.dp.toPx() }
@@ -202,6 +215,7 @@ private fun Big(state: DeskState, clock: ClockPart, now: Long, actions: DeskActi
     ) {
         when (state.big) {
             Screen.Home -> HomeBig(clock.state, now)
+            Screen.Ai -> AiBig(ai.state, now, ai.selectTab)
             Screen.Perf -> PerfScreen(state, Modifier.dim(state.dimmed))
             Screen.Processes -> ProcessScreen(state, actions, Modifier.dim(state.dimmed))
         }

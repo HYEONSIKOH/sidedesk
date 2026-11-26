@@ -123,4 +123,48 @@ class LinkOwnerTest {
     fun startsWithUnknownLocation() {
         assertEquals(LocationState.Unknown, owner.location.get())
     }
+
+    private fun alert(id: Long) = AiAlert(id, "s", "로그인 화면", AlertKind.Done, 1)
+
+    private val received = mutableListOf<AiAlert>()
+    private val alertScope = CoroutineScope(Dispatchers.Unconfined).also {
+        it.launch(start = CoroutineStart.UNDISPATCHED) { owner.alerts.collect { a -> received += a } }
+    }
+
+    @Test
+    fun takesSessionsAndForgeOnlyFromTheCurrentConnection() {
+        val old = connect(mac)
+        val mine = connect(mac)
+        val list = listOf(AiSession("a", AiTool.ClaudeCode, "t", "p", AiState.Working, 1, true))
+        val counts = ForgeCounts(ForgeState.Ok, 1, 2, 3)
+        owner.receivedSessions(old, list)
+        owner.receivedForge(old, Forge(counts, counts))
+        assertEquals(null, owner.sessions.value)
+        assertEquals(null, owner.forge.value)
+        owner.receivedSessions(mine, list)
+        owner.receivedForge(mine, Forge(counts, counts))
+        assertEquals(list, owner.sessions.value)
+        assertEquals(counts, owner.forge.value!!.github)
+    }
+
+    @Test
+    fun passesEachAlertOncePerConnection() {
+        val mine = connect(mac)
+        owner.receivedAlert(mine, alert(1))
+        owner.receivedAlert(mine, alert(1))
+        owner.receivedAlert(mine, alert(2))
+        assertEquals(listOf(1L, 2L), received.map { it.id })
+        alertScope.cancel()
+    }
+
+    @Test
+    fun takesTheSameNumberAgainAfterReconnecting() {
+        val first = connect(mac)
+        owner.receivedAlert(first, alert(1))
+        val second = connect(mac)
+        owner.receivedAlert(first, alert(5))
+        owner.receivedAlert(second, alert(1))
+        assertEquals(listOf(1L, 1L), received.map { it.id })
+        alertScope.cancel()
+    }
 }
