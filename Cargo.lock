@@ -2226,6 +2226,7 @@ dependencies = [
  "sidedesk-domain",
  "sidedesk-link",
  "sidedesk-mac",
+ "sidedesk-weather",
  "sidedesk-window",
  "sidedesk-windows",
 ]

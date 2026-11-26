@@ -86,6 +86,8 @@ function render(next) {
   notice.textContent = state.notice ? state.notice.text : '';
   notice.classList.toggle('calm', Boolean(state.notice && state.notice.good));
 
+  renderWeather(state.weather);
+
   $('computer-name').textContent = state.computer.name;
   $('version').textContent = state.computer.version;
   $('fingerprint').textContent = state.computer.fingerprint;
@@ -103,7 +105,36 @@ function render(next) {
   }
 }
 
+function renderWeather(weather) {
+  const on = Boolean(weather && weather.supported);
+  $('weather-choice').disabled = !on;
+  $('weather-hint').hidden = !on;
+  $('weather-off').hidden = on;
+  if (on) $('weather-choice').value = weather.choice;
+  const kma = on && weather.choice === 'kma';
+  $('kma-label').hidden = !kma;
+  $('kma-row').hidden = !kma;
+  if (!kma) return;
+  $('kma-empty').hidden = weather.has_key;
+  $('kma-saved').hidden = !weather.has_key;
+  $('kma-put').disabled = weather.checking;
+  $('kma-put').textContent = weather.checking ? '확인하는 중' : '넣기';
+  const result = $('kma-result');
+  result.hidden = !weather.result;
+  result.textContent = weather.result ? weather.result.text : '';
+  result.classList.toggle('bad', Boolean(weather.result && !weather.result.good));
+}
+
 document.querySelectorAll('.menu-item').forEach((b) => b.addEventListener('click', () => show(b.dataset.page)));
+$('weather-choice').addEventListener('change', (event) => send({ weather: event.target.value }));
+// 키는 보낸 뒤 칸을 비우고 어디에도 남기지 않는다.
+$('kma-put').addEventListener('click', () => {
+  const input = $('kma-key');
+  const value = input.value.trim();
+  input.value = '';
+  if (value) send({ 'kma-key': value });
+});
+$('kma-clear').addEventListener('click', () => send({ 'kma-key-clear': '' }));
 $('pairing-yes').addEventListener('click', () => send({ answer: true }));
 $('pairing-no').addEventListener('click', () => send({ answer: false }));
 const systemDark = window.matchMedia('(prefers-color-scheme: dark)');

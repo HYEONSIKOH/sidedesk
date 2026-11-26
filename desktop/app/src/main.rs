@@ -1,7 +1,10 @@
+mod prefs;
 mod store;
 
 use std::io::BufRead;
+use std::path::Path;
 use std::process::ExitCode;
+use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 use std::sync::mpsc::{self, Receiver};
 use std::thread;
@@ -12,11 +15,12 @@ use sidedesk_domain::{
 };
 use sidedesk_link::AdbLinks;
 #[cfg(target_os = "macos")]
-use sidedesk_mac::{MacMeter, MacName as Name, MacProcesses};
+use sidedesk_mac::{MacGet, MacKeychain, MacMeter, MacName as Name, MacProcesses};
 use sidedesk_window::{Board, Computer};
 #[cfg(target_os = "windows")]
-use sidedesk_windows::{WindowsMeter, WindowsName as Name, WindowsProcesses};
+use sidedesk_windows::{WindowsMeter, WindowsName as Name, WindowsProcesses, WindowsSecrets};
 
+use crate::prefs::WeatherPrefs;
 use crate::store::FileKeys;
 
 const USAGE: &str = "사용: sidedesk (설정 창) | sidedesk pair (터미널에서 기기 등록) | sidedesk run (창 없이 연결 유지)";
@@ -65,29 +69,48 @@ impl Prompt for Terminal {
     }
 }
 
+/// 맥은 날씨를 받고, 윈도우는 받지 않는다(설정 창에 "받지 않음").
 #[cfg(target_os = "macos")]
-fn hub() -> Hub {
-    Hub::new(
+fn hub(folder: &Path) -> (Hub, Arc<WeatherPrefs>) {
+    let get: Arc<dyn sidedesk_weather::Get> = Arc::new(MacGet::default());
+    let prefs = Arc::new(WeatherPrefs::new(
+        folder.join("weather.txt"),
+        Box::new(MacKeychain::default()),
+        Some(Arc::clone(&get)),
+    ));
+    let weather = sidedesk_weather::Chooser::new(prefs.clone(), get);
+    let hub = Hub::new(
         Box::new(MacMeter::default()),
         Box::new(MacProcesses::default()),
         Cadence::default(),
     )
+    .with_weather(
+        Box::new(weather),
+        sidedesk_domain::WeatherCadence::default(),
+    );
+    (hub, prefs)
 }
 
 #[cfg(target_os = "windows")]
-fn hub() -> Hub {
-    Hub::new(
+fn hub(folder: &Path) -> (Hub, Arc<WeatherPrefs>) {
+    let prefs = Arc::new(WeatherPrefs::new(
+        folder.join("weather.txt"),
+        Box::new(WindowsSecrets),
+        None,
+    ));
+    let hub = Hub::new(
         Box::new(WindowsMeter),
         Box::new(WindowsProcesses),
         Cadence::default(),
-    )
+    );
+    (hub, prefs)
 }
 
 fn run() -> Result<(), String> {
     let folder = store::folder().map_err(|e| e.0)?;
     let _lock = store::lock(&folder).map_err(|e| e.0)?;
+    let (hub, _) = hub(&folder);
     let keys = FileKeys::new(folder);
-    let hub = hub();
     let context = Context {
         name: &Name,
         keys: &keys,
@@ -101,6 +124,7 @@ fn run() -> Result<(), String> {
     println!("기기를 기다리는 중. 끝내려면 Ctrl+C");
     thread::scope(|scope| {
         scope.spawn(|| hub.run());
+        scope.spawn(|| hub.run_weather());
         keep_connected(&[&AdbLinks::default()], &context, &AtomicBool::new(false));
         hub.stop();
     });
@@ -110,6 +134,8 @@ fn run() -> Result<(), String> {
 fn pair() -> Result<(), String> {
     let folder = store::folder().map_err(|e| e.0)?;
     let _lock = store::lock(&folder).map_err(|e| e.0)?;
+    // 등록만 하므로 구독이 없고 수집도 돌리지 않는다.
+    let (hub, _) = hub(&folder);
     let keys = FileKeys::new(folder);
     let links = AdbLinks::default();
     let phones: Vec<_> = links
@@ -124,8 +150,6 @@ fn pair() -> Result<(), String> {
         _ => return Err("기기를 하나만 꽂고 다시 실행".to_owned()),
     };
     let mut conn = links.connect(&phone.id).map_err(|e| e.0)?;
-    // 등록만 하므로 구독이 없고 수집도 돌리지 않는다.
-    let hub = hub();
     let context = Context {
         name: &Name,
         keys: &keys,
@@ -166,6 +190,8 @@ fn window() -> Result<(), String> {
     let folder = store::folder().map_err(|e| e.0)?;
     let lock = store::lock(&folder).map_err(|e| e.0)?;
     let mode_file = folder.join("mode.txt");
+    let (hub, prefs) = hub(&folder);
+    let prefs: &'static WeatherPrefs = Box::leak(Box::new(prefs));
     let keys: &'static FileKeys = Box::leak(Box::new(FileKeys::new(folder)));
     let identity = keys.identity().map_err(|e| e.0)?;
     let requests: &'static PairRequests = Box::leak(Box::default());
@@ -174,7 +200,9 @@ fn window() -> Result<(), String> {
         version: env!("CARGO_PKG_VERSION").to_owned(),
         key: identity.public,
     };
-    let board: &'static Board = Box::leak(Box::new(Board::new(computer, keys, requests)));
+    let board: &'static Board = Box::leak(Box::new(
+        Board::new(computer, keys, requests).with_weather(prefs),
+    ));
     let context: &'static Context = Box::leak(Box::new(Context {
         name: &Name,
         keys,
@@ -182,10 +210,11 @@ fn window() -> Result<(), String> {
         report: board,
         requests,
         active: Box::leak(Box::default()),
-        hub: Box::leak(Box::new(hub())),
+        hub: Box::leak(Box::new(hub)),
         timing: Timing::default(),
     }));
     thread::spawn(|| context.hub.run());
+    thread::spawn(|| context.hub.run_weather());
     thread::spawn(move || {
         let _lock = lock;
         let usb = AdbLinks::default();

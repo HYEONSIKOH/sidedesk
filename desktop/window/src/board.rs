@@ -7,7 +7,9 @@ use std::thread;
 use std::time::Duration;
 
 use sidedesk_core::{KEY_LEN, beacon};
-use sidedesk_domain::{Keys, Link, Note, PairRequests, Phone, Prompt, Report};
+use sidedesk_domain::{
+    Choice, KeyCheck, Keys, Link, Note, PairRequests, Phone, Prompt, Report, Secret, WeatherSetup,
+};
 
 use crate::json;
 
@@ -52,6 +54,11 @@ struct State {
     seen: HashMap<[u8; KEY_LEN], String>,
     /// 링크 자체의 문제(adb 없음, 블루투스 꺼짐)
     problems: HashMap<Link, String>,
+    /// 키 넣기와 지우기마다 올린다. 늦게 끝난 앞 확인이 저장하거나 덮지 않게 한다.
+    key_round: u64,
+    checking: bool,
+    /// 키 확인 결과. 기기 쪽 알림(`notice`)과 따로 보인다.
+    key_result: Option<Notice>,
 }
 
 /// 화면에 JSON 을 보내는 함수
@@ -64,6 +71,7 @@ pub struct Board {
     requests: &'static PairRequests,
     changed: Mutex<Option<Listener>>,
     code_wait: Duration,
+    weather: Option<&'static dyn WeatherSetup>,
 }
 
 impl Board {
@@ -79,7 +87,14 @@ impl Board {
             requests,
             changed: Mutex::new(None),
             code_wait: CODE_WAIT,
+            weather: None,
         }
+    }
+
+    /// 일반 칸의 날씨 설정. 없으면 날씨 줄은 "받지 않음"으로 보인다.
+    pub fn with_weather(mut self, setup: &'static dyn WeatherSetup) -> Self {
+        self.weather = Some(setup);
+        self
     }
 
     /// 상태가 바뀔 때마다 화면에 보낼 JSON 을 받는다.
@@ -121,9 +136,128 @@ impl Board {
                     });
                 }
             }
+            "weather" => self.choose_weather(&value),
+            "kma-key" => self.put_key(value),
+            "kma-key-clear" => self.clear_key(),
             _ => return,
         }
         self.publish();
+    }
+
+    fn choose_weather(&self, value: &str) {
+        let Some(setup) = self.weather.filter(|setup| setup.supported()) else {
+            return;
+        };
+        let choice = match value {
+            "kma" => Choice::Kma,
+            _ => Choice::OpenMeteo,
+        };
+        if let Err(error) = setup.set_choice(choice) {
+            self.lock().key_result = Some(Notice {
+                text: error.0,
+                good: false,
+            });
+        }
+    }
+
+    /// 키는 받은 그대로 다른 곳에 남기지 않는다. 확인은 따로 스레드에서 한다.
+    fn put_key(&'static self, value: String) {
+        let key = Secret::new(value);
+        let Some(setup) = self.weather.filter(|setup| setup.supported()) else {
+            return;
+        };
+        let shape = key
+            .expose()
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b"+/=%".contains(&b));
+        let round = {
+            let mut state = self.lock();
+            state.key_round += 1;
+            if key.expose().is_empty() || !shape {
+                state.checking = false;
+                state.key_result = Some(Notice {
+                    text: "인증키 모양이 아닙니다".to_owned(),
+                    good: false,
+                });
+                return;
+            }
+            state.checking = true;
+            state.key_result = None;
+            state.key_round
+        };
+        thread::spawn(move || {
+            let check = setup.check_key(&key);
+            let mut state = self.lock();
+            if state.key_round != round {
+                return;
+            }
+            let saved = match check {
+                KeyCheck::Good | KeyCheck::Limit => setup.save_key(&key).map(|_| true),
+                _ => Ok(false),
+            };
+            let (text, good) = match (check, saved) {
+                (_, Err(error)) => (error.0, false),
+                (KeyCheck::Good, _) => ("확인했습니다".to_owned(), true),
+                (KeyCheck::Limit, _) => (
+                    "오늘 호출 한도를 넘었습니다. 키는 저장했습니다".to_owned(),
+                    false,
+                ),
+                (KeyCheck::Wrong, _) => (
+                    "인증키가 맞지 않습니다. 새로 받은 키는 한두 시간 뒤부터 쓸 수 있습니다"
+                        .to_owned(),
+                    false,
+                ),
+                (KeyCheck::Offline, _) => (
+                    "기상청에 연결하지 못했습니다. 잠시 뒤 다시 넣어 주세요".to_owned(),
+                    false,
+                ),
+                (KeyCheck::Unknown, _) => ("인증키를 확인하지 못했습니다".to_owned(), false),
+            };
+            state.checking = false;
+            state.key_result = Some(Notice { text, good });
+            drop(state);
+            self.publish();
+        });
+    }
+
+    fn clear_key(&self) {
+        let Some(setup) = self.weather.filter(|setup| setup.supported()) else {
+            return;
+        };
+        let result = setup.clear_key();
+        let mut state = self.lock();
+        state.key_round += 1;
+        state.checking = false;
+        state.key_result = result.err().map(|error| Notice {
+            text: error.0,
+            good: false,
+        });
+    }
+
+    fn weather_json(&self, state: &State) -> String {
+        let Some(setup) = self.weather.filter(|setup| setup.supported()) else {
+            return json::object(&[("supported", "false".into())]);
+        };
+        let choice = match setup.choice() {
+            Choice::Kma => "kma",
+            Choice::OpenMeteo => "open-meteo",
+        };
+        let result = state.key_result.as_ref().map_or_else(
+            || "null".to_owned(),
+            |notice| {
+                json::object(&[
+                    ("text", json::text(&notice.text)),
+                    ("good", notice.good.to_string()),
+                ])
+            },
+        );
+        json::object(&[
+            ("supported", "true".into()),
+            ("choice", json::text(choice)),
+            ("has_key", setup.has_key().to_string()),
+            ("checking", state.checking.to_string()),
+            ("result", result),
+        ])
     }
 
     fn start_pairing(&'static self, id: &str) {
@@ -320,6 +454,7 @@ impl Board {
             ("attached", json::array(attached)),
             ("pairing", pairing),
             ("notice", notice),
+            ("weather", self.weather_json(&state)),
             (
                 "problems",
                 json::array(
@@ -784,5 +919,141 @@ mod tests {
         keys.trust([1; KEY_LEN], "A", "a").unwrap();
         board.command(&format!(r#"{{"forget":"{}"}}"#, encode(&[1; KEY_LEN])));
         assert!(keys.trusted().unwrap().is_empty());
+    }
+
+    /// 키 확인을 손으로 풀어 주는 가짜 설정. 받은 키는 저장한 것만 남긴다.
+    struct Setup {
+        choice: Mutex<Choice>,
+        saved: Mutex<Option<String>>,
+        answer: Mutex<Option<std::sync::mpsc::Receiver<KeyCheck>>>,
+        checks: Mutex<Vec<String>>,
+    }
+
+    impl WeatherSetup for Setup {
+        fn supported(&self) -> bool {
+            true
+        }
+        fn choice(&self) -> Choice {
+            *self.choice.lock().unwrap()
+        }
+        fn set_choice(&self, choice: Choice) -> Result<(), PortError> {
+            *self.choice.lock().unwrap() = choice;
+            Ok(())
+        }
+        fn has_key(&self) -> bool {
+            self.saved.lock().unwrap().is_some()
+        }
+        fn check_key(&self, key: &Secret) -> KeyCheck {
+            self.checks.lock().unwrap().push(key.expose().to_owned());
+            let answer = self.answer.lock().unwrap().take();
+            answer.map_or(KeyCheck::Good, |answer| answer.recv().unwrap())
+        }
+        fn save_key(&self, key: &Secret) -> Result<(), PortError> {
+            *self.saved.lock().unwrap() = Some(key.expose().to_owned());
+            Ok(())
+        }
+        fn clear_key(&self) -> Result<(), PortError> {
+            *self.saved.lock().unwrap() = None;
+            Ok(())
+        }
+    }
+
+    fn weather_board() -> (&'static Board, &'static Setup) {
+        let setup: &'static Setup = Box::leak(Box::new(Setup {
+            choice: Mutex::default(),
+            saved: Mutex::default(),
+            answer: Mutex::default(),
+            checks: Mutex::default(),
+        }));
+        let keys: &'static MemoryKeys = Box::leak(Box::default());
+        let requests: &'static PairRequests = Box::leak(Box::default());
+        let computer = Computer {
+            name: "맥".into(),
+            version: "0.1.0".into(),
+            key: [7; KEY_LEN],
+        };
+        let board = Board::new(computer, keys, requests).with_weather(setup);
+        (Box::leak(Box::new(board)), setup)
+    }
+
+    fn settle(board: &Board) -> String {
+        for _ in 0..200 {
+            let snapshot = board.snapshot();
+            if snapshot.contains(r#""checking":false"#) {
+                return snapshot;
+            }
+            thread::sleep(Duration::from_millis(5));
+        }
+        panic!("확인이 끝나지 않음");
+    }
+
+    #[test]
+    fn choosing_the_weather_provider() {
+        let (board, setup) = weather_board();
+        assert!(board.snapshot().contains(r#""choice":"open-meteo""#));
+        board.command(r#"{"weather":"kma"}"#);
+        assert_eq!(*setup.choice.lock().unwrap(), Choice::Kma);
+        assert!(
+            board
+                .snapshot()
+                .contains(r#""choice":"kma","has_key":false"#)
+        );
+    }
+
+    #[test]
+    fn a_good_key_is_saved_and_never_shown() {
+        let (board, setup) = weather_board();
+        board.command(r#"{"kma-key":"Abc%2B123=="}"#);
+        let snapshot = settle(board);
+        assert_eq!(setup.saved.lock().unwrap().as_deref(), Some("Abc%2B123=="));
+        assert!(snapshot.contains(r#""has_key":true"#), "{snapshot}");
+        assert!(snapshot.contains("확인했습니다"));
+        assert!(!snapshot.contains("Abc"));
+        board.command(r#"{"kma-key-clear":""}"#);
+        assert!(setup.saved.lock().unwrap().is_none());
+        assert!(board.snapshot().contains(r#""has_key":false"#));
+    }
+
+    #[test]
+    fn wrong_or_odd_keys_are_not_saved() {
+        let (board, setup) = weather_board();
+        let (tell, answer) = mpsc::channel();
+        *setup.answer.lock().unwrap() = Some(answer);
+        board.command(r#"{"kma-key":"wrongkey"}"#);
+        tell.send(KeyCheck::Wrong).unwrap();
+        let snapshot = settle(board);
+        assert!(setup.saved.lock().unwrap().is_none());
+        assert!(snapshot.contains("한두 시간 뒤"), "{snapshot}");
+        assert!(!snapshot.contains("wrongkey"));
+        // 줄 바꿈이나 공백이 든 키는 부르지도 않는다.
+        board.command(r#"{"kma-key":"ab cd\n"}"#);
+        assert!(board.snapshot().contains("인증키 모양이 아닙니다"));
+        assert_eq!(setup.checks.lock().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn a_late_check_does_not_undo_a_clear() {
+        let (board, setup) = weather_board();
+        let (tell, answer) = mpsc::channel();
+        *setup.answer.lock().unwrap() = Some(answer);
+        board.command(r#"{"kma-key":"first"}"#);
+        assert!(board.snapshot().contains(r#""checking":true"#));
+        board.command(r#"{"kma-key-clear":""}"#);
+        tell.send(KeyCheck::Good).unwrap();
+        thread::sleep(Duration::from_millis(50));
+        assert!(setup.saved.lock().unwrap().is_none());
+        assert!(!board.snapshot().contains("확인했습니다"));
+    }
+
+    #[test]
+    fn without_weather_setup_the_row_says_unsupported() {
+        let (board, _, _) = board();
+        assert!(
+            board
+                .snapshot()
+                .contains(r#""weather":{"supported":false}"#)
+        );
+        board.command(r#"{"kma-key":"abc"}"#);
+        assert!(!board.snapshot().contains("abc"));
     }
 }

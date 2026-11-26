@@ -41,6 +41,27 @@
         </div>
         <p class="hint">자동은 컴퓨터의 화면 모드 설정을 따릅니다.</p>
       </dd>
+      <dt>날씨 제공처</dt>
+      <dd>
+        <select id="weather-choice" class="select" aria-label="날씨 제공처">
+          <option value="open-meteo">Open-Meteo</option>
+          <option value="kma">기상청</option>
+        </select>
+        <p class="hint" id="weather-hint">기기의 대략적인 위치(소수 첫째 자리)를 고른 제공처로 보냅니다. 기상청 키가 없거나 받지 못하면 Open-Meteo 로 받습니다.</p>
+        <p class="hint" id="weather-off" hidden>윈도우에서는 아직 날씨를 받지 않습니다.</p>
+      </dd>
+      <dt id="kma-label" hidden>공공데이터포털 인증키</dt>
+      <dd id="kma-row" hidden>
+        <div class="inline" id="kma-empty">
+          <input id="kma-key" class="field mono" type="password" autocomplete="off" spellcheck="false" autocapitalize="off" aria-label="공공데이터포털 인증키">
+          <button class="button primary" id="kma-put">넣기</button>
+        </div>
+        <div class="inline" id="kma-saved" hidden>
+          <span class="pill ok">넣음</span>
+          <button class="button danger" id="kma-clear">지우기</button>
+        </div>
+        <p class="hint" id="kma-result" hidden></p>
+      </dd>
     </dl>
   </section>
   <section class="page" id="about">
