@@ -997,11 +997,19 @@ fn bluetooth_yields_when_usb_already_holds_the_phone() {
     );
 }
 
+/// 주소가 바뀐 같은 기기: 옛 연결이 살아 있는 동안 새 주소로 붙지 않고, 옛 연결이 끝나야 넘겨받는다.
+/// 빡빡한 시험 시간(침묵 150ms)이면 느린 서버에서 옛 연결이 굶어 먼저 끊겨(기기가 응답하지 않음)
+/// 새 주소가 정상으로 붙으므로, 이 시험은 굶어도 끊기지 않을 넉넉한 시간으로 돈다.
 #[test]
 fn a_rotated_bluetooth_address_does_not_add_a_second_connection() {
     let phone_key = Identity::generate();
     let public = phone_key.public;
-    let world = World::new(vec![public], None);
+    let mut world = World::new(vec![public], None);
+    world.timing = Timing {
+        ping: Duration::from_millis(100),
+        silence: Duration::from_secs(3),
+        answer: Duration::from_millis(150),
+    };
     let computer = vec![world.computer.identity.public];
     let second = || Phone {
         id: "ble:2".into(),
@@ -1010,21 +1018,31 @@ fn a_rotated_bluetooth_address_does_not_add_a_second_connection() {
     let old = Switch::new(Link::Ble, ble(&public), phone_key.clone(), computer.clone());
     let new = Switch::new(Link::Ble, second(), phone_key, computer);
     new.unplug();
-    run_links(&[&old, &new], &world, || {
-        // 느린 CI 서버를 생각해 고정 시간 대신 옛 주소로 붙을 때까지 기다린다.
+    let wait_for = |done: &dyn Fn() -> bool| {
         let deadline = std::time::Instant::now() + Duration::from_secs(20);
-        while connected_on(&world, "ble:1") == 0 && std::time::Instant::now() < deadline {
+        while !done() && std::time::Instant::now() < deadline {
             thread::sleep(Duration::from_millis(50));
         }
+    };
+    let notes = || format!("{:?}", world.notes.0.lock().unwrap());
+    run_links(&[&old, &new], &world, || {
+        wait_for(&|| connected_on(&world, "ble:1") > 0);
         new.plug(second());
-        thread::sleep(Duration::from_millis(1500));
+        // 재시도 간격(RETRY)이 몇 번 지나도록 둔다.
+        thread::sleep(sidedesk_domain::RETRY * 2 + Duration::from_millis(500));
+        assert_eq!(connected_on(&world, "ble:1"), 1, "{}", notes());
+        assert_eq!(
+            new.connects.load(Ordering::Relaxed),
+            0,
+            "옛 연결이 살아 있는 동안 새 주소로 붙음: {}",
+            notes()
+        );
+        // 옛 주소가 사라지면 옛 연결이 끝나 자리를 놓고, 새 주소가 넘겨받는다.
+        old.unplug();
+        wait_for(&|| connected_on(&world, "ble:2") > 0);
     });
-    assert_eq!(connected_on(&world, "ble:1"), 1);
-    assert_eq!(
-        new.connects.load(Ordering::Relaxed),
-        0,
-        "같은 기기는 블루투스 연결 하나"
-    );
+    assert_eq!(connected_on(&world, "ble:2"), 1, "{}", notes());
+    assert_eq!(new.connects.load(Ordering::Relaxed), 1, "{}", notes());
 }
 
 #[test]
