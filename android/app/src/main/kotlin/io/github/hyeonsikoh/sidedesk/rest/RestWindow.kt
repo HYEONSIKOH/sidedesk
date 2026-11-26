@@ -33,6 +33,16 @@ fun Activity.applyWindow(resting: Boolean, keepOn: Boolean) {
     }
 }
 
+/**
+ * 화면이 안 보이게 될 때 쉼을 푼다. 다만 접고 펴거나 돌려서 다시 만드는 중이면(changing) 그대로 둔다.
+ * 그러면 새 창이 쉬는 화면, 쉬는 구독, 쉬는 밝기로 이어진다.
+ */
+fun stopResting(changing: Boolean, rest: RestViewModel, desk: io.github.hyeonsikoh.sidedesk.desk.DeskViewModel) {
+    if (changing) return
+    desk.setResting(false)
+    rest.setVisible(false)
+}
+
 /** 충전 여부와 배터리 퍼센트를 본다. 앱이 앞에 있는 동안만 등록한다. */
 class BatteryWatch(private val context: Context, private val onChange: (charging: Boolean, percent: Int?) -> Unit) {
     private val receiver = object : BroadcastReceiver() {
@@ -43,9 +53,8 @@ class BatteryWatch(private val context: Context, private val onChange: (charging
     fun start() {
         if (registered) return
         registered = true
-        // 끈적 방송이라 등록하는 순간 지금 값이 함께 온다.
+        // 끈적 방송이라 등록하는 순간 지금 값이 onReceive 로 온다(돌려받은 값까지 읽으면 두 번이다).
         ContextCompat.registerReceiver(context, receiver, IntentFilter(Intent.ACTION_BATTERY_CHANGED), ContextCompat.RECEIVER_NOT_EXPORTED)
-            ?.let(::read)
     }
 
     fun stop() {

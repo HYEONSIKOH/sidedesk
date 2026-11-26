@@ -37,6 +37,7 @@ import androidx.compose.ui.unit.dp
 import io.github.hyeonsikoh.sidedesk.ai.alertText
 import io.github.hyeonsikoh.sidedesk.clock.ClockState
 import io.github.hyeonsikoh.sidedesk.clock.HomeBig
+import io.github.hyeonsikoh.sidedesk.clock.rememberNow
 import io.github.hyeonsikoh.sidedesk.ui.LocalPalette
 import io.github.hyeonsikoh.sidedesk.ui.Palette
 import io.github.hyeonsikoh.sidedesk.ui.RestColors
@@ -47,7 +48,7 @@ import io.github.hyeonsikoh.sidedesk.ui.fit
  * 모든 누름을 먼저 받아 깨우기만 하고, 아래 칸과 버튼에는 보내지 않는다. 나가는 0.2초 동안도 같다.
  */
 @Composable
-fun BoxScope.RestScreen(resting: Boolean, rest: RestState, clock: ClockState, now: Long, onWake: () -> Unit) {
+fun BoxScope.RestScreen(resting: Boolean, rest: RestState, clock: ClockState, time: () -> Long, onWake: () -> Unit) {
     BackHandler(enabled = resting, onBack = onWake)
     AnimatedVisibility(
         visible = resting,
@@ -70,6 +71,8 @@ fun BoxScope.RestScreen(resting: Boolean, rest: RestState, clock: ClockState, no
                     }
                 },
         ) {
+            // 시각은 쉬는 판 안에서만 읽는다. 깨어 있을 때 1초마다 화면 전체가 다시 그려지지 않게 한다.
+            val now = rememberNow(time)
             val (x, y) = shiftAt(now / 60_000)
             CompositionLocalProvider(LocalPalette provides RestColors) {
                 Box(Modifier.fillMaxSize().padding(24.dp).offset(x.dp, y.dp)) {

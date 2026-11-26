@@ -17,7 +17,6 @@ import androidx.lifecycle.lifecycleScope
 import androidx.lifecycle.viewmodel.initializer
 import androidx.lifecycle.viewmodel.viewModelFactory
 import io.github.hyeonsikoh.sidedesk.ai.AiViewModel
-import io.github.hyeonsikoh.sidedesk.ai.PhoneBuzzer
 import io.github.hyeonsikoh.sidedesk.clock.ClockViewModel
 import io.github.hyeonsikoh.sidedesk.desk.AiPart
 import io.github.hyeonsikoh.sidedesk.desk.ShortcutPart
@@ -29,7 +28,7 @@ import io.github.hyeonsikoh.sidedesk.rest.RestScreen
 import io.github.hyeonsikoh.sidedesk.rest.RestViewModel
 import io.github.hyeonsikoh.sidedesk.rest.applyWindow
 import io.github.hyeonsikoh.sidedesk.rest.keepScreenOn
-import io.github.hyeonsikoh.sidedesk.clock.rememberNow
+import io.github.hyeonsikoh.sidedesk.rest.stopResting
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.layout.Box
@@ -87,8 +86,10 @@ class MainActivity : ComponentActivity() {
     }
 
     /** 세 화면(AI, 단축키, 음악)이 함께 쓰는 진동. 세기와 끔은 쉬기 설정을 따른다. */
-    private val buzzer by lazy { PhoneBuzzer(app) { rest.state.value.vibration } }
+    private val buzzer get() = app.buzzer
     private val battery by lazy { BatteryWatch(this) { charging, percent -> power = charging to percent; fitWindow() } }
+    /** 이 창에 마지막으로 건 (쉼, 켜 두기). 바뀔 때만 다시 건다. 창마다 새로 시작한다. */
+    private var applied: Pair<Boolean, Boolean>? = null
     private var power: Pair<Boolean, Int?> = false to null
 
     /** 위치 권한을 묻기 전에 한 번 보이는 안내 */
@@ -128,7 +129,7 @@ class MainActivity : ComponentActivity() {
             val restState = rest.state.collectAsStateWithLifecycle().value
             LaunchedEffect(clockState.theme) {
                 barsFor(clockState.theme)
-                fitWindow()
+                fitWindow(force = true)
             }
             LaunchedEffect(askLocation.value) { rest.hold(Hold.Confirm, askLocation.value || desk.state.value.asking != null) }
             SideDeskTheme(clockState.theme) {
@@ -175,16 +176,19 @@ class MainActivity : ComponentActivity() {
                             onModal = ::answerLocation,
                         )
                     }
-                    RestScreen(restState.resting, restState, clockState, rememberNow(System::currentTimeMillis), rest::touched)
+                    RestScreen(restState.resting, restState, clockState, System::currentTimeMillis, rest::touched)
                 }
             }
         }
     }
 
     /** 쉼과 켜 두기 설정, 배터리로 창(켜 두기, 밝기, 바 숨김)을 다시 건다. */
-    private fun fitWindow() {
+    private fun fitWindow(force: Boolean = false) {
         val now = rest.state.value
-        applyWindow(now.resting, keepScreenOn(now.keepOn, power.first, power.second))
+        val want = now.resting to keepScreenOn(now.keepOn, power.first, power.second)
+        if (!force && want == applied) return
+        applied = want
+        applyWindow(want.first, want.second)
     }
 
     override fun onWindowFocusChanged(hasFocus: Boolean) {
@@ -252,8 +256,8 @@ class MainActivity : ComponentActivity() {
 
     override fun onStop() {
         desk.setVisible(false)
-        desk.setResting(false)
-        rest.setVisible(false)
+        // 접고 펴거나 돌려서 다시 만드는 중이면 쉼을 그대로 둔다. 새 창의 onCreate 가 쉬는 밝기와 바 숨김을 다시 건다.
+        stopResting(isChangingConfigurations, rest, desk)
         battery.stop()
         fitWindow()
         clock.setVisible(false)

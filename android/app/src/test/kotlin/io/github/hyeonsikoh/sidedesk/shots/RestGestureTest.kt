@@ -68,7 +68,7 @@ class RestGestureTest {
                         actions,
                         shortcuts = ShortcutPart(keys) { calls += "press $it" },
                     )
-                    RestScreen(resting, RestState(resting = resting), ClockState(), DeskShots.NOW) { calls += "wake" }
+                    RestScreen(resting, RestState(resting = resting), ClockState(), { DeskShots.NOW }) { calls += "wake" }
                 }
             }
         }
@@ -101,7 +101,7 @@ class RestGestureTest {
         settle(100)
         compose.onNodeWithText("키 3", useUnmergedTree = true).performClick()
         settle()
-        assertEquals(false, calls.contains("press 3"))
+        assertEquals(listOf("touched", "wake"), calls)
     }
 
     @Test

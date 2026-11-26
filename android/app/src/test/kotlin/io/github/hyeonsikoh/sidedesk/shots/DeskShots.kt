@@ -223,7 +223,7 @@ class DeskShots(private val device: String, private val width: Int, private val 
                                 ShortcutPart(keys) {},
                                 MusicPart(music, { NOW_MS }, MusicActions({}, {}, {}, {}, {})),
                             )
-                            RestScreen(rest?.resting == true, rest ?: RestState(), clock, now) {}
+                            RestScreen(rest?.resting == true, rest ?: RestState(), clock, { now }) {}
                         }
                     }
                 }
@@ -274,6 +274,8 @@ class DeskShots(private val device: String, private val width: Int, private val 
             }
             shot("rest-alert", theme, desk(), clock(Face.Digits, theme), rest = RestState(resting = true, alert = ALERT))
             shot("rest-edge", theme, desk(), clock(Face.Digits, theme), rest = RestState(resting = true), now = EDGE)
+            shot("rest-edge-overview", theme, desk(), clock(Face.Overview, theme), rest = RestState(resting = true), now = EDGE)
+            shot("rest-edge-calendar", theme, desk(), clock(Face.Calendar, theme), rest = RestState(resting = true), now = EDGE)
             shot("home-picking-rest", theme, desk(), clock(Face.Digits, theme, picking = true), restOpen = true)
             shot("home-ai-idle", theme, desk(), clock(theme = theme), ai = AiScreenState(sessions = emptyList(), busy = 0))
             shot("processes", theme, desk(Screen.Processes), clock(theme = theme))
@@ -282,6 +284,13 @@ class DeskShots(private val device: String, private val width: Int, private val 
 
     @Test
     fun largeText() {
+        // 쉬는 화면과 쉬기 설정 판은 가장 낮은 접은 가로에서도 본다(검증 1차 5).
+        if (device == "folded-landscape") {
+            for (scale in listOf(1.3f, 2.0f)) {
+                shot("font$scale-rest-edge", Theme.Dark, desk(), clock(Face.Overview, Theme.Dark), scale, rest = RestState(resting = true), now = EDGE)
+                shot("font$scale-home-picking-rest", Theme.Dark, desk(), clock(Face.Digits, Theme.Dark, picking = true), scale, restOpen = true)
+            }
+        }
         if (!device.endsWith("portrait") || device.startsWith("unfolded")) return
         for (scale in listOf(1.3f, 2.0f)) {
             Face.entries.forEach { face ->

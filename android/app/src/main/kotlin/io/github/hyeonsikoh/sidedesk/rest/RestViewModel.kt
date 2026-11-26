@@ -71,12 +71,19 @@ class RestViewModel(private val settings: Settings, alerts: Flow<AiScreenState>)
         restart()
     }
 
-    /** 막는 까닭이 생기면 쉬는 중이어도 깨운다(짝 맺기 번호, 권한 창을 가리지 않게). */
+    /**
+     * 막는 까닭이 있으면 쉬지 않는다. 짝 맺기 번호나 확인 창이 생기면 쉬는 중이어도 깨워 가리지 않는다.
+     * 창 초점 없음은 깨우지 않는다(접고 펴서 창을 다시 만들 때도 초점을 잃기 때문이다).
+     */
     fun hold(reason: Hold, on: Boolean) {
         val changed = if (on) holds.add(reason) else holds.remove(reason)
         if (!changed) return
-        if (on) _state.update { it.copy(resting = false, alert = null) }
+        if (on && reason in WAKERS) _state.update { it.copy(resting = false, alert = null) }
         restart()
+    }
+
+    private companion object {
+        val WAKERS = setOf(Hold.Pairing, Hold.Confirm)
     }
 
     /** 화면이 안 보이면 타이머를 멈추고 깨어 있는 상태로 둔다. */

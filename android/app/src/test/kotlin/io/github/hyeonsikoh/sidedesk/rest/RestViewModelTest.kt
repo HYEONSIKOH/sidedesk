@@ -161,6 +161,56 @@ class RestViewModelTest {
     }
 
     @Test
+    fun anAlertWhileAwakeIsNotKeptForTheRestScreen() {
+        val rest = rest()
+        ai.value = AiScreenState(alert = alert(1))
+        main.scheduler.runCurrent()
+        assertNull(rest.state.value.alert)
+        rest.setRestAfter(RestAfter.One)
+        pass(RestAfter.One.millis!! + 1)
+        assertTrue(rest.state.value.resting)
+        // 4초 안에 다시 쉬어도 깨어 있을 때 온 지난 알림은 보이지 않는다.
+        assertNull(rest.state.value.alert)
+    }
+
+    @Test
+    fun losingFocusDoesNotWake() {
+        val rest = rest()
+        pass(five + 1)
+        rest.hold(Hold.NoFocus, true)
+        assertTrue(rest.state.value.resting)
+        rest.hold(Hold.Confirm, true)
+        assertFalse(rest.state.value.resting)
+    }
+
+    @Test
+    fun recreatingTheScreenKeepsResting() {
+        val link = io.github.hyeonsikoh.sidedesk.link.FakeLink()
+        val desk = io.github.hyeonsikoh.sidedesk.desk.DeskViewModel(link) { 1L }
+        val rest = rest()
+        desk.setVisible(true)
+        pass(five + 1)
+        desk.setResting(rest.state.value.resting)
+        // 접고 펴서 다시 만들 때: onStop(바뀌는 중) 뒤 onStart
+        desk.setVisible(false)
+        stopResting(changing = true, rest, desk)
+        desk.setVisible(true)
+        rest.setVisible(true)
+        assertTrue(rest.state.value.resting)
+        assertEquals(
+            io.github.hyeonsikoh.sidedesk.link.Subscription(
+                io.github.hyeonsikoh.sidedesk.link.Topic.Weather,
+                setOf(io.github.hyeonsikoh.sidedesk.link.Topic.Ai),
+            ),
+            link.subscriptions.last(),
+        )
+        // 정말 뒤로 갈 때는 쉼을 푼다.
+        desk.setVisible(false)
+        stopResting(changing = false, rest, desk)
+        assertFalse(rest.state.value.resting)
+    }
+
+    @Test
     fun readsAndSavesTheSettings() {
         settings.keepOn = "Always"
         settings.vibration = "깨짐"
