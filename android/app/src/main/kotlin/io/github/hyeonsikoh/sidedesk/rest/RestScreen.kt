@@ -1,5 +1,6 @@
 package io.github.hyeonsikoh.sidedesk.rest
 
+import io.github.hyeonsikoh.sidedesk.BuildConfig
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.tween
@@ -122,6 +123,8 @@ fun RestSettings(panel: RestPanel, modifier: Modifier = Modifier) {
         if (!panel.canSetStrength) {
             Text("이 폰은 세기를 바꿀 수 없습니다", color = Palette.muted, fontSize = fit(11.dp), modifier = Modifier.padding(start = 4.dp))
         }
+        // 컴퓨터와 버전이 다르다는 안내를 받았을 때 자기 버전을 볼 곳
+        Text("SideDesk ${BuildConfig.VERSION_NAME}", color = Palette.muted, fontSize = fit(11.dp), modifier = Modifier.padding(start = 4.dp))
     }
 }
 
