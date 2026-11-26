@@ -285,6 +285,13 @@ fn window() -> Result<(), String> {
     thread::spawn(|| context.hub.run_forge());
     thread::spawn(|| context.hub.run_shortcuts());
     thread::spawn(|| context.hub.run_music());
+    if let Some(jukebox) = context.hub.music() {
+        let opener = Arc::clone(&help);
+        let panel = sidedesk_window::MusicPanel::new(Arc::clone(jukebox), move || {
+            opener.open_automation_settings()
+        });
+        sidedesk_window::with_music(Box::leak(Box::new(panel)));
+    }
     if let Some(deck) = context.hub.shortcuts() {
         let panel = sidedesk_window::ShortcutsPanel::new(Arc::clone(deck), help);
         sidedesk_window::with_shortcuts(Box::leak(Box::new(panel)));

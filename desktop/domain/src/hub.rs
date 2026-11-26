@@ -327,6 +327,10 @@ impl Hub {
         self
     }
 
+    pub fn music(&self) -> Option<&Arc<Jukebox>> {
+        self.jukebox.as_ref()
+    }
+
     pub fn shortcuts(&self) -> Option<&Arc<Deck>> {
         self.deck.as_ref()
     }

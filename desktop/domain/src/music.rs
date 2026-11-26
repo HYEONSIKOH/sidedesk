@@ -178,6 +178,8 @@ struct Inner {
     stopped: bool,
     read_at: Option<Instant>,
     volume_at: Option<Instant>,
+    /// 마지막으로 읽지 못한 까닭(자동화 권한 거절 등). 설정 창이 보인다.
+    problem: Option<String>,
 }
 
 pub struct Jukebox {
@@ -499,8 +501,13 @@ impl Jukebox {
                 drop(inner);
                 let read = panic::catch_unwind(AssertUnwindSafe(|| self.player.now()));
                 inner = self.lock();
-                if let Ok(Ok((track, picture))) = read {
-                    self.publish_track(&mut inner, track, picture);
+                match read {
+                    Ok(Ok((track, picture))) => {
+                        inner.problem = None;
+                        self.publish_track(&mut inner, track, picture);
+                    }
+                    Ok(Err(error)) => inner.problem = Some(error.0),
+                    Err(_) => {}
                 }
                 continue;
             }
@@ -574,6 +581,11 @@ impl Jukebox {
         for waiter in queued.waiters {
             Self::deliver(&mut inner, waiter, done.clone());
         }
+    }
+
+    /// 마지막으로 곡을 읽지 못한 까닭
+    pub fn problem(&self) -> Option<String> {
+        self.lock().problem.clone()
     }
 
     pub fn stop(&self) {

@@ -19,6 +19,8 @@ use crate::{audio, keys};
 
 const SHORTCUTS: &str = "/usr/bin/shortcuts";
 const SHORTCUTS_LIMIT: Duration = Duration::from_secs(10);
+const AUTOMATION_SETTINGS: &str =
+    "x-apple.systempreferences:com.apple.preference.security?Privacy_Automation";
 const KEY_SETTINGS: &str =
     "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility";
 
@@ -199,6 +201,14 @@ impl ShortcutHelp for MacLauncher {
                 .URLForApplicationWithBundleIdentifier(&NSString::from_str(bundle))
                 .is_some()
         })
+    }
+
+    fn open_automation_settings(&self) {
+        autoreleasepool(|_| {
+            if let Some(url) = NSURL::URLWithString(&NSString::from_str(AUTOMATION_SETTINGS)) {
+                open_url(&url);
+            }
+        });
     }
 
     fn open_key_settings(&self) {
