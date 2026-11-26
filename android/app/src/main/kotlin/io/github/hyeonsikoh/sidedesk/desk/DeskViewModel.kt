@@ -10,6 +10,8 @@ import io.github.hyeonsikoh.sidedesk.link.Perf
 import io.github.hyeonsikoh.sidedesk.link.ProcessInfo
 import io.github.hyeonsikoh.sidedesk.link.Subscription
 import io.github.hyeonsikoh.sidedesk.link.Topic
+import io.github.hyeonsikoh.sidedesk.link.LinkOwner
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -112,6 +114,10 @@ class DeskViewModel(
         val id = newCommandId()
         names[id] = target.name
         link.kill(KillCommand(id, target.pid, target.startedAt))
+        viewModelScope.launch {
+            delay(LinkOwner.KILL_LIMIT_MILLIS)
+            link.giveUp(id)
+        }
         _state.update { it.copy(asking = null, notice = "${eul(target.name)} 끝내는 중") }
     }
 

@@ -27,4 +27,10 @@ class FakeLink : ComputerLink {
     override fun kill(command: KillCommand) {
         kills += command
     }
+
+    val givenUp = mutableListOf<Long>()
+
+    override fun giveUp(commandId: Long) {
+        givenUp += commandId
+    }
 }

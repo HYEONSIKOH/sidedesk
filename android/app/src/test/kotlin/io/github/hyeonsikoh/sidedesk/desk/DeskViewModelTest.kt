@@ -3,6 +3,7 @@ package io.github.hyeonsikoh.sidedesk.desk
 import io.github.hyeonsikoh.sidedesk.link.FakeLink
 import io.github.hyeonsikoh.sidedesk.link.KillCommand
 import io.github.hyeonsikoh.sidedesk.link.KillResult
+import io.github.hyeonsikoh.sidedesk.link.LinkOwner
 import io.github.hyeonsikoh.sidedesk.link.LinkState
 import io.github.hyeonsikoh.sidedesk.link.Perf
 import io.github.hyeonsikoh.sidedesk.link.ProcessInfo
@@ -28,8 +29,10 @@ class DeskViewModelTest {
     private val editor = ProcessInfo(20, 200, "편집기", 4.2f, 812_000_000)
     private val browser = ProcessInfo(30, 300, "브라우저", 2.1f, 1_900_000_000)
 
+    private val main = UnconfinedTestDispatcher()
+
     @Before
-    fun setUp() = Dispatchers.setMain(UnconfinedTestDispatcher())
+    fun setUp() = Dispatchers.setMain(main)
 
     @After
     fun tearDown() = Dispatchers.resetMain()
@@ -131,6 +134,17 @@ class DeskViewModelTest {
         desk.confirmKill()
         link.killResults.tryEmit(KillResult(2, true))
         assertEquals("Safari을(를) 끝냈습니다", desk.state.value.notice)
+    }
+
+    @Test
+    fun givesUpAfterTheLimit() {
+        val desk = DeskViewModel(link) { 5L }
+        desk.ask(build)
+        desk.confirmKill()
+        main.scheduler.advanceTimeBy(LinkOwner.KILL_LIMIT_MILLIS - 1)
+        assertTrue(link.givenUp.isEmpty())
+        main.scheduler.advanceTimeBy(2)
+        assertEquals(listOf(5L), link.givenUp)
     }
 
     @Test

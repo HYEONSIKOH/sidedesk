@@ -39,6 +39,9 @@ interface ComputerLink {
     /** 결과가 올 때까지 다시 이어질 때마다 같은 번호로 보낸다. */
     fun kill(command: KillCommand)
 
+    /** 기한 안에 결과가 없으면 부른다. 아직 남아 있으면 지우고 실패로 알린다. */
+    fun giveUp(commandId: Long)
+
     fun stop()
 
     /** 등록 번호를 확인한 결과 */

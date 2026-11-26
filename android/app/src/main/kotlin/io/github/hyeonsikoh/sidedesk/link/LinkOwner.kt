@@ -11,7 +11,7 @@ enum class Via { Usb, Bluetooth }
  * - USB 는 받는 순간 이어받는다(adb 를 거쳐 온 접속이라 믿을 수 있다).
  * - 블루투스는 키를 확인한(Ready) 뒤에만 이어받는다. USB 가 살아 있거나 다른 컴퓨터가 쓰고 있으면 진다.
  */
-class LinkOwner {
+class LinkOwner(private val nanos: () -> Long = System::nanoTime) {
     val state = MutableStateFlow<LinkState>(LinkState.Waiting)
     val answer = AtomicReference<Boolean?>(null)
     @Volatile var lastName: String? = null
@@ -19,7 +19,11 @@ class LinkOwner {
     val processes = MutableStateFlow<Processes?>(null)
     val killResults = MutableSharedFlow<KillResult>(extraBufferCapacity = 64)
     val subscription = AtomicReference(Subscription.NONE)
-    private val kills = LinkedHashMap<Long, KillCommand>()
+    private class Pending(val command: KillCommand, val computer: ByteArray, val at: Long)
+
+    private val kills = LinkedHashMap<Long, Pending>()
+    /** 마지막으로 키를 확인한 컴퓨터. 끊긴 뒤에도 남겨 같은 컴퓨터가 다시 붙으면 밀린 명령을 보낸다. */
+    private var lastComputer: ByteArray? = null
 
     private class Holder(val via: Via, var computer: ByteArray?, val close: () -> Unit, val generation: Int)
 
@@ -55,13 +59,16 @@ class LinkOwner {
         }
         generation += 1
         current = Holder(Via.Bluetooth, computer, close, generation)
+        lastComputer = computer
         answer.set(null)
         return generation
     }
 
     @Synchronized
     fun ready(mine: Int, computer: ByteArray) {
-        current?.takeIf { it.generation == mine }?.computer = computer
+        val now = current?.takeIf { it.generation == mine } ?: return
+        now.computer = computer
+        lastComputer = computer
     }
 
     @Synchronized
@@ -80,13 +87,30 @@ class LinkOwner {
         }
     }
 
-    @Synchronized
+    /** 지금 컴퓨터 앞으로 명령을 둔다. 아는 컴퓨터가 없으면 바로 실패로 알린다. */
     fun kill(command: KillCommand) {
-        kills[command.commandId] = command
+        val queued = synchronized(this) {
+            val computer = lastComputer ?: return@synchronized false
+            kills[command.commandId] = Pending(command, computer, nanos())
+            true
+        }
+        if (!queued) killResults.tryEmit(KillResult(command.commandId, false, NOT_CONNECTED))
     }
 
+    /** 이 컴퓨터 앞으로 둔, 기한이 지나지 않은 명령 */
     @Synchronized
-    fun pendingKills(): List<KillCommand> = kills.values.toList()
+    fun pendingKills(computer: ByteArray): List<KillCommand> {
+        val now = nanos()
+        return kills.values
+            .filter { it.computer.contentEquals(computer) && now - it.at <= KILL_LIMIT_NANOS }
+            .map { it.command }
+    }
+
+    /** 기한 안에 결과가 오지 않은 명령을 지우고 실패로 알린다. */
+    fun giveUp(commandId: Long) {
+        val known = synchronized(this) { kills.remove(commandId) != null }
+        if (known) killResults.tryEmit(KillResult(commandId, false, NOT_CONNECTED))
+    }
 
     /** 받은 값은 지금 연결 것만 받는다. */
     fun receivedPerf(mine: Int, value: Perf) = synchronized(this) {
@@ -106,5 +130,11 @@ class LinkOwner {
     @Synchronized
     fun closeAll() {
         current?.close?.invoke()
+    }
+
+    companion object {
+        const val KILL_LIMIT_MILLIS = 30_000L
+        const val KILL_LIMIT_NANOS = KILL_LIMIT_MILLIS * 1_000_000
+        const val NOT_CONNECTED = "컴퓨터와 연결되어 있지 않습니다"
     }
 }

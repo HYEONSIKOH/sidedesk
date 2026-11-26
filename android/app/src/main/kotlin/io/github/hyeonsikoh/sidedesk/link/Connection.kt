@@ -68,6 +68,7 @@ class Connection(
         PhoneSession(identity.privateKey, identity.publicKey, keys.computers(), via == Via.Usb).use { session ->
             var heard = System.nanoTime()
             var ready = false
+            var computer = ByteArray(0)
             var subscribed: Subscription? = null
             val sentKills = HashSet<Long>()
             fun flush() = session.takeOutput().takeIf { it.isNotEmpty() }?.let(pipe::send)
@@ -79,7 +80,7 @@ class Connection(
                     session.subscribe(now.big?.let(::view), now.small.map(::view))
                     subscribed = now
                 }
-                for (kill in owner.pendingKills()) {
+                for (kill in owner.pendingKills(computer)) {
                     if (!sentKills.add(kill.commandId)) continue
                     session.killProcess(kill.commandId.toULong(), kill.pid.toUInt(), kill.startedAt.toULong())
                 }
@@ -102,6 +103,7 @@ class Connection(
                                 owner.ready(mine!!, event.computerKey)
                             }
                             ready = true
+                            computer = event.computerKey
                             onReady()
                             afterReady()
                             show(LinkState.Connected(owner.lastName, via))
