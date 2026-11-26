@@ -29,6 +29,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.scale
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
@@ -102,7 +103,9 @@ private fun Sessions(state: AiScreenState, now: Long, height: Dp) {
     val count = active.size + ceil(rest.size / 2f)
     val unit = min(100f, (height.value - (count - 1) * GAP.value) / rows).coerceAtLeast(MIN_UNIT)
     val highlight = state.alert?.sessionId
-    Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(GAP)) {
+    val scroll = rememberScrollState()
+    Box(Modifier.fillMaxSize()) {
+    Column(Modifier.fillMaxSize().verticalScroll(scroll), verticalArrangement = Arrangement.spacedBy(GAP)) {
         active.forEach { SessionCard(it, now, it.id == highlight, big = true, Modifier.fillMaxWidth().height((unit * 1.55f).dp)) }
         rest.chunked(2).forEach { pair ->
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(GAP)) {
@@ -110,6 +113,17 @@ private fun Sessions(state: AiScreenState, now: Long, height: Dp) {
                 if (pair.size == 1) Spacer(Modifier.weight(1f))
             }
         }
+    }
+    // 아래로 더 있으면 끝을 판 색으로 흐리게 사라지게 해, 잘린 것이 아니라 밀어 볼 수 있다는 것을 알린다.
+    if (scroll.canScrollForward) {
+        Box(
+            Modifier
+                .align(Alignment.BottomCenter)
+                .fillMaxWidth()
+                .height(36.dp)
+                .background(Brush.verticalGradient(listOf(Color.Transparent, Palette.panel))),
+        )
+    }
     }
 }
 
@@ -200,9 +214,9 @@ private fun ForgeBar(state: AiScreenState, onTab: (ForgeTab) -> Unit) {
             val counts = state.counts
             if (counts?.state == ForgeState.Ok) {
                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceEvenly) {
-                    Count(counts.reviews, "검토")
-                    Count(counts.mine, "내 요청")
-                    Count(counts.notices, "알림")
+                    Count("${counts.reviews}", "검토")
+                    Count("${counts.mine}", "내 요청")
+                    Count(noticeText(counts.notices), "알림")
                 }
             } else {
                 val tool = if (state.tab == ForgeTab.GitHub) "gh" else "glab"
@@ -226,9 +240,9 @@ private fun ForgeBar(state: AiScreenState, onTab: (ForgeTab) -> Unit) {
 }
 
 @Composable
-private fun Count(value: Int, label: String) {
+private fun Count(value: String, label: String) {
     Column(horizontalAlignment = Alignment.CenterHorizontally) {
-        Text("$value", color = Palette.ink, fontSize = fit(20.dp), fontWeight = FontWeight.Medium, maxLines = 1)
+        Text(value, color = Palette.ink, fontSize = fit(20.dp), fontWeight = FontWeight.Medium, maxLines = 1)
         Text(label, color = Palette.muted, fontSize = fit(11.dp), maxLines = 1)
     }
 }

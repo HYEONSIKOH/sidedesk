@@ -97,6 +97,11 @@ class AiViewModel(
     }
 }
 
+/** 컴퓨터는 알림을 50 개까지만 센다. 50 이면 그보다 많을 수 있다. */
+const val NOTICE_CAP = 50
+
+fun noticeText(count: Int) = if (count >= NOTICE_CAP) "$NOTICE_CAP+" else "$count"
+
 /** 지난 시간 글자. 1분 안은 "지금", 그다음 "12분", "7시간 4분", "1일 16시간" */
 fun elapsedText(now: Long, since: Long): String {
     val minutes = (now - since).coerceAtLeast(0) / 60_000

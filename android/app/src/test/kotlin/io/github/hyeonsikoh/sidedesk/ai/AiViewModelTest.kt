@@ -135,6 +135,13 @@ class AiViewModelTest {
     }
 
     @Test
+    fun capsTheNoticeCount() {
+        assertEquals("0", noticeText(0))
+        assertEquals("49", noticeText(49))
+        assertEquals("50+", noticeText(50))
+    }
+
+    @Test
     fun writesElapsedTime() {
         val minute = 60_000L
         assertEquals("지금", elapsedText(now, now - 59_000))

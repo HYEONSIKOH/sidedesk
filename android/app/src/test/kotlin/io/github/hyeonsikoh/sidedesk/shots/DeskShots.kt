@@ -92,11 +92,11 @@ class DeskShots(private val device: String, private val width: Int, private val 
 
         val SESSIONS = listOf(
             ai("1", "로그인 화면", "sidedesk", AiState.Working, 0),
-            ai("2", "테스트 실행", "vtm-3-0", AiState.Working, 4, AiTool.Codex),
+            ai("2", "테스트 실행", "web", AiState.Working, 4, AiTool.Codex),
             ai("3", "문서 정리", "docs", AiState.Done, 12),
-            ai("4", "검색 개선", "ti", AiState.Done, 35),
-            ai("5", "오류 수정", "be", AiState.Done, 60, open = false),
-            ai("6", "번역", "fe", AiState.Done, 120, AiTool.Codex),
+            ai("4", "검색 개선", "search", AiState.Done, 35),
+            ai("5", "오류 수정", "api", AiState.Done, 60, open = false),
+            ai("6", "번역", "app", AiState.Done, 120, AiTool.Codex),
         )
         private val waiting = ai("1", "로그인 화면", "sidedesk", AiState.Waiting, 1)
         val MANY = SESSIONS.take(2) + ai("9", "아주 긴 세션 제목이 칸을 넘어가는 경우", "long-project-name", AiState.Working, 2) +
