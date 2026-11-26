@@ -59,7 +59,7 @@ sidedesk-cli.exe  터미널용. "sidedesk-cli pair" 는 기기 등록, "sidedesk
 
 처음 열 때 SmartScreen 창이 뜨면 "추가 정보 > 실행"을 누릅니다(코드 서명을 하지 않았습니다).
 설정 창은 WebView2 런타임을 씁니다. 윈도우 10, 11 에는 대개 깔려 있습니다.
-"@ | Set-Content -Path (Join-Path $stage '읽어 보기.txt') -Encoding utf8
+"@ | Set-Content -Path (Join-Path $stage 'README.txt') -Encoding utf8
 Compress-Archive -Path (Join-Path $stage '*') -DestinationPath $zip
 Remove-Item $stage -Recurse -Force
 
