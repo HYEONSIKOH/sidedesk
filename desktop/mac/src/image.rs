@@ -12,11 +12,13 @@ use core_foundation::number::CFNumber;
 use core_foundation::string::{CFString, CFStringRef};
 use core_foundation_sys::base::kCFAllocatorDefault;
 use core_foundation_sys::data::{CFDataCreateMutable, CFDataGetBytePtr, CFDataGetLength};
-use sidedesk_domain::{ART_LIMIT, Picture};
+use sidedesk_domain::{ART_LIMIT, BLE_ART_LIMIT, Picture};
 
 /// 원본 상한(넘으면 그림 없음)
 pub const SOURCE_LIMIT: usize = 10 * 1024 * 1024;
 const SIDE: i32 = 320;
+/// 블루투스용 작은 판
+const SMALL_SIDE: i32 = 240;
 const QUALITIES: [f64; 3] = [0.8, 0.6, 0.4];
 
 #[link(name = "ImageIO", kind = "framework")]
@@ -50,8 +52,16 @@ fn key(raw: CFStringRef) -> CFString {
     unsafe { CFString::wrap_under_get_rule(raw) }
 }
 
-/// 원본 그림을 줄여 JPEG 로. 못 하거나 상한을 넘으면 없음.
+/// 원본 그림을 줄여 JPEG 로. 블루투스 상한을 넘으면 작은 판도 만든다. 못 하면 없음.
 pub fn shrink(source: &[u8]) -> Option<Picture> {
+    let mut picture = shrink_to(source, SIDE, ART_LIMIT)?;
+    if picture.jpeg.len() > BLE_ART_LIMIT {
+        picture.small = shrink_to(source, SMALL_SIDE, BLE_ART_LIMIT).map(Box::new);
+    }
+    Some(picture)
+}
+
+fn shrink_to(source: &[u8], side: i32, limit: usize) -> Option<Picture> {
     if source.is_empty() || source.len() > SOURCE_LIMIT {
         return None;
     }
@@ -71,7 +81,7 @@ pub fn shrink(source: &[u8]) -> Option<Picture> {
             ),
             (
                 key(kCGImageSourceThumbnailMaxPixelSize),
-                CFNumber::from(SIDE).as_CFType(),
+                CFNumber::from(side).as_CFType(),
             ),
             (
                 key(kCGImageSourceCreateThumbnailWithTransform),
@@ -91,7 +101,7 @@ pub fn shrink(source: &[u8]) -> Option<Picture> {
     let jpeg = QUALITIES
         .iter()
         .filter_map(|quality| encode(thumbnail, *quality))
-        .find(|bytes| bytes.len() <= ART_LIMIT);
+        .find(|bytes| bytes.len() <= limit);
     // SAFETY: 위에서 만든 것
     unsafe { CFRelease(thumbnail) };
     let jpeg = jpeg?;
@@ -100,6 +110,7 @@ pub fn shrink(source: &[u8]) -> Option<Picture> {
     Some(Picture {
         hash: hasher.finish().max(1),
         jpeg,
+        small: None,
     })
 }
 
@@ -179,6 +190,12 @@ mod tests {
         assert_ne!(picture.hash, 0);
         // 같은 그림이면 같은 해시
         assert_eq!(shrink(&bmp(1200, 1200)).unwrap().hash, picture.hash);
+        // 잡음 그림은 커서 블루투스용 작은 판도 생긴다.
+        if picture.jpeg.len() > BLE_ART_LIMIT {
+            let small = picture.small.as_ref().expect("작은 판");
+            assert!(small.jpeg.len() <= BLE_ART_LIMIT, "{}", small.jpeg.len());
+            assert_ne!(small.hash, picture.hash);
+        }
     }
 
     #[test]

@@ -199,6 +199,8 @@ fn a_command_runs_once_per_number() {
 struct Pipe {
     incoming: Receiver<Vec<u8>>,
     outgoing: Sender<Vec<u8>>,
+    /// 초당 바이트. 있으면 보내기를 그만큼 늦춘다(느린 블루투스 흉내).
+    rate: Option<usize>,
 }
 
 fn pipes() -> (Pipe, Pipe) {
@@ -208,10 +210,12 @@ fn pipes() -> (Pipe, Pipe) {
         Pipe {
             incoming: a_rx,
             outgoing: b_tx,
+            rate: None,
         },
         Pipe {
             incoming: b_rx,
             outgoing: a_tx,
+            rate: None,
         },
     )
 }
@@ -230,6 +234,9 @@ impl Conn for Pipe {
 
     fn send(&mut self, bytes: &[u8]) -> Result<(), PortError> {
         if !bytes.is_empty() {
+            if let Some(rate) = self.rate {
+                thread::sleep(Duration::from_secs_f64(bytes.len() as f64 / rate as f64));
+            }
             let _ = self.outgoing.send(bytes.to_vec());
         }
         Ok(())
@@ -307,6 +314,17 @@ fn talk_full(
     deck: Option<Arc<sidedesk_domain::Deck>>,
     music: Option<Arc<sidedesk_domain::Jukebox>>,
 ) -> (Result<Ended, ServeError>, Vec<Body>, Counts) {
+    talk_over(forget, deck, music, None, Duration::from_millis(400))
+}
+
+/// `ble_rate` 가 있으면 블루투스 기기로, 컴퓨터 쪽 보내기를 그 속도로 늦춘다.
+fn talk_over(
+    forget: bool,
+    deck: Option<Arc<sidedesk_domain::Deck>>,
+    music: Option<Arc<sidedesk_domain::Jukebox>>,
+    ble_rate: Option<usize>,
+    window: Duration,
+) -> (Result<Ended, ServeError>, Vec<Body>, Counts) {
     let counts = Counts::default();
     let book = deck.as_ref().map(|_| 77);
     let playing = music.is_some();
@@ -342,25 +360,28 @@ fn talk_full(
     };
     let stop = AtomicBool::new(false);
     let (mut mine, mut theirs) = pipes();
+    mine.rate = ble_rate;
+    let phone = match ble_rate {
+        Some(_) => Phone {
+            id: "ble:1".into(),
+            model: None,
+            blocked: None,
+            link: sidedesk_domain::Link::Ble,
+            beacon: None,
+        },
+        None => Phone::usb("p", None, None),
+    };
     let mut got = Vec::new();
     let ended = thread::scope(|scope| {
         scope.spawn(|| hub.run());
         scope.spawn(|| hub.run_music());
         let _stopper = Stopper(&hub);
-        let served = scope.spawn(|| {
-            serve(
-                &Phone::usb("p", None, None),
-                &mut mine,
-                &context,
-                false,
-                &stop,
-            )
-        });
+        let served = scope.spawn(|| serve(&phone, &mut mine, &context, false, &stop));
         let mut session = Session::new(Role::Phone, &phone_identity, vec![computer_key], false);
         let mut buffer = vec![0; 64 * 1024];
         let start = Instant::now();
         let mut sent = false;
-        while start.elapsed() < Duration::from_millis(400) {
+        while start.elapsed() < window {
             if let Received::Bytes(n) = theirs.receive(&mut buffer).unwrap() {
                 let _ = session.feed(&buffer[..n]);
             }
@@ -368,12 +389,12 @@ fn talk_full(
                 match event {
                     Event::Ready { .. } if !sent => {
                         sent = true;
-                        session
-                            .send(Body::Subscribe(watch(
-                                View::Performance,
-                                &[View::Processes],
-                            )))
-                            .unwrap();
+                        let view = if playing {
+                            watch(View::Music, &[])
+                        } else {
+                            watch(View::Performance, &[View::Processes])
+                        };
+                        session.send(Body::Subscribe(view)).unwrap();
                         computer.forgotten.store(forget, Ordering::SeqCst);
                         let kill = KillProcess {
                             request_id: 5,
@@ -946,4 +967,64 @@ fn a_forgotten_phone_cannot_control_music() {
     let (ended, _, _) = talk_full(true, None, Some(music));
     assert_eq!(ended, Err(ServeError::Forgotten));
     assert_eq!(plays.load(Ordering::SeqCst), 0);
+}
+
+/// 큰 그림(40KB)과 블루투스용 작은 판(20KB)을 주는 가짜 플레이어
+struct Painter;
+
+impl sidedesk_domain::Player for Painter {
+    fn now(&self) -> Result<(sidedesk_domain::Track, Option<sidedesk_domain::Picture>), PortError> {
+        let mut track = sidedesk_domain::Track::nothing();
+        track.player = sidedesk_core::MusicPlayer::Music;
+        track.key = "곡".into();
+        let small = sidedesk_domain::Picture {
+            hash: 2,
+            jpeg: vec![0xAB; 20 * 1024],
+            small: None,
+        };
+        Ok((
+            track,
+            Some(sidedesk_domain::Picture {
+                hash: 1,
+                jpeg: vec![0xCD; 40 * 1024],
+                small: Some(Box::new(small)),
+            }),
+        ))
+    }
+    fn command(&self, _: sidedesk_core::MusicAction) -> Result<(), PortError> {
+        Ok(())
+    }
+    fn watch(&self, _: Option<sidedesk_domain::Changed>) {}
+}
+
+#[test]
+fn a_slow_bluetooth_link_gets_the_small_picture_and_stays_up() {
+    let music = Arc::new(sidedesk_domain::Jukebox::new(
+        Box::new(Painter),
+        Box::new(Mute),
+        sidedesk_domain::MusicCadence::default(),
+    ));
+    // 초당 8KB 로 늦춘 블루투스: 20KB 그림이 약 2.5초 걸린다.
+    let (ended, got, _) = talk_over(
+        false,
+        None,
+        Some(music),
+        Some(8 * 1024),
+        Duration::from_secs(5),
+    );
+    assert_eq!(ended, Ok(Ended::Stopped), "{got:?}");
+    let art: Vec<_> = got
+        .iter()
+        .filter_map(|body| match body {
+            Body::Artwork(a) => Some(a),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(art.len(), 1);
+    assert_eq!(art[0].hash, 2);
+    assert!(art[0].jpeg.len() <= sidedesk_domain::BLE_ART_LIMIT);
+    assert!(
+        got.iter()
+            .any(|b| matches!(b, Body::NowPlaying(n) if n.artwork == 2))
+    );
 }

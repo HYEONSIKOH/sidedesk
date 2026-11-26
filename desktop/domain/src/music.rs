@@ -14,6 +14,8 @@ use crate::port::PortError;
 
 /// 한 장 상한(Envelope 와 암호 꼬리를 더해도 한 프레임 안)
 pub const ART_LIMIT: usize = 60 * 1024;
+/// 블루투스 연결의 한 장 상한. 실측 전이라 보수적으로 잡는다(계획서 11절 계산, 의문점 32).
+pub const BLE_ART_LIMIT: usize = 24 * 1024;
 const TEXT_LEN: usize = 200;
 const KEEP_PICTURES: usize = 8;
 const REMEMBERED: usize = 256;
@@ -108,11 +110,24 @@ impl Track {
     }
 }
 
-/// 줄여 다시 담은 그림
+/// 줄여 다시 담은 그림. `small` 은 블루투스용 더 작은 판(있으면).
 #[derive(Clone, Debug, PartialEq)]
 pub struct Picture {
     pub hash: u64,
     pub jpeg: Vec<u8>,
+    pub small: Option<Box<Picture>>,
+}
+
+impl Picture {
+    /// 이 연결 상한에 맞는 판
+    fn fit(&self, limit: usize) -> Option<&Picture> {
+        if !self.jpeg.is_empty() && self.jpeg.len() <= limit {
+            return Some(self);
+        }
+        self.small
+            .as_deref()
+            .filter(|s| !s.jpeg.is_empty() && s.jpeg.len() <= limit)
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -147,14 +162,28 @@ struct Want {
     main: bool,
 }
 
-#[derive(Default)]
 struct Outbox {
+    /// 이 연결에 보낼 수 있는 그림 크기
+    limit: usize,
     track: Option<Track>,
     art: Option<Artwork>,
     volume: Option<Volume>,
     /// 이 연결에 보낸 그림 해시(마지막 8장)
     sent: VecDeque<u64>,
     results: VecDeque<CommandResult>,
+}
+
+impl Default for Outbox {
+    fn default() -> Self {
+        Self {
+            limit: ART_LIMIT,
+            track: None,
+            art: None,
+            volume: None,
+            sent: VecDeque::new(),
+            results: VecDeque::new(),
+        }
+    }
 }
 
 struct Queued {
@@ -222,10 +251,11 @@ impl Jukebox {
         self.inner.lock().unwrap_or_else(|l| l.into_inner())
     }
 
-    pub fn join(&self, id: u64) {
+    /// `art_limit` 은 이 연결에 보낼 수 있는 그림 크기(블루투스는 더 작게)
+    pub fn join(&self, id: u64, art_limit: usize) {
         let mut inner = self.lock();
         inner.connected.insert(id);
-        inner.out.entry(id).or_default();
+        inner.out.entry(id).or_default().limit = art_limit.min(ART_LIMIT);
     }
 
     /// `watching` 은 main 이나 tiles 에 음악이 있는지, `main` 은 큰 화면인지
@@ -347,7 +377,10 @@ impl Jukebox {
         let art = out.art.take();
         let volume = out.volume.take();
         let results = out.results.drain(..).collect();
-        let track_art = Self::picture_of(&inner).map_or(0, |p| p.hash);
+        let limit = inner.out.get(&id).map_or(ART_LIMIT, |o| o.limit);
+        let track_art = Self::picture_of(&inner)
+            .and_then(|p| p.fit(limit))
+            .map_or(0, |p| p.hash);
         let playing = playing.map(|mut n| {
             n.artwork = track_art;
             n
@@ -361,6 +394,9 @@ impl Jukebox {
     }
 
     fn offer_art(out: &mut Outbox, picture: &Picture) {
+        let Some(picture) = picture.fit(out.limit) else {
+            return;
+        };
         if out.sent.contains(&picture.hash) {
             return;
         }
@@ -401,13 +437,18 @@ impl Jukebox {
         if changed_song {
             inner.pictures.clear();
         }
-        if let Some(picture) = picture.filter(|p| !p.jpeg.is_empty() && p.jpeg.len() <= ART_LIMIT) {
+        if let Some(picture) = picture.filter(|p| p.fit(ART_LIMIT).is_some()) {
             if inner.pictures.len() >= KEEP_PICTURES {
                 inner.pictures.pop_front();
             }
+            let small = picture.small.map(|mut s| {
+                s.hash = s.hash.max(1);
+                s
+            });
             inner.pictures.push_back(Picture {
                 hash: picture.hash.max(1),
                 jpeg: picture.jpeg,
+                small,
             });
         }
         let same = inner.track.as_ref().is_some_and(|old| old.same_as(&track));
@@ -416,6 +457,10 @@ impl Jukebox {
         let wants: Vec<(u64, bool)> = inner.wants.iter().map(|(id, w)| (*id, w.main)).collect();
         for (id, main) in wants {
             let out = inner.out.entry(id).or_default();
+            // 곡이 바뀌면 아직 못 보낸 앞 곡 그림은 버린다.
+            if changed_song {
+                out.art = None;
+            }
             if !same {
                 out.track = Some(track.clone());
             }
@@ -692,6 +737,7 @@ mod tests {
         Picture {
             hash,
             jpeg: vec![0xff; size],
+            small: None,
         }
     }
 
@@ -745,7 +791,7 @@ mod tests {
             thread::sleep(Duration::from_millis(50));
             assert!(fake.watching.lock().unwrap().is_none());
             assert_eq!(fake.reads.load(Ordering::SeqCst), 0);
-            jukebox.join(1);
+            jukebox.join(1, ART_LIMIT);
             jukebox.set_wants(1, true, true);
             wait_until(|| fake.watching.lock().unwrap().is_some());
             wait_until(|| fake.reads.load(Ordering::SeqCst) >= 1);
@@ -763,8 +809,8 @@ mod tests {
         let (jukebox, fake, knob) = jukebox();
         knob.level.store(30, Ordering::SeqCst);
         *fake.track.lock().unwrap() = Some((song("a", 0, Duration::ZERO), Some(picture(5, 100))));
-        jukebox.join(1);
-        jukebox.join(2);
+        jukebox.join(1, ART_LIMIT);
+        jukebox.join(2, ART_LIMIT);
         std::thread::scope(|scope| {
             scope.spawn(|| jukebox.run());
             jukebox.set_wants(1, true, true);
@@ -795,7 +841,7 @@ mod tests {
             let mut inner = jukebox.lock();
             inner.track = Some(song("a", 10_000, Duration::from_secs(15)));
         }
-        jukebox.join(1);
+        jukebox.join(1, ART_LIMIT);
         jukebox.set_wants(1, true, false);
         let (now, _, _, _) = jukebox.take(1);
         assert!(now.unwrap().position_ms >= 24_900);
@@ -804,7 +850,7 @@ mod tests {
     #[test]
     fn big_pictures_are_not_sent() {
         let (jukebox, _, _) = jukebox();
-        jukebox.join(1);
+        jukebox.join(1, ART_LIMIT);
         jukebox.set_wants(1, true, true);
         let mut inner = jukebox.lock();
         jukebox.publish_track(
@@ -819,9 +865,43 @@ mod tests {
     }
 
     #[test]
+    fn bluetooth_gets_the_small_picture_or_none() {
+        let (jukebox, _, _) = jukebox();
+        jukebox.join(1, ART_LIMIT);
+        jukebox.join(2, BLE_ART_LIMIT);
+        jukebox.join(3, BLE_ART_LIMIT);
+        for id in [1, 2] {
+            jukebox.set_wants(id, true, true);
+        }
+        let mut big = picture(5, 40 * 1024);
+        big.small = Some(Box::new(picture(6, 20 * 1024)));
+        let mut inner = jukebox.lock();
+        jukebox.publish_track(&mut inner, song("a", 0, Duration::ZERO), Some(big));
+        drop(inner);
+        let (now, art, _, _) = jukebox.take(1);
+        assert_eq!((now.unwrap().artwork, art.unwrap().hash), (5, 5));
+        let (now, art, _, _) = jukebox.take(2);
+        let art = art.unwrap();
+        assert_eq!((now.unwrap().artwork, art.hash), (6, 6));
+        assert!(art.jpeg.len() <= BLE_ART_LIMIT);
+        // 작은 판이 없고 커서 못 보내면 그림 없음
+        jukebox.set_wants(3, true, true);
+        let mut inner = jukebox.lock();
+        jukebox.publish_track(
+            &mut inner,
+            song("b", 0, Duration::ZERO),
+            Some(picture(7, 40 * 1024)),
+        );
+        drop(inner);
+        let (now, art, _, _) = jukebox.take(3);
+        assert_eq!(now.unwrap().artwork, 0);
+        assert!(art.is_none());
+    }
+
+    #[test]
     fn small_drift_is_not_resent() {
         let (jukebox, _, _) = jukebox();
-        jukebox.join(1);
+        jukebox.join(1, ART_LIMIT);
         jukebox.set_wants(1, true, false);
         let mut inner = jukebox.lock();
         let first = song("a", 10_000, Duration::from_secs(10));
@@ -842,7 +922,7 @@ mod tests {
     #[test]
     fn commands_once_volume_last_only_and_refusals() {
         let (jukebox, fake, knob) = jukebox();
-        jukebox.join(1);
+        jukebox.join(1, ART_LIMIT);
         let command = |request_id, action: MusicAction, level| MusicCommand {
             request_id,
             action: action as i32,

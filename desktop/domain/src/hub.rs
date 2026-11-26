@@ -398,6 +398,11 @@ impl Hub {
 
     /// 연결 하나가 구독자가 된다. 연결이 끝나 놓으면 구독도 사라진다.
     pub fn join(&self) -> Subscriber<'_> {
+        self.join_over(crate::port::Link::Usb)
+    }
+
+    /// 연결 길을 알면 블루투스에는 더 작은 그림을 보낸다.
+    pub fn join_over(&self, link: crate::port::Link) -> Subscriber<'_> {
         let mut state = self.lock();
         state.next_id += 1;
         let id = state.next_id;
@@ -406,7 +411,11 @@ impl Hub {
             deck.join(id);
         }
         if let Some(jukebox) = &self.jukebox {
-            jukebox.join(id);
+            let limit = match link {
+                crate::port::Link::Usb => crate::music::ART_LIMIT,
+                crate::port::Link::Ble => crate::music::BLE_ART_LIMIT,
+            };
+            jukebox.join(id, limit);
         }
         Subscriber {
             hub: self,

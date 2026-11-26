@@ -177,7 +177,7 @@ fn run(
                         id,
                     });
                     peer = Some(key);
-                    subscriber = Some(context.hub.join());
+                    subscriber = Some(context.hub.join_over(phone.link));
                     fill_record(context, phone, key);
                     let computer_name = context.name.read()?;
                     session.send(Body::Hello(Hello { computer_name }))?;
