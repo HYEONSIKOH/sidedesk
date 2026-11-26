@@ -3,7 +3,7 @@ use std::fmt;
 use std::sync::Mutex;
 use std::sync::mpsc::Receiver;
 
-use sidedesk_core::{BEACON_LEN, Identity, KEY_LEN};
+use sidedesk_core::{BEACON_LEN, Identity, KEY_LEN, Performance, Process};
 
 #[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
 #[error("{0}")]
@@ -186,4 +186,16 @@ impl Active {
     fn lock(&self) -> std::sync::MutexGuard<'_, HashMap<[u8; KEY_LEN], (Link, String)>> {
         self.0.lock().unwrap_or_else(|lock| lock.into_inner())
     }
+}
+
+/// 성능 수집기. 앞 값과의 차이로 비율과 속도를 낸다.
+pub trait Meter: Send + Sync {
+    fn performance(&self) -> Result<Performance, PortError>;
+}
+
+pub trait ProcessTable: Send + Sync {
+    /// 읽을 수 있는 프로세스 전부. CPU 는 앞 호출과의 차이로 낸다.
+    fn processes(&self) -> Result<Vec<Process>, PortError>;
+    /// 번호와 시작 시각이 둘 다 맞을 때만 끝낸다. 실패하면 사람이 읽을 까닭을 돌려준다.
+    fn kill(&self, pid: u32, started_at: u64) -> Result<(), PortError>;
 }

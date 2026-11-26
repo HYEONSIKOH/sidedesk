@@ -1,0 +1,465 @@
+//! 구독과 수집. 폰 여러 대가 수집 하나를 함께 쓰고, 아무도 안 보면 수집을 멈춘다.
+
+use std::collections::{HashMap, VecDeque};
+use std::sync::{Condvar, Mutex, MutexGuard};
+use std::time::{Duration, Instant};
+
+use sidedesk_core::{
+    Body, CommandResult, KillProcess, Performance, Process, Processes, Subscribe, View,
+};
+
+use crate::port::{Meter, ProcessTable};
+
+/// CPU 상위와 메모리 상위를 이만큼씩 골라 합친다.
+const TOP: usize = 30;
+const NAME_LEN: usize = 64;
+/// 두 번 실행을 막으려고 기억하는 명령 수
+const REMEMBERED: usize = 256;
+
+/// 주기의 이만큼을 앞당겨 봐 준다. 수집이 조금 늦게 깨도 한 번 건너뛰지 않게 한다.
+fn slack(every: Duration) -> Duration {
+    every / 10
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct Cadence {
+    pub performance_main: Duration,
+    pub performance_tile: Duration,
+    pub processes_main: Duration,
+    pub processes_tile: Duration,
+}
+
+impl Default for Cadence {
+    fn default() -> Self {
+        Self {
+            performance_main: Duration::from_secs(1),
+            performance_tile: Duration::from_secs(2),
+            processes_main: Duration::from_secs(2),
+            processes_tile: Duration::from_secs(6),
+        }
+    }
+}
+
+impl Cadence {
+    fn every(&self, subscribe: &Subscribe, view: View) -> Option<Duration> {
+        let (main, tile) = match view {
+            View::Performance => (self.performance_main, self.performance_tile),
+            View::Processes => (self.processes_main, self.processes_tile),
+            View::Nothing => return None,
+        };
+        if subscribe.main == view as i32 {
+            Some(main)
+        } else if subscribe.tiles.contains(&(view as i32)) {
+            Some(tile)
+        } else {
+            None
+        }
+    }
+}
+
+struct Want {
+    every: Duration,
+    sent: Option<Instant>,
+}
+
+/// 자료 한 가지(성능 또는 프로세스)의 구독자, 마지막 값, 보낼 값.
+struct Feed<T> {
+    wants: HashMap<u64, Want>,
+    /// 보내지 못한 값. 새 값이 오면 덮어써 최신 값만 남긴다.
+    outbox: HashMap<u64, T>,
+    latest: Option<(Instant, T)>,
+    /// 마지막으로 수집을 시도한 때. 실패해도 남겨 헛돌지 않게 한다.
+    tried: Option<Instant>,
+}
+
+impl<T> Default for Feed<T> {
+    fn default() -> Self {
+        Self {
+            wants: HashMap::new(),
+            outbox: HashMap::new(),
+            latest: None,
+            tried: None,
+        }
+    }
+}
+
+impl<T: Clone> Feed<T> {
+    fn set(&mut self, id: u64, every: Option<Duration>, now: Instant) {
+        let Some(every) = every else {
+            self.remove(id);
+            return;
+        };
+        if let Some(want) = self.wants.get_mut(&id) {
+            want.every = every;
+            return;
+        }
+        // 처음 보는 구독자: 최근 값이 있으면 바로 주고, 없으면 바로 모으게 한다.
+        let mut sent = None;
+        match &self.latest {
+            Some((at, value)) if now.duration_since(*at) < every => {
+                self.outbox.insert(id, value.clone());
+                sent = Some(*at);
+            }
+            _ => self.tried = None,
+        }
+        self.wants.insert(id, Want { every, sent });
+    }
+
+    fn remove(&mut self, id: u64) {
+        self.wants.remove(&id);
+        self.outbox.remove(&id);
+    }
+
+    fn every(&self) -> Option<Duration> {
+        self.wants.values().map(|want| want.every).min()
+    }
+
+    /// 다음에 모을 때. 아무도 안 보면 없음.
+    fn next(&self, now: Instant) -> Option<Instant> {
+        let every = self.every()?;
+        Some(self.tried.map_or(now, |tried| tried + every))
+    }
+
+    fn due(&self, now: Instant) -> bool {
+        match (self.next(now), self.every()) {
+            (Some(next), Some(every)) => now + slack(every) >= next,
+            _ => false,
+        }
+    }
+
+    fn tried(&mut self, now: Instant) {
+        self.tried = Some(now);
+    }
+
+    fn publish(&mut self, now: Instant, value: T) {
+        for (id, want) in &mut self.wants {
+            if want
+                .sent
+                .is_none_or(|sent| now + slack(want.every) >= sent + want.every)
+            {
+                self.outbox.insert(*id, value.clone());
+                want.sent = Some(now);
+            }
+        }
+        self.latest = Some((now, value));
+    }
+
+    fn take(&mut self, id: u64) -> Option<T> {
+        self.outbox.remove(&id)
+    }
+}
+
+#[derive(Default)]
+struct State {
+    next_id: u64,
+    performance: Feed<Performance>,
+    processes: Feed<Processes>,
+    stopped: bool,
+}
+
+impl State {
+    fn next(&self, now: Instant) -> Option<Instant> {
+        match (self.performance.next(now), self.processes.next(now)) {
+            (Some(a), Some(b)) => Some(a.min(b)),
+            (a, b) => a.or(b),
+        }
+    }
+}
+
+#[derive(Default)]
+struct Done {
+    order: VecDeque<u64>,
+    results: HashMap<u64, CommandResult>,
+}
+
+pub struct Hub {
+    meter: Box<dyn Meter>,
+    table: Box<dyn ProcessTable>,
+    cadence: Cadence,
+    state: Mutex<State>,
+    changed: Condvar,
+    done: Mutex<Done>,
+}
+
+impl Hub {
+    pub fn new(meter: Box<dyn Meter>, table: Box<dyn ProcessTable>, cadence: Cadence) -> Self {
+        Self {
+            meter,
+            table,
+            cadence,
+            state: Mutex::default(),
+            changed: Condvar::new(),
+            done: Mutex::default(),
+        }
+    }
+
+    /// 연결 하나가 구독자가 된다. 연결이 끝나 놓으면 구독도 사라진다.
+    pub fn join(&self) -> Subscriber<'_> {
+        let mut state = self.lock();
+        state.next_id += 1;
+        Subscriber {
+            hub: self,
+            id: state.next_id,
+        }
+    }
+
+    /// 구독이 있는 동안 모은다. `stop` 을 부를 때까지 돌아오지 않는다.
+    pub fn run(&self) {
+        let mut state = self.lock();
+        loop {
+            if state.stopped {
+                return;
+            }
+            let now = Instant::now();
+            let performance = state.performance.due(now);
+            let processes = state.processes.due(now);
+            if performance || processes {
+                if performance {
+                    state.performance.tried(now);
+                }
+                if processes {
+                    state.processes.tried(now);
+                }
+                drop(state);
+                let performance = performance.then(|| self.meter.performance());
+                let processes = processes.then(|| self.table.processes().map(top));
+                state = self.lock();
+                let now = Instant::now();
+                if let Some(Ok(value)) = performance {
+                    state.performance.publish(now, value);
+                }
+                if let Some(Ok(value)) = processes {
+                    state.processes.publish(now, value);
+                }
+                continue;
+            }
+            state = match state.next(now) {
+                None => self
+                    .changed
+                    .wait(state)
+                    .unwrap_or_else(|lock| lock.into_inner()),
+                Some(next) => {
+                    self.changed
+                        .wait_timeout(state, next.saturating_duration_since(now))
+                        .unwrap_or_else(|lock| lock.into_inner())
+                        .0
+                }
+            };
+        }
+    }
+
+    pub fn stop(&self) {
+        self.lock().stopped = true;
+        self.changed.notify_all();
+    }
+
+    /// 같은 번호는 한 번만 실행하고, 다시 오면 그때 결과를 그대로 돌려준다.
+    pub fn kill(&self, command: &KillProcess) -> CommandResult {
+        let mut done = self.done.lock().unwrap_or_else(|lock| lock.into_inner());
+        if let Some(result) = done.results.get(&command.request_id) {
+            return result.clone();
+        }
+        let outcome = if command.pid == 0 {
+            Err("잘못된 프로세스 번호".to_owned())
+        } else {
+            self.table
+                .kill(command.pid, command.started_at)
+                .map_err(|error| error.0)
+        };
+        let result = CommandResult {
+            request_id: command.request_id,
+            ok: outcome.is_ok(),
+            reason: outcome.err().unwrap_or_default(),
+        };
+        if done.order.len() >= REMEMBERED
+            && let Some(old) = done.order.pop_front()
+        {
+            done.results.remove(&old);
+        }
+        done.order.push_back(command.request_id);
+        done.results.insert(command.request_id, result.clone());
+        result
+    }
+
+    fn lock(&self) -> MutexGuard<'_, State> {
+        self.state.lock().unwrap_or_else(|lock| lock.into_inner())
+    }
+}
+
+pub struct Subscriber<'a> {
+    hub: &'a Hub,
+    id: u64,
+}
+
+impl Subscriber<'_> {
+    /// 폰이 지금 보이는 것 전체를 알렸다. 앞 구독을 바꾼다.
+    pub fn set(&self, subscribe: &Subscribe) {
+        let cadence = &self.hub.cadence;
+        let now = Instant::now();
+        let mut state = self.hub.lock();
+        state
+            .performance
+            .set(self.id, cadence.every(subscribe, View::Performance), now);
+        state
+            .processes
+            .set(self.id, cadence.every(subscribe, View::Processes), now);
+        drop(state);
+        self.hub.changed.notify_all();
+    }
+
+    /// 보낼 값. 쌓지 않고 가장 새 값만 준다.
+    pub fn take(&self) -> Vec<Body> {
+        let mut state = self.hub.lock();
+        let performance = state.performance.take(self.id).map(Body::Performance);
+        let processes = state.processes.take(self.id).map(Body::Processes);
+        performance.into_iter().chain(processes).collect()
+    }
+}
+
+impl Drop for Subscriber<'_> {
+    fn drop(&mut self) {
+        let mut state = self.hub.lock();
+        state.performance.remove(self.id);
+        state.processes.remove(self.id);
+        drop(state);
+        self.hub.changed.notify_all();
+    }
+}
+
+/// CPU 상위와 메모리 상위를 합친 목록. 이름은 길이를 줄인다.
+fn top(mut all: Vec<Process>) -> Processes {
+    all.sort_by(|a, b| b.cpu.total_cmp(&a.cpu));
+    let mut keep: Vec<bool> = (0..all.len()).map(|index| index < TOP).collect();
+    let mut by_memory: Vec<usize> = (0..all.len()).collect();
+    by_memory.sort_by(|&a, &b| all[b].memory.cmp(&all[a].memory));
+    for index in by_memory.into_iter().take(TOP) {
+        keep[index] = true;
+    }
+    let items = all
+        .into_iter()
+        .zip(keep)
+        .filter(|(_, keep)| *keep)
+        .map(|(mut process, _)| {
+            if let Some((cut, _)) = process.name.char_indices().nth(NAME_LEN) {
+                process.name.truncate(cut);
+            }
+            process
+        })
+        .collect();
+    Processes { items }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn ms(value: u64) -> Duration {
+        Duration::from_millis(value)
+    }
+
+    #[test]
+    fn a_slow_subscriber_gets_every_other_sample() {
+        let start = Instant::now();
+        let mut feed = Feed::<u32>::default();
+        feed.set(1, Some(ms(1000)), start);
+        feed.set(2, Some(ms(2000)), start);
+        assert_eq!(feed.every(), Some(ms(1000)));
+        assert!(feed.due(start));
+        let mut got = (Vec::new(), Vec::new());
+        for second in 0..5u32 {
+            let now = start + ms(1000 * u64::from(second) + 3);
+            feed.tried(now);
+            feed.publish(now, second);
+            got.0.extend(feed.take(1));
+            got.1.extend(feed.take(2));
+        }
+        assert_eq!(got.0, [0, 1, 2, 3, 4]);
+        assert_eq!(got.1, [0, 2, 4]);
+    }
+
+    #[test]
+    fn nobody_watching_means_no_collection() {
+        let start = Instant::now();
+        let mut feed = Feed::<u32>::default();
+        assert_eq!(feed.next(start), None);
+        feed.set(1, Some(ms(1000)), start);
+        feed.set(1, None, start);
+        assert_eq!(feed.next(start), None);
+        assert!(!feed.due(start + ms(10_000)));
+    }
+
+    #[test]
+    fn only_the_newest_value_waits() {
+        let start = Instant::now();
+        let mut feed = Feed::<u32>::default();
+        feed.set(1, Some(ms(1000)), start);
+        feed.publish(start, 1);
+        feed.publish(start + ms(1000), 2);
+        feed.publish(start + ms(2000), 3);
+        assert_eq!(feed.take(1), Some(3));
+        assert_eq!(feed.take(1), None);
+    }
+
+    #[test]
+    fn a_new_subscriber_gets_a_fresh_value_at_once() {
+        let start = Instant::now();
+        let mut feed = Feed::<u32>::default();
+        feed.set(1, Some(ms(1000)), start);
+        feed.tried(start);
+        feed.publish(start, 7);
+        feed.take(1);
+        feed.set(2, Some(ms(2000)), start + ms(500));
+        assert_eq!(feed.take(2), Some(7));
+        // 다음 수집은 원래 주기대로
+        assert!(!feed.due(start + ms(500)));
+        // 오래된 값뿐이면 바로 모은다.
+        feed.set(3, Some(ms(1000)), start + ms(5000));
+        assert_eq!(feed.take(3), None);
+        assert!(feed.due(start + ms(5000)));
+    }
+
+    #[test]
+    fn main_is_faster_than_a_tile() {
+        let cadence = Cadence::default();
+        let subscribe = Subscribe {
+            main: View::Processes as i32,
+            tiles: vec![View::Performance as i32, 99],
+        };
+        assert_eq!(
+            cadence.every(&subscribe, View::Processes),
+            Some(Duration::from_secs(2))
+        );
+        assert_eq!(
+            cadence.every(&subscribe, View::Performance),
+            Some(Duration::from_secs(2))
+        );
+        let tiles = Subscribe {
+            main: 0,
+            tiles: vec![View::Processes as i32],
+        };
+        assert_eq!(
+            cadence.every(&tiles, View::Processes),
+            Some(Duration::from_secs(6))
+        );
+        assert_eq!(cadence.every(&tiles, View::Performance), None);
+    }
+
+    #[test]
+    fn top_keeps_heavy_cpu_and_heavy_memory() {
+        let all = (0..100u32)
+            .map(|pid| Process {
+                pid,
+                name: "가".repeat(100),
+                cpu: pid as f32,
+                memory: u64::from(1000 - pid),
+                started_at: 0,
+            })
+            .collect();
+        let items = top(all).items;
+        assert_eq!(items.len(), 2 * TOP);
+        assert!(items.iter().any(|p| p.pid == 99));
+        assert!(items.iter().any(|p| p.pid == 0));
+        assert!(!items.iter().any(|p| p.pid == 50));
+        assert!(items.iter().all(|p| p.name.chars().count() == NAME_LEN));
+    }
+}

@@ -2270,6 +2270,7 @@ version = "0.1.0"
 dependencies = [
  "core-foundation 0.9.4",
  "dispatch2",
+ "libc",
  "objc2",
  "objc2-core-bluetooth",
  "objc2-foundation",
@@ -2294,6 +2295,7 @@ dependencies = [
 name = "sidedesk-windows"
 version = "0.1.0"
 dependencies = [
+ "sidedesk-core",
  "sidedesk-domain",
  "windows-sys 0.61.2",
 ]

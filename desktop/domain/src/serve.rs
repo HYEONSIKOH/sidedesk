@@ -4,6 +4,7 @@ use std::time::{Duration, Instant};
 
 use sidedesk_core::{Body, Event, Hello, KEY_LEN, Role, Session, SessionError};
 
+use crate::hub::{Hub, Subscriber};
 use crate::port::{
     Active, ComputerName, Conn, Keys, Link, Note, PairRequests, Phone, PortError, Prompt, Received,
     Report,
@@ -73,6 +74,7 @@ pub struct Context<'a> {
     pub report: &'a dyn Report,
     pub requests: &'a PairRequests,
     pub active: &'a Active,
+    pub hub: &'a Hub,
     pub timing: Timing,
 }
 
@@ -130,7 +132,13 @@ fn run(
     let mut answer: Option<Receiver<bool>> = None;
     // 숫자가 뜬 뒤 양쪽 답을 기다리는 마감. 컴퓨터가 먼저 답해도 폰의 답을 기다리며 남는다.
     let mut deadline: Option<Instant> = None;
+    let mut subscriber: Option<Subscriber> = None;
     loop {
+        if let Some(subscriber) = &subscriber {
+            for body in subscriber.take() {
+                session.send(body)?;
+            }
+        }
         let output = session.take_output();
         if !output.is_empty() {
             conn.send(&output)?;
@@ -158,6 +166,7 @@ fn run(
                         id,
                     });
                     peer = Some(key);
+                    subscriber = Some(context.hub.join());
                     fill_record(context, phone, key);
                     let computer_name = context.name.read()?;
                     session.send(Body::Hello(Hello { computer_name }))?;
@@ -169,6 +178,15 @@ fn run(
                             confirming.set(true);
                         }
                     }
+                }
+                Event::Message(Body::Subscribe(subscribe)) => {
+                    if let Some(subscriber) = &subscriber {
+                        subscriber.set(&subscribe);
+                    }
+                }
+                Event::Message(Body::KillProcess(command)) if subscriber.is_some() => {
+                    let result = context.hub.kill(&command);
+                    session.send(Body::CommandResult(result))?;
                 }
                 Event::Message(_) => {}
             }
