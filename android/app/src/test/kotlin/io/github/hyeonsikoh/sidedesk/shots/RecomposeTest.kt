@@ -16,6 +16,8 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
+import androidx.compose.ui.test.onNodeWithText
+import androidx.lifecycle.Lifecycle
 import androidx.compose.ui.unit.dp
 import io.github.hyeonsikoh.sidedesk.Models
 import io.github.hyeonsikoh.sidedesk.SideDeskScreen
@@ -74,6 +76,9 @@ class RecomposeTest {
     /** 시험 시계가 0 일 때의 벽시계. start 가 정한다. */
     private var base = 0L
 
+    /** 깊은 잠 흉내: 벽시계만 앞으로 가고 delay 시계(시험 시계)는 그대로다. */
+    private var slept = 0L
+
     @After
     fun tearDown() = TimeZone.setDefault(zone)
 
@@ -107,7 +112,7 @@ class RecomposeTest {
             ClockViewModel(link, settings) { base },
             RestViewModel(settings, ai.state),
             canSetStrength = true,
-            wall = { base + compose.mainClock.currentTime },
+            wall = { base + slept + compose.mainClock.currentTime },
             mono = { compose.mainClock.currentTime },
             askingLocation = mutableStateOf(false),
             locationNotice = Confirm("", "", ""),
@@ -129,7 +134,8 @@ class RecomposeTest {
     /** 시험 시계와 메인 루퍼를 함께 100ms 씩 민다(ViewModel 수집은 메인 루퍼에서 돈다). */
     private fun step(ms: Long = 100) {
         repeat((ms / 100).toInt()) {
-            compose.mainClock.advanceTimeBy(100)
+            // 프레임 길이에 맞춰 올리지 않고 정확히 100ms 만 민다(올리면 10초가 11.2초가 된다).
+            compose.mainClock.advanceTimeBy(100, ignoreFrameDuration = true)
             org.robolectric.shadows.ShadowLooper.idleMainLooper(100, java.util.concurrent.TimeUnit.MILLISECONDS)
             if (androidx.compose.runtime.Recomposer.runningRecomposers.value.any { it.hasPendingWork }) frames += 1
         }
@@ -208,19 +214,14 @@ class RecomposeTest {
     fun playingMusicMovesOnlyTheMusic() {
         start(Screen.Music, playing = true)
         idle()
-        val counts = report("playing-music")
-        assertEquals(setOf("music-big"), counts.keys)
-        // 0.5초마다(10초에 20번 안팎). 시험 시계와 루퍼를 함께 밀어 한두 번 더 셀 수 있다.
-        assertTrue(counts.getValue("music-big") in 20..22)
+        assertEquals(mapOf("music-big" to 20), report("playing-music"))
     }
 
     @Test
     fun playingMusicInATileMovesOnlyTheTile() {
         start(Screen.Home, playing = true)
         idle()
-        val counts = report("playing-tile")
-        assertEquals(setOf("music-tile"), counts.keys)
-        assertTrue(counts.getValue("music-tile") in 20..22)
+        assertEquals(mapOf("music-tile" to 20), report("playing-tile"))
     }
 
     @Test
@@ -237,5 +238,34 @@ class RecomposeTest {
         frames = 0
         idle(2)
         assertEquals(0, frames)
+    }
+
+    @Test
+    fun theClockReadsAgainWhenTheScreenComesBack() {
+        start(Screen.Home)
+        compose.onNodeWithText("10:26").assertExists()
+        compose.activityRule.scenario.moveToState(Lifecycle.State.CREATED)
+        step(100)
+        // 화면이 꺼진 동안 2시간 깊이 잠들었다. delay 는 흐르지 않았다.
+        slept = 2 * 3_600_000L
+        compose.activityRule.scenario.moveToState(Lifecycle.State.RESUMED)
+        step(100)
+        compose.onNodeWithText("12:26").assertExists()
+    }
+
+    @Test
+    fun nothingTicksWhileTheScreenIsOff() {
+        start(Screen.Music, playing = true)
+        compose.activityRule.scenario.moveToState(Lifecycle.State.CREATED)
+        step(100)
+        counts.clear()
+        frames = 0
+        idle()
+        assertEquals(emptyMap<String, Int>(), report("stopped"))
+        assertEquals(0, frames)
+        compose.activityRule.scenario.moveToState(Lifecycle.State.RESUMED)
+        step(100)
+        // 다시 보이면 곧바로 다시 읽는다.
+        assertEquals(1, counts["music-big"])
     }
 }

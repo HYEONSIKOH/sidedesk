@@ -1,5 +1,6 @@
 package io.github.hyeonsikoh.sidedesk
 
+import android.os.SystemClock
 import android.graphics.Color
 import android.os.Build
 import android.os.Bundle
@@ -126,7 +127,7 @@ class MainActivity : ComponentActivity() {
         fitWindow()
         val models = Models(
             home, desk, ai, shortcuts, music, clock, rest, buzzer.canSetStrength,
-            System::currentTimeMillis, { System.nanoTime() / 1_000_000 },
+            System::currentTimeMillis, SystemClock::elapsedRealtime,
             askLocation, LOCATION_NOTICE, ::answerLocation,
         )
         setContent {

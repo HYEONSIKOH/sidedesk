@@ -58,6 +58,7 @@ import io.github.hyeonsikoh.sidedesk.ui.fit
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
+import io.github.hyeonsikoh.sidedesk.clock.rememberStarted
 import kotlin.math.min
 
 private const val DIM = 0.4f
@@ -70,13 +71,17 @@ class MusicActions(
     val releaseVolume: () -> Unit,
 )
 
-/** 재생 중이고 보이는 동안만 0.5초마다 단조 시각을 다시 읽는다. 멈췄으면 진행 바가 서 있어 읽지 않는다. */
+/**
+ * 재생 중이고 화면이 보이는 동안만 0.5초마다 시각을 다시 읽는다. 멈췄으면 진행 바가 서 있어 읽지 않는다.
+ * 화면이 다시 보이면(START) 곧바로 다시 읽는다.
+ */
 @Composable
 fun rememberTicks(clock: () -> Long, running: Boolean): Long {
     var value by remember { mutableLongStateOf(clock()) }
-    LaunchedEffect(clock, running) {
+    val started = rememberStarted()
+    LaunchedEffect(clock, running, started) {
         value = clock()
-        while (running) {
+        while (running && started) {
             delay(500)
             value = clock()
         }

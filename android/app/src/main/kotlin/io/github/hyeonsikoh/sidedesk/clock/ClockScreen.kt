@@ -24,6 +24,9 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.collectAsState
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.layout.LayoutCoordinates
 import androidx.compose.ui.geometry.Rect
@@ -81,17 +84,27 @@ private val DAYS = listOf("일", "월", "화", "수", "목", "금", "토")
 /**
  * 분이 바뀔 때마다 시각을 다시 읽는다. 시계는 시와 분만 보이고 초침이 없어 1분이면 된다.
  * AI 지난 시간도 이 시각을 써서 "지금"에서 "1분"으로 넘어가는 때가 최대 59초 늦을 수 있다.
+ * delay 는 깊은 잠 동안 흐르지 않으므로, 화면이 보이게 될 때(START)마다 곧바로 다시 읽고 다시 건다.
+ * 안 보이는 동안은 읽지 않는다.
  */
 @Composable
 fun rememberNow(now: () -> Long): Long {
     var value by remember { mutableLongStateOf(now()) }
-    LaunchedEffect(now) {
-        while (true) {
-            delay(60_000 - value % 60_000)
+    val started = rememberStarted()
+    LaunchedEffect(now, started) {
+        while (started) {
             value = now()
+            delay(60_000 - value % 60_000)
         }
     }
     return value
+}
+
+/** 화면(생명주기)이 STARTED 이상인지. 바뀔 때만 다시 구성된다. */
+@Composable
+fun rememberStarted(): Boolean {
+    val state by LocalLifecycleOwner.current.lifecycle.currentStateFlow.collectAsState()
+    return state.isAtLeast(Lifecycle.State.STARTED)
 }
 
 private fun calendar(millis: Long) = Calendar.getInstance(Locale.KOREA).apply { timeInMillis = millis }

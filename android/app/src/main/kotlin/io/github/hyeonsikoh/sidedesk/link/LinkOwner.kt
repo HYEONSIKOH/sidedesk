@@ -1,5 +1,6 @@
 package io.github.hyeonsikoh.sidedesk.link
 
+import android.os.SystemClock
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import java.util.concurrent.atomic.AtomicReference
@@ -11,7 +12,11 @@ enum class Via { Usb, Bluetooth }
  * - USB 는 받는 순간 이어받는다(adb 를 거쳐 온 접속이라 믿을 수 있다).
  * - 블루투스는 키를 확인한(Ready) 뒤에만 이어받는다. USB 가 살아 있거나 다른 컴퓨터가 쓰고 있으면 진다.
  */
-class LinkOwner(private val nanos: () -> Long = System::nanoTime) {
+class LinkOwner(
+    private val nanos: () -> Long = System::nanoTime,
+    /** 음악 받은 때를 적는 시계(부팅 뒤 밀리초, 깊은 잠 포함). 화면이 꺼진 동안 흐른 재생 시간도 진행 바에 넣는다. */
+    private val elapsed: () -> Long = SystemClock::elapsedRealtime,
+) {
     val state = MutableStateFlow<LinkState>(LinkState.Waiting)
     val answer = AtomicReference<Boolean?>(null)
     @Volatile var lastName: String? = null
@@ -115,7 +120,7 @@ class LinkOwner(private val nanos: () -> Long = System::nanoTime) {
     fun receivedNowPlaying(mine: Int, value: NowPlaying) = synchronized(this) {
         val now = current?.takeIf { it.generation == mine } ?: return@synchronized
         val computer = now.computer ?: return@synchronized
-        nowPlaying.value = value.copy(receivedAt = nanos() / 1_000_000)
+        nowPlaying.value = value.copy(receivedAt = elapsed())
         musicFrom = computer
     }
 

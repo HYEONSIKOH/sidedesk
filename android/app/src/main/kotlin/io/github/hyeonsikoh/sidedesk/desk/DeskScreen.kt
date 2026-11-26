@@ -1,5 +1,6 @@
 package io.github.hyeonsikoh.sidedesk.desk
 
+import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.LinearEasing
 import io.github.hyeonsikoh.sidedesk.ui.Track
 import androidx.compose.animation.core.animateFloatAsState
@@ -29,7 +30,6 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -364,18 +364,21 @@ private fun Gauge(label: String, value: Float?, modifier: Modifier) {
 private fun Liquid(value: Float?, modifier: Modifier) {
     // 쉬지 않고 도는 애니메이션은 두지 않는다. 값이 바뀔 때만 0.6초 동안 높이를 옮기고 물결을 1/4 바퀴 민다.
     val level by animateFloatAsState((value ?: 0f).coerceIn(0f, 100f) / 100f, tween(600), label = "level")
-    var turns by remember { mutableIntStateOf(0) }
+    val wave = remember { Animatable(0f) }
     var seen by remember { mutableStateOf(value) }
     LaunchedEffect(value) {
-        if (value != seen) turns += 1
+        if (value == seen) return@LaunchedEffect
         seen = value
+        wave.animateTo(wave.value + (PI / 2).toFloat(), tween(600, easing = LinearEasing))
+        // 한 바퀴로 감아, 오래 켜 두어도 위상이 커져 float 정밀도가 떨어지지 않게 한다.
+        wave.snapTo(wave.value % (2 * PI).toFloat())
     }
-    val phase by animateFloatAsState(turns * (PI / 2).toFloat(), tween(600, easing = LinearEasing), label = "phase")
     val liquid = Palette.liquid
     Canvas(modifier) {
         if (level <= 0f) return@Canvas
         val top = size.height * (1f - level)
         val amp = 4.dp.toPx()
+        val phase = wave.value
         val path = Path().apply {
             moveTo(0f, size.height)
             var x = 0f

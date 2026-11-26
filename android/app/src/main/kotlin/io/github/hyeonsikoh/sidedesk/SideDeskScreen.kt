@@ -5,6 +5,7 @@ import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.State
 import androidx.compose.runtime.getValue
@@ -16,6 +17,7 @@ import androidx.compose.ui.input.pointer.PointerEventPass
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import io.github.hyeonsikoh.sidedesk.ai.AiViewModel
+import io.github.hyeonsikoh.sidedesk.ai.LocalPulsed
 import io.github.hyeonsikoh.sidedesk.clock.ClockViewModel
 import io.github.hyeonsikoh.sidedesk.clock.PickActions
 import io.github.hyeonsikoh.sidedesk.desk.AiPart
@@ -51,7 +53,7 @@ class Models(
     val canSetStrength: Boolean,
     /** 벽시계(유닉스 밀리초) */
     val wall: () -> Long,
-    /** 단조 시각(밀리초), 음악 진행 바용 */
+    /** 부팅 뒤 시각(밀리초, 깊은 잠 포함), 음악 진행 바용 */
     val mono: () -> Long,
     val askingLocation: State<Boolean>,
     val locationNotice: Confirm,
@@ -85,7 +87,8 @@ fun SideDeskScreen(m: Models) {
                     covered = true
                 }
             }
-            if (!covered) Desk(m, restState)
+            val pulsed = remember { mutableStateOf<Long?>(null) }
+            if (!covered) CompositionLocalProvider(LocalPulsed provides pulsed) { Desk(m, restState) }
             RestScreen(restState.resting, restState, clockState, m.wall, m.rest::touched)
         }
     }
