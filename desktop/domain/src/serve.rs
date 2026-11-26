@@ -184,6 +184,11 @@ fn run(
                         subscriber.set(&subscribe);
                     }
                 }
+                Event::Message(Body::Location(location)) => {
+                    if let Some(subscriber) = &subscriber {
+                        subscriber.place(&location);
+                    }
+                }
                 Event::Message(Body::KillProcess(command)) if subscriber.is_some() => {
                     // Ping 주기를 기다리지 않고, 명령마다 등록이 남아 있는지 본다.
                     if !is_trusted(context, peer)? {
