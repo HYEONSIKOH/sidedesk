@@ -282,9 +282,11 @@ impl World {
             person: Person(answer, Mutex::default()),
             notes: Notes::default(),
             active: Active::default(),
+            // 침묵 한계는 넉넉히: 느린 서버에서 시험 스레드가 굶어도 연결이 침묵으로 먼저 끊기지 않게.
+            // 답 기다리기(answer)와 핑은 짧게 두어 시험이 빨리 끝난다. 침묵 자체는 a_silent_phone_is_dropped 가 본다.
             timing: Timing {
                 ping: Duration::from_millis(20),
-                silence: Duration::from_millis(150),
+                silence: Duration::from_secs(3),
                 answer: Duration::from_millis(150),
             },
         }
@@ -316,13 +318,7 @@ fn a_known_phone_gets_the_computer_name() {
         PhoneSays::Yes,
         theirs,
     );
-    let ended = serve(
-        &p(),
-        &mut mine,
-        &world.context(),
-        false,
-        &AtomicBool::new(false),
-    );
+    let ended = within(|stop| serve(&p(), &mut mine, &world.context(), false, stop));
     assert_eq!(ended, Ok(Ended::Closed));
     let events = handle.join().unwrap();
     assert!(
@@ -341,13 +337,7 @@ fn pairing_saves_the_key_and_model_when_both_agree() {
     let world = World::new(Vec::new(), Some(true));
     let (mut mine, theirs) = pipes();
     let handle = phone(phone_key, Vec::new(), PhoneSays::Yes, theirs);
-    let ended = serve(
-        &p(),
-        &mut mine,
-        &world.context(),
-        true,
-        &AtomicBool::new(false),
-    );
+    let ended = within(|stop| serve(&p(), &mut mine, &world.context(), true, stop));
     assert_eq!(ended, Ok(Ended::Paired));
     drop(mine);
     assert!(
@@ -374,13 +364,7 @@ fn pairing_saves_nothing_when_someone_says_no() {
         let world = World::new(Vec::new(), computer);
         let (mut mine, theirs) = pipes();
         let handle = phone(phone_key, Vec::new(), phone_says, theirs);
-        let ended = serve(
-            &p(),
-            &mut mine,
-            &world.context(),
-            true,
-            &AtomicBool::new(false),
-        );
+        let ended = within(|stop| serve(&p(), &mut mine, &world.context(), true, stop));
         assert!(matches!(ended, Err(ServeError::Session(_))), "{ended:?}");
         assert!(ended.unwrap_err().is_final());
         drop(mine);
@@ -394,13 +378,7 @@ fn gives_up_when_nobody_checks_the_code() {
     let world = World::new(Vec::new(), None);
     let (mut mine, theirs) = pipes();
     let handle = phone(Identity::generate(), Vec::new(), PhoneSays::Yes, theirs);
-    let ended = serve(
-        &p(),
-        &mut mine,
-        &world.context(),
-        true,
-        &AtomicBool::new(false),
-    );
+    let ended = within(|stop| serve(&p(), &mut mine, &world.context(), true, stop));
     assert_eq!(ended, Err(ServeError::NoAnswer));
     drop(mine);
     handle.join().unwrap();
@@ -411,13 +389,7 @@ fn gives_up_when_only_the_computer_answers() {
     let world = World::new(Vec::new(), Some(true));
     let (mut mine, theirs) = pipes();
     let handle = phone(Identity::generate(), Vec::new(), PhoneSays::Ignore, theirs);
-    let ended = serve(
-        &p(),
-        &mut mine,
-        &world.context(),
-        true,
-        &AtomicBool::new(false),
-    );
+    let ended = within(|stop| serve(&p(), &mut mine, &world.context(), true, stop));
     assert_eq!(ended, Err(ServeError::NoAnswer));
     drop(mine);
     handle.join().unwrap();
@@ -427,16 +399,12 @@ fn gives_up_when_only_the_computer_answers() {
 #[test]
 fn a_silent_phone_is_dropped() {
     let phone_key = Identity::generate();
-    let world = World::new(vec![phone_key.public], None);
+    let mut world = World::new(vec![phone_key.public], None);
+    // 이 기기는 정말 아무것도 보내지 않으므로 짧은 한계여도 흔들리지 않는다.
+    world.timing.silence = Duration::from_millis(150);
     let (mut mine, theirs) = pipes();
     let handle = phone(phone_key, Vec::new(), PhoneSays::Mute, theirs);
-    let ended = serve(
-        &p(),
-        &mut mine,
-        &world.context(),
-        false,
-        &AtomicBool::new(false),
-    );
+    let ended = within(|stop| serve(&p(), &mut mine, &world.context(), false, stop));
     assert_eq!(ended, Err(ServeError::Silent));
     drop(mine);
     handle.join().unwrap();
@@ -458,13 +426,7 @@ fn forgetting_a_phone_drops_it_at_the_next_ping() {
             thread::sleep(Duration::from_millis(80));
             world.computer.forget(phone_key.public).unwrap();
         });
-        serve(
-            &p(),
-            &mut mine,
-            &world.context(),
-            false,
-            &AtomicBool::new(false),
-        )
+        within(|stop| serve(&p(), &mut mine, &world.context(), false, stop))
     });
     assert_eq!(ended, Err(ServeError::Forgotten));
     assert!(ended.unwrap_err().is_final());
@@ -523,6 +485,26 @@ impl PhoneLinks for OnePhone {
 }
 
 /// 느린 CI 서버를 생각해 고정 시간 대신 조건이 될 때까지 기다린다(최대 20초). 됐으면 true.
+/// 연결 하나를 돌리되 정해진 시간 안에 끝나지 않으면 멈춘다. 기대한 끝(등록 해제, 답 없음 등)을
+/// 놓치는 버그가 끝없는 매달림이 아니라 Ok(Stopped) 같은 분명한 실패로 드러나게 한다.
+fn within<T>(run: impl FnOnce(&AtomicBool) -> T) -> T {
+    const LIMIT: Duration = Duration::from_secs(10);
+    let stop = AtomicBool::new(false);
+    let done = AtomicBool::new(false);
+    thread::scope(|scope| {
+        scope.spawn(|| {
+            let deadline = std::time::Instant::now() + LIMIT;
+            while !done.load(Ordering::Relaxed) && std::time::Instant::now() < deadline {
+                thread::sleep(Duration::from_millis(20));
+            }
+            stop.store(true, Ordering::Relaxed);
+        });
+        let ended = run(&stop);
+        done.store(true, Ordering::Relaxed);
+        ended
+    })
+}
+
 fn wait_for(done: impl Fn() -> bool) -> bool {
     let deadline = std::time::Instant::now() + Duration::from_secs(20);
     while !done() {
@@ -862,6 +844,8 @@ fn bluetooth_reports_busy_when_the_phone_drops_it_at_ready() {
     );
     air.says = PhoneSays::Busy;
     air.strict = true;
+    // 멈추는 동안(부하가 크면 오래 걸림)의 재시도는 빼고, 지켜본 시간 안의 접속만 센다.
+    let mut seen = 0;
     run_links(&[&air], &world, || {
         let busy = ServeError::Busy.to_string();
         wait_for(|| {
@@ -870,12 +854,14 @@ fn bluetooth_reports_busy_when_the_phone_drops_it_at_ready() {
                 |note| matches!(note, Note::Lost(reason) if reason == &busy),
             )
         });
-        // 거절된 뒤 바로 다시 붙지 않는지 잠깐 더 본다.
-        thread::sleep(Duration::from_millis(1500));
+        // 거절된 뒤 바로 다시 붙지 않는지 더 본다. 보통 재시도(1초)였다면 이 사이 세 번 넘게 붙는다.
+        thread::sleep(Duration::from_millis(2500));
+        seen = air.connects.load(Ordering::Relaxed);
     });
     assert!(
-        air.connects.load(Ordering::Relaxed) <= 2,
-        "거절된 뒤에는 5초 쉬고 다시 시도"
+        seen <= 2,
+        "거절된 뒤에는 5초 쉬고 다시 시도 {seen} {:?}",
+        world.notes.0.lock().unwrap()
     );
     assert_eq!(
         connected_on(&world, "ble:1"),
@@ -981,13 +967,7 @@ fn bluetooth_yields_when_usb_already_holds_the_phone() {
         PhoneSays::Stay,
         theirs,
     );
-    let result = serve(
-        &ble(&public),
-        &mut mine,
-        &world.context(),
-        false,
-        &AtomicBool::new(false),
-    );
+    let result = within(|stop| serve(&ble(&public), &mut mine, &world.context(), false, stop));
     drop(mine);
     handle.join().unwrap();
     assert_eq!(result, Ok(Ended::Yielded));
@@ -998,18 +978,13 @@ fn bluetooth_yields_when_usb_already_holds_the_phone() {
 }
 
 /// 주소가 바뀐 같은 기기: 옛 연결이 살아 있는 동안 새 주소로 붙지 않고, 옛 연결이 끝나야 넘겨받는다.
-/// 빡빡한 시험 시간(침묵 150ms)이면 느린 서버에서 옛 연결이 굶어 먼저 끊겨(기기가 응답하지 않음)
-/// 새 주소가 정상으로 붙으므로, 이 시험은 굶어도 끊기지 않을 넉넉한 시간으로 돈다.
+/// 침묵 한계가 빡빡하면 느린 서버에서 옛 연결이 굶어 먼저 끊겨(기기가 응답하지 않음) 새 주소가 정상으로
+/// 붙으므로, World 의 넉넉한 침묵 한계에 기댄다.
 #[test]
 fn a_rotated_bluetooth_address_does_not_add_a_second_connection() {
     let phone_key = Identity::generate();
     let public = phone_key.public;
-    let mut world = World::new(vec![public], None);
-    world.timing = Timing {
-        ping: Duration::from_millis(100),
-        silence: Duration::from_secs(3),
-        answer: Duration::from_millis(150),
-    };
+    let world = World::new(vec![public], None);
     let computer = vec![world.computer.identity.public];
     let second = || Phone {
         id: "ble:2".into(),
