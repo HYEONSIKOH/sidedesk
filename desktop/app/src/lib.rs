@@ -17,7 +17,7 @@ use sidedesk_domain::{
 use sidedesk_link::{AdbLinks, UsbmuxLinks};
 #[cfg(target_os = "macos")]
 use sidedesk_mac::{
-    MacGet, MacKeychain, MacLauncher, MacMeter, MacName as Name, MacPlayer, MacProcesses,
+    MacGet, MacKeychain, MacLauncher, MacMeter, MacName as Name, MacPlayer, MacPlace, MacProcesses, NowPlaying,
     MacSpeaker,
 };
 use sidedesk_window::{Board, Computer};
@@ -156,10 +156,10 @@ fn hub(folder: &Path) -> (Hub, Arc<WeatherPrefs>, Help) {
     ));
     let weather = sidedesk_weather::Chooser::new(prefs.clone(), get);
     let home = std::env::var_os("HOME").map(std::path::PathBuf::from);
-    let hub = collectors().with_weather(
-        Box::new(weather),
-        sidedesk_domain::WeatherCadence::default(),
-    );
+    let hub = collectors()
+        .with_weather(Box::new(weather), sidedesk_domain::WeatherCadence::default())
+        // 날씨는 폰이 아니라 이 맥의 위치로 받는다(폰이 실내, 비행기 모드면 위치가 없다).
+        .with_here(Box::new(MacPlace::default()));
     // AI 세션 기록과 gh, glab 은 홈 폴더 아래를 본다.
     let hub = match home {
         Some(home) => hub.with_ai(
@@ -174,13 +174,21 @@ fn hub(folder: &Path) -> (Hub, Arc<WeatherPrefs>, Help) {
             .map(std::path::PathBuf::from)
             .unwrap_or_default(),
     ));
-    let deck = sidedesk_domain::Deck::new(Box::new(ShortcutsFile::new(folder)), launcher.clone());
+    let installed: std::collections::HashSet<String> = sidedesk_domain::ShortcutHelp::apps(launcher.as_ref())
+        .into_iter()
+        .map(|app| app.bundle)
+        .collect();
+    let starter = mac_starter(&installed, &home_dir());
+    let deck = sidedesk_domain::Deck::new(
+        Box::new(ShortcutsFile::new(folder).with_starter(starter)),
+        launcher.clone(),
+    );
     let home = std::env::var_os("HOME")
         .map(std::path::PathBuf::from)
         .unwrap_or_default();
     let cache = home.join("Library/Caches/SideDesk");
     let jukebox = sidedesk_domain::Jukebox::new(
-        Box::new(MacPlayer::new(home, cache)),
+        player(home, cache),
         Box::new(MacSpeaker),
         sidedesk_domain::MusicCadence::default(),
     );
@@ -189,6 +197,53 @@ fn hub(folder: &Path) -> (Hub, Arc<WeatherPrefs>, Help) {
         prefs,
         launcher,
     )
+}
+
+#[cfg(target_os = "macos")]
+fn home_dir() -> std::path::PathBuf {
+    std::env::var_os("HOME").map(std::path::PathBuf::from).unwrap_or_default()
+}
+
+/// 처음 쓰는 맥의 단축키. 설치되지 않은 앱은 뺀다.
+#[cfg(target_os = "macos")]
+fn mac_starter(installed: &std::collections::HashSet<String>, home: &Path) -> Vec<sidedesk_domain::Shortcut> {
+    use sidedesk_domain::{Action, Shortcut, SystemAction};
+    let item = |name: &str, icon: &str, color: &str, action: Action| Shortcut {
+        id: 0,
+        name: name.to_owned(),
+        icon: icon.to_owned(),
+        color: color.to_owned(),
+        action,
+    };
+    let app = |bundle: &str, name: &str, icon: &str, color: &str| {
+        installed.contains(bundle).then(|| {
+            item(name, icon, color, Action::App { bundle: bundle.to_owned(), label: name.to_owned() })
+        })
+    };
+    [
+        app("com.apple.Terminal", "터미널", "terminal", "slate"),
+        Some(item("Finder", "folder", "sand", Action::Open { path: home.to_string_lossy().into_owned() })),
+        app("com.microsoft.VSCode", "VS Code", "code", "sky"),
+        Some(item("브라우저", "browser", "teal", Action::Url { url: "https://github.com".to_owned() })),
+        app("com.spotify.client", "Spotify", "music", "green"),
+        app("com.apple.calculator", "계산기", "calculator", "gray"),
+        app("com.apple.systempreferences", "시스템 설정", "settings", "gray"),
+        app("com.apple.ActivityMonitor", "활성 상태 보기", "activity", "green"),
+        Some(item("음소거", "volume", "orange", Action::System { action: SystemAction::Mute })),
+        Some(item("잠금", "lock", "rose", Action::System { action: SystemAction::Lock })),
+    ]
+    .into_iter()
+    .flatten()
+    .collect()
+}
+
+/// 시스템 "지금 재생 중"을 읽을 수 있으면 그것을, 아니면 음악 앱과 Spotify 만.
+#[cfg(target_os = "macos")]
+fn player(home: std::path::PathBuf, cache: std::path::PathBuf) -> Box<dyn sidedesk_domain::Player> {
+    match NowPlaying::bundled().and_then(|dir| NowPlaying::find(&dir, home.clone())) {
+        Some(now) => Box::new(now),
+        None => Box::new(MacPlayer::new(home, cache)),
+    }
 }
 
 #[cfg(target_os = "windows")]

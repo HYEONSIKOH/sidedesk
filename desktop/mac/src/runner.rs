@@ -17,6 +17,7 @@ pub struct Runner {
     tool: PathBuf,
     home: PathBuf,
     limit: Duration,
+    keep: usize,
     children: Mutex<HashMap<u32, Child>>,
     stopped: AtomicBool,
 }
@@ -27,9 +28,16 @@ impl Runner {
             tool,
             home,
             limit,
+            keep: KEEP,
             children: Mutex::default(),
             stopped: AtomicBool::new(false),
         }
+    }
+
+    /// 출력을 남길 크기를 바꾼다(기본 64KB).
+    pub fn keeping(mut self, keep: usize) -> Self {
+        self.keep = keep;
+        self
     }
 
     fn lock(&self) -> std::sync::MutexGuard<'_, HashMap<u32, Child>> {
@@ -61,6 +69,7 @@ impl Runner {
             .spawn()
             .ok()?;
         let pid = child.id();
+        let keep = self.keep;
         let out = child.stdout.take().map(|mut pipe| {
             thread::spawn(move || {
                 let mut kept = Vec::new();
@@ -69,7 +78,7 @@ impl Runner {
                     if n == 0 {
                         break;
                     }
-                    let room = KEEP.saturating_sub(kept.len());
+                    let room = keep.saturating_sub(kept.len());
                     kept.extend_from_slice(&buffer[..n.min(room)]);
                 }
                 kept

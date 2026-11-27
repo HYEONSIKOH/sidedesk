@@ -24,10 +24,17 @@ write_plist() {
     <key>LSMinimumSystemVersion</key><string>11.0</string>
     <key>NSHighResolutionCapable</key><true/>
     <key>NSBluetoothAlwaysUsageDescription</key><string>케이블 없이 기기와 연결합니다.</string>
+    <key>NSLocationUsageDescription</key><string>이 맥의 대략적인 위치로 날씨를 받습니다.</string>
+    <key>NSLocationWhenInUseUsageDescription</key><string>이 맥의 대략적인 위치로 날씨를 받습니다.</string>
     <key>NSAppleEventsUsageDescription</key><string>음악 앱과 Spotify 의 재생 곡을 읽고 조작합니다.</string>
 </dict>
 </plist>
 PLIST
+}
+
+# copy_nowplaying <앱 폴더> <저장소 루트>: 시스템 "지금 재생 중"을 읽는 프레임워크와 스크립트를 넣는다.
+copy_nowplaying() {
+    bash "$2/desktop/mac/vendor/mediaremote-adapter/build-adapter.sh" "$1/Contents/Resources/mediaremote"
 }
 
 # copy_icon <앱 폴더> <저장소 루트>

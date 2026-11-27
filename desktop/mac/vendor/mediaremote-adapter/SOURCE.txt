@@ -1,0 +1,1 @@
+https://github.com/ungive/mediaremote-adapter 2ef957c 의 소스(BSD-3-Clause, LICENSE). 맥 앱 묶음을 만들 때 build-adapter.sh 로 빌드해 Contents/Resources/mediaremote 에 넣는다.

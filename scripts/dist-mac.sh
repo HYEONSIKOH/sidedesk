@@ -37,6 +37,7 @@ for arch in arm64 x86_64; do
 done
 write_plist "$app" "$version"
 copy_icon "$app" "$root"
+copy_nowplaying "$app" "$root"
 codesign --force --sign - "$app"
 ln -s /Applications "$stage/Applications"
 hdiutil create -quiet -volname SideDesk -srcfolder "$stage" -ov -format UDZO "$dmg"

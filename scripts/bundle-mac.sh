@@ -17,5 +17,7 @@ cp "target/$profile/sidedesk" "$app/Contents/MacOS/SideDesk"
 . scripts/lib-mac.sh
 write_plist "$app" "$(sidedesk_version "$root")"
 copy_icon "$app" "$root"
-codesign --force --sign - "$app" >/dev/null 2>&1
+copy_nowplaying "$app" "$root"
+# SIDEDESK_SIGN 에 서명 이름을 주면 그것으로(위치 권한 등은 애드혹 서명이면 거부될 수 있다). 없으면 애드혹.
+codesign --force --deep --sign "${SIDEDESK_SIGN:--}" "$app" >/dev/null 2>&1
 echo "$app"

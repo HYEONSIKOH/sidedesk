@@ -8,19 +8,28 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use sidedesk_domain::{PortError, Saved, ShortcutStore};
+use sidedesk_domain::{PortError, Saved, Shortcut, ShortcutStore};
 
 const FILE: &str = "shortcuts.json";
 
 pub struct ShortcutsFile {
     path: PathBuf,
+    /// 처음 쓰는 컴퓨터에 넣어 둘 단축키
+    starter: Vec<Shortcut>,
 }
 
 impl ShortcutsFile {
     pub fn new(folder: &Path) -> Self {
         Self {
             path: folder.join(FILE),
+            starter: Vec::new(),
         }
+    }
+
+    /// 처음 쓰는 컴퓨터(파일도 백업도 없음)에 넣어 둘 단축키. 번호는 1부터 다시 매긴다.
+    pub fn with_starter(mut self, starter: Vec<Shortcut>) -> Self {
+        self.starter = starter;
+        self
     }
 
     fn with(&self, extension: &str) -> PathBuf {
@@ -51,7 +60,14 @@ impl ShortcutStore for ShortcutsFile {
         let backup = self.with("bak");
         if !exists && !backup.exists() {
             // 처음 쓰는 컴퓨터
-            return Ok((Saved::new(new_book()), None));
+            let mut saved = Saved::new(new_book());
+            for (index, item) in self.starter.iter().enumerate() {
+                let mut item = item.clone();
+                item.id = index as u32 + 1;
+                saved.items.push(item);
+            }
+            saved.next_id = saved.items.len() as u32 + 1;
+            return Ok((saved, None));
         }
         if exists {
             let _ = fs::rename(&self.path, self.with("broken"));
@@ -102,6 +118,36 @@ mod tests {
         let _ = fs::remove_dir_all(&path);
         fs::create_dir_all(&path).unwrap();
         path
+    }
+
+    fn lock() -> Shortcut {
+        Shortcut {
+            id: 9,
+            name: "잠금".into(),
+            icon: "lock".into(),
+            color: "rose".into(),
+            action: Action::System {
+                action: SystemAction::Lock,
+            },
+        }
+    }
+
+    #[test]
+    fn a_new_computer_gets_the_starter_numbered_from_one() {
+        let dir = folder("starter");
+        let file = ShortcutsFile::new(&dir).with_starter(vec![lock(), lock()]);
+        let (saved, notice) = file.load().unwrap();
+        assert_eq!(notice, None);
+        assert_eq!(saved.items.iter().map(|i| i.id).collect::<Vec<_>>(), [1, 2]);
+        assert_eq!(saved.next_id, 3);
+    }
+
+    #[test]
+    fn a_saved_empty_list_stays_empty() {
+        let dir = folder("starter-kept");
+        let file = ShortcutsFile::new(&dir).with_starter(vec![lock()]);
+        file.save(&Saved::new(7)).unwrap();
+        assert!(file.load().unwrap().0.items.is_empty(), "사람이 다 지운 목록을 다시 채우지 않음");
     }
 
     fn sample(book: u64) -> Saved {
