@@ -305,6 +305,10 @@ pub trait WeatherSetup: Send + Sync {
     fn set_choice(&self, choice: Choice) -> Result<(), PortError>;
     /// 시작 때 한 번 보고 들고 있는 값
     fn has_key(&self) -> bool;
+    /// 넣은 키의 앞 몇 글자. 설정 창이 나머지를 가려 보인다
+    fn key_hint(&self) -> Option<String> {
+        None
+    }
     fn check_key(&self, key: &Secret) -> KeyCheck;
     fn save_key(&self, key: &Secret) -> Result<(), PortError>;
     fn clear_key(&self) -> Result<(), PortError>;

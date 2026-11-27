@@ -112,11 +112,10 @@ function renderWeather(weather) {
   $('weather-off').hidden = on;
   if (on) $('weather-choice').value = weather.choice;
   const kma = on && weather.choice === 'kma';
-  $('kma-label').hidden = !kma;
-  $('kma-row').hidden = !kma;
-  if (!kma) return;
-  $('kma-empty').hidden = weather.has_key;
-  $('kma-saved').hidden = !weather.has_key;
+  $('kma-empty').hidden = !kma || weather.has_key;
+  $('kma-saved').hidden = !kma || !weather.has_key;
+  if (!kma) { $('kma-result').hidden = true; return; }
+  $('kma-hint').value = weather.has_key ? `${weather.key_hint || ''}${'*'.repeat(12)}` : '';
   $('kma-put').disabled = weather.checking;
   $('kma-put').textContent = weather.checking ? '확인하는 중' : '넣기';
   const result = $('kma-result');

@@ -97,6 +97,8 @@ td { padding: 14px 8px; border-bottom: 1px solid var(--line); font-size: 13px; v
 .button.outline:hover { background: var(--blue-soft); }
 .button.danger { border: 1px solid var(--line-strong); color: var(--ink-soft); background: var(--panel); }
 .button.danger:hover { border-color: var(--red-ink); color: var(--red-ink); }
+.button.red { background: var(--red-ink); color: var(--on-blue); }
+.button.red:hover { filter: brightness(0.92); }
 .button:disabled { background: var(--gray-soft); color: var(--muted); border-color: transparent; cursor: default; }
 
 .facts { display: grid; grid-template-columns: 140px minmax(0, 1fr); gap: 0; margin: 22px 0 0; border-top: 1px solid var(--line); }
@@ -110,6 +112,9 @@ td { padding: 14px 8px; border-bottom: 1px solid var(--line); font-size: 13px; v
 .hint { margin: 8px 0 0; color: var(--muted); font-size: 12px; }
 .hint.bad { color: var(--red-ink); }
 .inline { display: flex; align-items: center; gap: 8px; }
+.inline.wrap { flex-wrap: wrap; }
+[hidden] { display: none !important; }
+.field[readonly] { color: var(--muted); }
 .select, .field { height: 34px; padding: 0 10px; border: 1px solid var(--line-strong); border-radius: 6px; background: var(--panel); color: var(--ink); font-size: 13px; }
 .field { width: 320px; max-width: 100%; }
 

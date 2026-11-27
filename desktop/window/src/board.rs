@@ -286,6 +286,12 @@ impl Board {
             ("supported", "true".into()),
             ("choice", json::text(choice)),
             ("has_key", setup.has_key().to_string()),
+            (
+                "key_hint",
+                setup
+                    .key_hint()
+                    .map_or_else(|| "null".to_owned(), |hint| json::text(&hint)),
+            ),
             ("checking", state.checking.to_string()),
             ("result", result),
         ])

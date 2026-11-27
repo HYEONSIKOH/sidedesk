@@ -1,8 +1,8 @@
 //! 날씨 설정: 고른 제공처는 설정 폴더의 `weather.txt`, 기상청 키는 운영체제 비밀 보관소.
 
 use std::path::PathBuf;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::SystemTime;
 
 use sidedesk_domain::{Choice, KeyCheck, PortError, Secret, Secrets, WeatherSetup};
@@ -15,16 +15,30 @@ pub struct WeatherPrefs {
     kma: Option<Kma>,
     /// 시작 때 한 번 보고 넣기와 지우기에서 고친다. 스냅숏마다 보관소를 열지 않는다.
     has_key: AtomicBool,
+    /// 넣은 키의 앞 네 글자. 키 전체는 들고 있지 않는다
+    hint: Mutex<Option<String>>,
+}
+
+const HINT_CHARS: usize = 4;
+
+fn hint_of(key: &Secret) -> String {
+    key.expose().chars().take(HINT_CHARS).collect()
 }
 
 impl WeatherPrefs {
     pub fn new(file: PathBuf, secrets: Box<dyn Secrets>, get: Option<Arc<dyn Get>>) -> Self {
         let has_key = get.is_some() && secrets.has_kma_key().unwrap_or(false);
+        let hint = if has_key {
+            secrets.kma_key().ok().flatten().map(|key| hint_of(&key))
+        } else {
+            None
+        };
         Self {
             file,
             secrets,
             kma: get.map(Kma::new),
             has_key: AtomicBool::new(has_key),
+            hint: Mutex::new(hint),
         }
     }
 }
@@ -70,6 +84,13 @@ impl WeatherSetup for WeatherPrefs {
         self.has_key.load(Ordering::Relaxed)
     }
 
+    fn key_hint(&self) -> Option<String> {
+        if !self.has_key() {
+            return None;
+        }
+        self.hint.lock().ok().and_then(|hint| hint.clone())
+    }
+
     fn check_key(&self, key: &Secret) -> KeyCheck {
         self.kma
             .as_ref()
@@ -78,12 +99,18 @@ impl WeatherSetup for WeatherPrefs {
 
     fn save_key(&self, key: &Secret) -> Result<(), PortError> {
         self.secrets.set_kma_key(key)?;
+        if let Ok(mut hint) = self.hint.lock() {
+            *hint = Some(hint_of(key));
+        }
         self.has_key.store(true, Ordering::Relaxed);
         Ok(())
     }
 
     fn clear_key(&self) -> Result<(), PortError> {
         self.secrets.clear_kma_key()?;
+        if let Ok(mut hint) = self.hint.lock() {
+            *hint = None;
+        }
         self.has_key.store(false, Ordering::Relaxed);
         Ok(())
     }
@@ -137,6 +164,16 @@ mod tests {
         std::fs::write(&prefs.file, "odd").unwrap();
         assert_eq!(Settings::choice(&prefs), Choice::OpenMeteo);
         let _ = std::fs::remove_file(&prefs.file);
+    }
+
+    #[test]
+    fn hint_shows_only_the_first_four_chars_and_goes_with_the_key() {
+        let prefs = prefs("hint");
+        assert_eq!(prefs.key_hint(), None);
+        prefs.save_key(&Secret::new("abcdefghijkl")).unwrap();
+        assert_eq!(prefs.key_hint().as_deref(), Some("abcd"));
+        prefs.clear_key().unwrap();
+        assert_eq!(prefs.key_hint(), None);
     }
 
     #[test]
