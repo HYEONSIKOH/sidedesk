@@ -124,16 +124,19 @@ fn close<T>(shown: &mut Option<T>, can_reopen: bool) -> bool {
 
 const TRAY_SIDE: u32 = 32;
 
-/// 아이콘 모양(폰 테두리와 아래 점)에 드는 칸인지
-fn tray_shape(x: i64, y: i64) -> bool {
-    let inside = (9..=22).contains(&x) && (3..=28).contains(&y);
-    let edge = inside && (x <= 11 || x >= 20 || y <= 5 || y >= 26);
-    let corner = (x == 9 || x == 22) && (y == 3 || y == 28);
-    let dot = (15..=16).contains(&x) && (23..=24).contains(&y);
-    (edge && !corner) || dot
+/// 메뉴 막대 아이콘 모양: SideDesk 심볼(S, D, 짧은 바)의 32x32 진하기. 원본은 assets/icon/sidedesk.svg
+const TRAY_MASK: &[u8; (TRAY_SIDE * TRAY_SIDE) as usize] = include_bytes!("tray.mask");
+
+fn tray_alpha(x: i64, y: i64) -> u8 {
+    let side = i64::from(TRAY_SIDE);
+    if (0..side).contains(&x) && (0..side).contains(&y) {
+        TRAY_MASK[(y * side + x) as usize]
+    } else {
+        0
+    }
 }
 
-/// 메뉴 막대 아이콘: 둥근 네모(폰) 테두리. 맥은 검정 템플릿(밝기에 맞춰 색이 바뀜).
+/// 메뉴 막대 아이콘. 맥은 검정 템플릿(밝기에 맞춰 색이 바뀜).
 /// 윈도우는 작업 표시줄이 밝든 어둡든 보이게 흰 모양에 검은 테두리를 두른다.
 fn tray_pixels(outlined: bool) -> Vec<u8> {
     let side = i64::from(TRAY_SIDE);
@@ -141,10 +144,12 @@ fn tray_pixels(outlined: bool) -> Vec<u8> {
     for y in 0..side {
         for x in 0..side {
             let at = ((y * side + x) * 4) as usize;
-            if tray_shape(x, y) {
-                let fill = if outlined { 255 } else { 0 };
-                rgba[at..at + 4].copy_from_slice(&[fill, fill, fill, 255]);
-            } else if outlined && (-1..=1).any(|dy| (-1..=1).any(|dx| tray_shape(x + dx, y + dy))) {
+            let alpha = tray_alpha(x, y);
+            if !outlined {
+                rgba[at..at + 4].copy_from_slice(&[0, 0, 0, alpha]);
+            } else if alpha > 127 {
+                rgba[at..at + 4].copy_from_slice(&[255, 255, 255, 255]);
+            } else if (-1..=1).any(|dy| (-1..=1).any(|dx| tray_alpha(x + dx, y + dy) > 127)) {
                 rgba[at..at + 4].copy_from_slice(&[0, 0, 0, 255]);
             }
         }

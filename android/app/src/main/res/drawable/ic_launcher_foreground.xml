@@ -1,14 +1,31 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- 런처 아이콘 앞 층: 큰 판 곁에 짧은 판 하나(SideDesk 심볼). 원본은 assets/icon/sidedesk.svg -->
+<!-- 런처 아이콘 앞 층: 주황 S, 검정 D, 위에 붙인 주황 짧은 바(SideDesk 심볼). 원본은 assets/icon/sidedesk.svg -->
 <vector xmlns:android="http://schemas.android.com/apk/res/android"
     android:width="108dp"
     android:height="108dp"
     android:viewportWidth="108"
     android:viewportHeight="108">
-    <path
-        android:fillColor="#FFFFFFFF"
-        android:pathData="M40.48,35.28 L54.00,35.28 A8.32,8.32 0 0 1 62.32,43.60 L62.32,64.40 A8.32,8.32 0 0 1 54.00,72.72 L40.48,72.72 A8.32,8.32 0 0 1 32.16,64.40 L32.16,43.60 A8.32,8.32 0 0 1 40.48,35.28 Z" />
-    <path
-        android:fillColor="#FFFFFFFF"
-        android:pathData="M70.64,35.28 L70.64,35.28 A5.20,5.20 0 0 1 75.84,40.48 L75.84,51.92 A5.20,5.20 0 0 1 70.64,57.12 L70.64,57.12 A5.20,5.20 0 0 1 65.44,51.92 L65.44,40.48 A5.20,5.20 0 0 1 70.64,35.28 Z" />
+    <group
+        android:scaleX="0.432"
+        android:scaleY="0.432"
+        android:translateX="30.672"
+        android:translateY="32.4">
+        <path
+            android:pathData="M44,16 C82,18 84,84 22,84"
+            android:strokeColor="#FF111111"
+            android:strokeWidth="6"
+            android:strokeLineCap="round"
+            android:strokeLineJoin="round" />
+        <path
+            android:pathData="M44,16 C20,12 10,30 18,40 C26,50 44,50 46,62 C48,76 36,86 22,84"
+            android:strokeColor="#FFFF6B4A"
+            android:strokeWidth="6"
+            android:strokeLineCap="round"
+            android:strokeLineJoin="round" />
+        <path
+            android:pathData="M90,16 L90,54"
+            android:strokeColor="#FFFF6B4A"
+            android:strokeWidth="6"
+            android:strokeLineCap="round" />
+    </group>
 </vector>

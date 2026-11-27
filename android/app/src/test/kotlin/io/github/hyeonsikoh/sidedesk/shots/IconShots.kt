@@ -14,7 +14,7 @@ import org.robolectric.annotation.Config
 import org.robolectric.annotation.GraphicsMode
 import java.io.File
 
-/** 런처 아이콘을 찍는다: 적응형 아이콘 전체, 앞 층, 단색 층. 결과는 screenshots/icon/ */
+/** 런처 아이콘을 찍는다: 적응형 아이콘 전체, 앞 층. 결과는 screenshots/icon/ */
 @RunWith(RobolectricTestRunner::class)
 @GraphicsMode(GraphicsMode.Mode.NATIVE)
 @Config(sdk = [34])
@@ -36,8 +36,8 @@ class IconShots {
         save("launcher", whole)
         // 가운데(폰 테두리)는 밝은 글자색, 모서리 밖은 비어 있거나 바탕색이어야 한다.
         assertTrue(Color.alpha(whole.getPixel(size / 2, size / 2)) > 0)
-        for ((name, layer) in listOf("foreground" to icon.foreground, "monochrome" to icon.monochrome!!)) {
-            save(name, draw(size) { c -> c.drawColor(if (name == "monochrome") Color.DKGRAY else 0xFF22272E.toInt()); layer.setBounds(0, 0, size, size); layer.draw(c) })
-        }
+        save("foreground", draw(size) { c -> c.drawColor(0xFF22272E.toInt()); icon.foreground.setBounds(0, 0, size, size); icon.foreground.draw(c) })
+        // 단색 층이 없어야 테마 아이콘을 켠 폰에서도 색이 그대로 나온다.
+        assertTrue(icon.monochrome == null)
     }
 }
