@@ -1,5 +1,6 @@
 package io.github.hyeonsikoh.sidedesk
 
+import android.content.Intent
 import android.os.SystemClock
 import android.graphics.Color
 import android.os.Build
@@ -189,6 +190,13 @@ class MainActivity : ComponentActivity() {
             SystemBarStyle.dark(Color.TRANSPARENT)
         }
         enableEdgeToEdge(style, style)
+    }
+
+    // 이미 켜진 앱에 am start 를 다시 보내도 화면을 고르게 한다.
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        if (BuildConfig.CHECK) openForCheck()
     }
 
     /** 디버그 빌드 전용. 폰을 누르지 않고 화면을 찍어 보려고 am start 값으로 화면을 고른다. */
