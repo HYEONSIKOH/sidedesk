@@ -16,6 +16,7 @@ import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.unit.Density
 import androidx.compose.ui.unit.dp
 import com.github.takahirom.roborazzi.captureRoboImage
+import io.github.hyeonsikoh.sidedesk.ui.Zoomed
 import org.junit.Rule
 import org.junit.rules.RuleChain
 import io.github.hyeonsikoh.sidedesk.ai.AiScreenState
@@ -86,6 +87,7 @@ class DeskShots(private val device: String, private val width: Int, private val 
             arrayOf("folded-landscape", 882, 344),
             arrayOf("unfolded-portrait", 673, 841),
             arrayOf("unfolded-landscape", 841, 673),
+            arrayOf("tablet-landscape", 1000, 750),
         )
 
         val SUNNY = Weather(12f, Sky.Clear, 15f, 6f, true, NOW, WeatherSource.OpenMeteo)
@@ -213,7 +215,7 @@ class DeskShots(private val device: String, private val width: Int, private val 
             CompositionLocalProvider(LocalDensity provides Density(density.density, scale)) {
                 Box(Modifier.requiredSize(width.dp, height.dp).testTag(SHOT)) {
                     SideDeskTheme(theme) {
-                        Box(Modifier.fillMaxSize()) {
+                        Zoomed {
                             val panel = RestPanel(rest ?: RestState(), canSetStrength = !restOpen || theme == Theme.Dark, {}, {}, {}, {})
                             DeskScreen(
                                 desk,

@@ -144,17 +144,20 @@ struct ShortcutTile: View {
             let first = Array((shortcuts.items ?? []).prefix(4))
             Group {
                 if first.isEmpty {
-                    Text("단축키").font(.system(size: 14)).foregroundStyle(palette.ink).lineLimit(1)
+                    Text("단축키").font(.system(size: 16, weight: .medium)).foregroundStyle(palette.ink).lineLimit(1)
                 } else {
-                    let row = proxy.size.width >= 4 * 26 + 3 * 6
-                    let icon = min(28, row ? (proxy.size.width - 18) / 4 : min((proxy.size.width - 6) / 2, (proxy.size.height - 6) / 2))
+                    // 한 줄(폭이 높이의 1.6배 이상)이면 넷을 30 으로, 아니면 2×2 를 36(폭의 32% 까지), 낮으면 28.
+                    let row = proxy.size.width >= proxy.size.height * 1.6
+                    let low = proxy.size.height <= 92 && !row
+                    let icon: Double = row ? 30 : low ? 28 : min(36, proxy.size.width * 0.32)
+                    let gap: Double = row ? 8 : low ? 7 : 10
                     Group {
                         if row {
-                            HStack(spacing: 6) { ForEach(first) { Mini(item: $0, size: icon) } }
+                            HStack(spacing: gap) { ForEach(first) { Mini(item: $0, size: icon) } }
                         } else {
-                            VStack(spacing: 6) {
+                            VStack(spacing: gap) {
                                 ForEach(stride(from: 0, to: first.count, by: 2).map { $0 }, id: \.self) { start in
-                                    HStack(spacing: 6) { ForEach(first[start ..< min(start + 2, first.count)]) { Mini(item: $0, size: icon) } }
+                                    HStack(spacing: low ? 12 : gap) { ForEach(first[start ..< min(start + 2, first.count)]) { Mini(item: $0, size: icon) } }
                                 }
                             }
                         }
@@ -164,7 +167,8 @@ struct ShortcutTile: View {
             }
             .frame(width: proxy.size.width, height: proxy.size.height)
         }
-        .padding(8)
+        .padding(.horizontal, 14)
+        .padding(.vertical, 12)
         .background(RoundedRectangle(cornerRadius: 20).fill(palette.side))
     }
 }

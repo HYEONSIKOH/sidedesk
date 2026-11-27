@@ -526,44 +526,24 @@ private struct OverviewFace: View {
     }
 }
 
-/// 다른 화면을 볼 때의 홈 작은 칸. 시각, 하늘 아이콘, 기온, 받은 곳
+/// 다른 화면을 볼 때의 홈 작은 칸. 시각(위)과 하늘 아이콘, 기온(아래)
 struct HomeTile: View {
     let clock: ClockModel
     let now: Date
     @Environment(\.palette) private var palette
 
     var body: some View {
-        GeometryReader { proxy in
-            ZStack {
-                HStack(spacing: 6) {
-                    // 좁은 세로에서 칸이 셋이면 칸이 100pt 남짓이라, 시각과 기온이 함께 들어가게 너비에 맞춘다.
-                    Text(ClockTime(now).timeText)
-                        .font(.system(size: min(24, proxy.size.width * 0.2), weight: .medium))
-                        .foregroundStyle(palette.ink)
-                    VStack(spacing: 0) {
-                        if let weather = clock.weather {
-                            SkyIcon(sky: weather.sky, isDay: weather.isDay, color: palette.ink).frame(width: 14, height: 14)
-                        }
-                        Text(clock.temperature)
-                            .font(.system(size: 11))
-                            .foregroundStyle(palette.ink)
-                    }
-                    .dim(clock.weatherDimmed)
+        MiniTile { size in
+            MiniNum(text: ClockTime(now).timeText, size: size)
+        } second: { _ in
+            HStack(spacing: 5) {
+                if let weather = clock.weather {
+                    SkyIcon(sky: weather.sky, isDay: weather.isDay, color: palette.muted).frame(width: 16, height: 16)
                 }
-                .lineLimit(1)
-                if let credit = clock.shortCredit {
-                    VStack {
-                        Spacer()
-                        Text(credit).font(.system(size: 7)).foregroundStyle(palette.muted).dim(clock.weatherDimmed)
-                    }
-                }
+                MiniLabel(text: clock.temperature)
             }
-            .frame(width: proxy.size.width, height: proxy.size.height)
+            .dim(clock.weatherDimmed)
         }
-        .padding(.horizontal, 8)
-        .padding(.vertical, 6)
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .background(RoundedRectangle(cornerRadius: 20).fill(palette.side))
     }
 }
 

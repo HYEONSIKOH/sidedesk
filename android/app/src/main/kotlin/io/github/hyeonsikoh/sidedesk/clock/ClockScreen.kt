@@ -1,5 +1,8 @@
 package io.github.hyeonsikoh.sidedesk.clock
 
+import io.github.hyeonsikoh.sidedesk.ui.MiniLabel
+import io.github.hyeonsikoh.sidedesk.ui.MiniNum
+import io.github.hyeonsikoh.sidedesk.ui.MiniTile
 import androidx.compose.foundation.Canvas
 import io.github.hyeonsikoh.sidedesk.ui.Track
 import androidx.compose.foundation.background
@@ -503,31 +506,24 @@ internal fun overviewGrid(width: Float, height: Float, gap: Float): Pair<Int, In
         kotlin.math.abs(kotlin.math.ln(w / h))
     }
 
-/** 다른 화면을 볼 때의 홈 작은 칸. 시각, 하늘 아이콘, 기온, 받은 곳 */
+/** 다른 화면을 볼 때의 홈 작은 칸. 시각(위)과 하늘 아이콘, 기온(아래) */
 @Composable
 fun HomeTile(clock: ClockState, now: Long, modifier: Modifier) {
     Track("home-tile")
-    BoxWithConstraints(modifier.clip(RoundedCornerShape(20.dp)).background(Palette.side).padding(horizontal = 8.dp, vertical = 6.dp)) {
-        // 좁은 세로에서 칸이 셋이면 칸이 100dp 남짓이라, 시각과 기온이 함께 들어가게 너비에 맞춘다.
-        val timeSize = fit(min(24f, maxWidth.value * 0.2f).dp)
-        Row(Modifier.align(Alignment.Center), verticalAlignment = Alignment.CenterVertically) {
-            Text(timeText(now), color = Palette.ink, fontSize = timeSize, fontWeight = FontWeight.Medium, maxLines = 1, overflow = TextOverflow.Ellipsis)
+    MiniTile(
+        modifier,
+        first = { size -> MiniNum(timeText(now), null, size) },
+        second = {
             val weather = clock.weather
-            Column(Modifier.padding(start = 6.dp).alpha(if (clock.weatherDimmed) DIM else 1f), horizontalAlignment = Alignment.CenterHorizontally) {
-                if (weather != null) SkyIcon(weather.sky, weather.isDay, Palette.ink, Modifier.size(14.dp))
-                Text(weather?.let { degrees(it.temperature) } ?: "--°", color = Palette.ink, fontSize = fit(11.dp), maxLines = 1, overflow = TextOverflow.Ellipsis)
+            Row(Modifier.alpha(if (clock.weatherDimmed) DIM else 1f), verticalAlignment = Alignment.CenterVertically) {
+                if (weather != null) {
+                    SkyIcon(weather.sky, weather.isDay, Palette.muted, Modifier.size(16.dp))
+                    Spacer(Modifier.width(5.dp))
+                }
+                MiniLabel(weather?.let { degrees(it.temperature) } ?: "--°")
             }
-        }
-        clock.shortCredit?.let {
-            Text(
-                it,
-                color = Palette.muted,
-                fontSize = fit(7.dp),
-                maxLines = 1,
-                modifier = Modifier.align(Alignment.BottomCenter).alpha(if (clock.weatherDimmed) DIM else 1f),
-            )
-        }
-    }
+        },
+    )
 }
 
 class PickActions(

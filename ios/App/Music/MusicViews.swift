@@ -23,8 +23,9 @@ struct MusicBig: View {
         GeometryReader { proxy in
             let w = proxy.size.width
             let h = proxy.size.height
-            let wide = w > h
-            let art = wide ? min(h - 16, w * 0.42) : min(w * 0.72, h * 0.42)
+            let layout = musicLayout(width: w, height: h)
+            let wide = !layout.stacked
+            let art = layout.art
             ZStack(alignment: .bottom) {
                 Group {
                     if wide {
@@ -310,44 +311,44 @@ private struct VolumeBar: View {
     }
 }
 
-/// 음악 작은 칸(시안 .mn, .edge). 왼쪽 버튼은 재생/멈춤이고, 칸의 나머지는 음악 화면으로 간다.
+/// 음악 작은 칸. 재생/멈춤 버튼(위)과 곡 제목(아래), 칸 아래 끝에 얇은 진행 줄.
 struct MusicTile: View {
     let music: MusicModel
     @Environment(\.palette) private var palette
 
     var body: some View {
-        GeometryReader { proxy in
-            let narrow = proxy.size.width < 96
+        if music.hasTrack, let now = music.now {
             ZStack(alignment: .bottom) {
-                if music.hasTrack, let now = music.now {
-                    HStack(spacing: 0) {
-                        PlayButton(playing: music.playing, enabled: !music.dimmed && now.canPlay, diameter: 30, action: music.playPause, filled: false)
-                        if !narrow {
-                            Text(now.title)
-                                .font(.system(size: 13, weight: .medium))
-                                .foregroundStyle(palette.ink)
-                                .lineLimit(1)
-                                .padding(.trailing, 8)
-                                .frame(maxWidth: .infinity, alignment: .leading)
-                        }
+                MiniTile { size in
+                    PlayButton(playing: music.playing, enabled: !music.dimmed && now.canPlay, diameter: size.low ? 30 : 36, action: music.playPause, filled: false)
+                } second: { size in
+                    MiniName(text: now.title, size: size).padding(.bottom, size.wide ? 0 : 6)
+                }
+                .dim(music.dimmed)
+                if now.durationMs > 0 {
+                    Ticking(playing: now.playing && !music.dimmed) { ms in
+                        Bar(fraction: Double(positionAt(now, ms, lostAt: music.lostAt)) / Double(now.durationMs))
                     }
-                    .padding(.horizontal, 4)
-                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: narrow ? .center : .leading)
-                    .dim(music.dimmed)
-                    if now.durationMs > 0 {
-                        Ticking(playing: now.playing && !music.dimmed) { ms in
-                            Bar(fraction: Double(positionAt(now, ms, lostAt: music.lostAt)) / Double(now.durationMs))
-                        }
-                        .frame(height: 3)
-                        .padding(.horizontal, 16)
-                        .padding(.vertical, 8)
-                    }
-                } else {
-                    Text("음악").font(.system(size: 14)).foregroundStyle(palette.ink).lineLimit(1)
-                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .frame(height: 4)
+                    .padding(.horizontal, 14)
+                    .padding(.bottom, 7)
                 }
             }
+        } else {
+            MiniTile { size in
+                MiniName(text: "음악", size: size)
+            } second: { _ in
+                MiniLabel(text: "재생 중인 곡 없음")
+            }
         }
-        .background(RoundedRectangle(cornerRadius: 20).fill(palette.side))
     }
+}
+
+/// 음악 큰 화면 배치. 세로이거나, 높이 480 이상에 폭이 높이의 1.25배 이하(정사각에 가까운 큰 판)면 그림을 위에 쌓는다.
+/// 쌓으면 그림은 높이 52%, 폭 78% 중 작은 쪽. 옆으로 놓으면 폭 42%(높이 340 이하로 낮으면 34%), 높이를 넘지 않게.
+func musicLayout(width: CGFloat, height: CGFloat) -> (stacked: Bool, art: CGFloat) {
+    let stacked = width <= height || (height >= 480 && width <= height * 1.25)
+    if stacked { return (true, min(height * 0.52, width * 0.78)) }
+    let share: CGFloat = height <= 340 ? 0.34 : 0.42
+    return (false, min(height - 16, width * share))
 }

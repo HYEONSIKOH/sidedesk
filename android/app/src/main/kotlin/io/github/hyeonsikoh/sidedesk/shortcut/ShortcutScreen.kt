@@ -1,5 +1,6 @@
 package io.github.hyeonsikoh.sidedesk.shortcut
 
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.animation.core.animateFloatAsState
 import io.github.hyeonsikoh.sidedesk.ui.Track
 import androidx.compose.foundation.background
@@ -179,20 +180,27 @@ fun onColor(background: Color): Color = if (background.luminance() > 0.4f) Color
 @Composable
 fun ShortcutTile(state: ShortcutState, modifier: Modifier) {
     Track("keys-tile")
-    BoxWithConstraints(modifier.clip(RoundedCornerShape(20.dp)).background(Palette.side).padding(8.dp), contentAlignment = Alignment.Center) {
+    BoxWithConstraints(modifier.clip(RoundedCornerShape(20.dp)).background(Palette.side).padding(horizontal = 14.dp, vertical = 12.dp), contentAlignment = Alignment.Center) {
         val first = state.items.orEmpty().take(4)
         if (first.isEmpty()) {
-            Text("단축키", color = Palette.ink, fontSize = fit(14.dp), maxLines = 1)
+            Text("단축키", color = Palette.ink, fontSize = fit(16.dp), fontWeight = FontWeight.Medium, maxLines = 1)
             return@BoxWithConstraints
         }
-        val row = maxWidth.value >= 4 * 26f + 3 * 6f
-        val icon = min(28f, if (row) (maxWidth.value - 18f) / 4 else min((maxWidth.value - 6f) / 2, (maxHeight.value - 6f) / 2)).dp
+        // 한 줄(폭이 높이의 1.6배 이상)이면 넷을 30 으로, 아니면 2×2 를 36(폭의 32% 까지), 낮으면 28.
+        val row = maxWidth >= maxHeight * 1.6f
+        val low = maxHeight <= 92.dp && !row
+        val icon = when {
+            row -> 30.dp
+            low -> 28.dp
+            else -> minOf(36.dp, maxWidth * 0.32f)
+        }
+        val gap = if (row) 8.dp else if (low) 7.dp else 10.dp
         Box(Modifier.alpha(if (state.dimmed) DIM else 1f)) {
             if (row) {
-                Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) { first.forEach { Mini(it, icon) } }
+                Row(horizontalArrangement = Arrangement.spacedBy(gap)) { first.forEach { Mini(it, icon) } }
             } else {
-                Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                    first.chunked(2).forEach { pair -> Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) { pair.forEach { Mini(it, icon) } } }
+                Column(verticalArrangement = Arrangement.spacedBy(gap)) {
+                    first.chunked(2).forEach { pair -> Row(horizontalArrangement = Arrangement.spacedBy(if (low) 12.dp else gap)) { pair.forEach { Mini(it, icon) } } }
                 }
             }
         }

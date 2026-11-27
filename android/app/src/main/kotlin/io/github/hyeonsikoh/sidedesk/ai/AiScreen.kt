@@ -1,5 +1,29 @@
 package io.github.hyeonsikoh.sidedesk.ai
 
+import androidx.compose.ui.unit.em
+import io.github.hyeonsikoh.sidedesk.ui.MiniLabel
+import io.github.hyeonsikoh.sidedesk.ui.MiniNum
+import io.github.hyeonsikoh.sidedesk.ui.MiniSize
+import io.github.hyeonsikoh.sidedesk.ui.MiniTile
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.slideInVertically
+import androidx.compose.animation.slideOutVertically
+import androidx.compose.foundation.layout.widthIn
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.setValue
+import androidx.compose.foundation.layout.width
+import androidx.compose.animation.core.CubicBezierEasing
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Rect
+import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.graphics.Outline
+import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.graphics.Shape
+import androidx.compose.ui.unit.Density
+import androidx.compose.ui.unit.LayoutDirection
+import io.github.hyeonsikoh.sidedesk.link.AiAlert
 import androidx.compose.animation.core.Animatable
 import io.github.hyeonsikoh.sidedesk.ui.Track
 import androidx.compose.animation.core.tween
@@ -97,21 +121,25 @@ fun AiBig(state: AiScreenState, now: Long, onTab: (ForgeTab) -> Unit, modifier: 
 }
 
 /**
- * 작업 중과 답변 대기는 판 너비 전체(높이 1.55u), 나머지는 반 너비 둘씩(높이 u).
- * u 는 100dp 를 넘지 않고, 다 넣으려면 56dp 아래가 될 때는 56dp 로 두고 민다.
+ * 작업 중과 답변 대기는 판 너비 전체(높이 1.3u), 나머지는 반 너비 둘씩(높이 u).
+ * u 는 76dp 를 넘지 않고, 다 넣으려면 56dp 아래가 될 때는 56dp 로 두고 민다.
  */
+/** 세션 칸 높이의 상한과 작업 중 칸의 배수 */
+private const val MAX_UNIT = 76f
+private const val ACTIVE_RATIO = 1.3f
+
 @Composable
 private fun Sessions(state: AiScreenState, now: Long, height: Dp) {
     val active = state.sessions.filter { it.active() }
     val rest = state.sessions.filterNot { it.active() }
-    val rows = active.size * 1.55f + ceil(rest.size / 2f)
+    val rows = active.size * ACTIVE_RATIO + ceil(rest.size / 2f)
     val count = active.size + ceil(rest.size / 2f)
-    val unit = min(100f, (height.value - (count - 1) * GAP.value) / rows).coerceAtLeast(MIN_UNIT)
+    val unit = min(MAX_UNIT, (height.value - (count - 1) * GAP.value) / rows).coerceAtLeast(MIN_UNIT)
     val highlight = state.alert?.sessionId
     val scroll = rememberScrollState()
     Box(Modifier.fillMaxSize()) {
     Column(Modifier.fillMaxSize().verticalScroll(scroll), verticalArrangement = Arrangement.spacedBy(GAP)) {
-        active.forEach { SessionCard(it, now, it.id == highlight, big = true, Modifier.fillMaxWidth().height((unit * 1.55f).dp)) }
+        active.forEach { SessionCard(it, now, it.id == highlight, big = true, Modifier.fillMaxWidth().height((unit * ACTIVE_RATIO).dp)) }
         rest.chunked(2).forEach { pair ->
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(GAP)) {
                 pair.forEach { SessionCard(it, now, it.id == highlight, big = false, Modifier.weight(1f).height(unit.dp)) }
@@ -153,7 +181,7 @@ private fun SessionCard(session: AiSession, now: Long, highlight: Boolean, big: 
             Text(
                 session.title,
                 color = Palette.ink,
-                fontSize = fit(if (big) 19.dp else 15.dp),
+                fontSize = fit(if (big) 16.dp else 14.dp),
                 fontWeight = FontWeight.SemiBold,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
@@ -255,6 +283,75 @@ private fun Count(value: String, label: String) {
 /** 마지막으로 출렁인 알림 번호. 화면 틀 바깥(앱 화면)에 두어 쉬는 동안 틀이 빠져도 남는다. */
 val LocalPulsed = staticCompositionLocalOf<MutableState<Long?>> { mutableStateOf(null) }
 
+/** 화면 위쪽 가운데로 내려오는 알림 띠. 알림이 있는 동안(4초) 보인다. 늦게 온 알림은 띄우지 않는다. */
+@Composable
+fun AlertBanner(state: AiScreenState, modifier: Modifier = Modifier) {
+    val alert = state.alert?.takeIf { !state.alertLate }
+    // 사라지는 동안에도 마지막 내용을 그린다.
+    var last by remember { mutableStateOf<AiAlert?>(null) }
+    if (alert != null) last = alert
+    AnimatedVisibility(
+        visible = alert != null,
+        modifier = modifier,
+        enter = slideInVertically(tween(320)) { -it } + fadeIn(tween(200)),
+        exit = slideOutVertically(tween(260)) { -it } + fadeOut(tween(200)),
+    ) {
+        val shown = last ?: return@AnimatedVisibility
+        val waiting = shown.kind == AlertKind.Waiting
+        Row(
+            Modifier
+                .padding(top = 10.dp)
+                .clip(RoundedCornerShape(24.dp))
+                .background(if (waiting) Palette.waiting else Palette.accent)
+                .padding(start = 8.dp, end = 18.dp, top = 8.dp, bottom = 8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Box(Modifier.size(26.dp).clip(CircleShape).background(Palette.ground.copy(alpha = 0.25f)), contentAlignment = Alignment.Center) {
+                Text(if (waiting) "!" else "✓", color = Palette.ground, fontSize = fit(14.dp), fontWeight = FontWeight.Bold)
+            }
+            Spacer(Modifier.width(10.dp))
+            Text(alertText(shown.kind), color = Palette.ground, fontSize = fit(14.dp), fontWeight = FontWeight.Bold, maxLines = 1)
+            Spacer(Modifier.width(8.dp))
+            Text(
+                shown.title,
+                color = Palette.ground,
+                fontSize = fit(14.dp),
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.widthIn(max = 280.dp),
+            )
+        }
+    }
+}
+
+/** 알림 카드. 반전 색 판이 왼쪽 위에서 동그랗게 퍼지며 칸을 덮는다. */
+@Composable
+private fun AlertCard(alert: AiAlert) {
+    val reveal = remember(alert.id) { Animatable(0f) }
+    LaunchedEffect(alert.id) { reveal.animateTo(1f, tween(450, easing = CubicBezierEasing(0.2f, 0.9f, 0.2f, 1f))) }
+    Column(
+        Modifier
+            .fillMaxSize()
+            .clip(CircleReveal(reveal.value))
+            .background(Palette.ink)
+            .padding(horizontal = 14.dp, vertical = 10.dp),
+        verticalArrangement = Arrangement.Center,
+    ) {
+        Text(alert.title, color = Palette.ground, fontSize = fit(17.dp), fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis)
+        Text(alertText(alert.kind), color = Palette.ground, fontSize = fit(13.dp), maxLines = 1)
+    }
+}
+
+/** 왼쪽 위(24, 24)를 중심으로 `progress`(0~1)만큼 퍼진 원. 1이면 판 전체를 덮는다. */
+private class CircleReveal(private val progress: Float) : Shape {
+    override fun createOutline(size: Size, layoutDirection: LayoutDirection, density: Density): Outline {
+        val start = with(density) { 24.dp.toPx() }
+        val far = kotlin.math.hypot(size.width - start, size.height - start) + start
+        val radius = far * progress
+        return Outline.Generic(Path().apply { addOval(Rect(Offset(start, start), radius)) })
+    }
+}
+
 /**
  * AI 작은 칸. "AI n 작업 중", 일이 있으면 hot 바탕, 답변 대기가 있으면 주황 점.
  * 알림이 오면 살짝 커졌다 돌아오고 4초 동안 제목과 바뀐 상태를 보인다.
@@ -278,37 +375,28 @@ fun AiTile(state: AiScreenState, modifier: Modifier) {
         modifier
             .scale(pulse.value)
             .clip(RoundedCornerShape(20.dp))
-            .background(if (busy > 0 || alert != null) Palette.hot else Palette.side)
-            .padding(horizontal = 12.dp),
+            .background(if (busy > 0 || alert != null) Palette.hot else Palette.side),
     ) {
         if (alert != null) {
-            Column(Modifier.align(Alignment.CenterStart)) {
-                Text(alert.title, color = Palette.ink, fontSize = fit(13.dp), fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                Text(
-                    alertText(alert.kind),
-                    color = if (alert.kind == AlertKind.Waiting) Palette.waiting else Palette.muted,
-                    fontSize = fit(11.dp),
-                    maxLines = 1,
-                )
-            }
+            AlertCard(alert)
         } else {
             val count = state.busy?.toString() ?: "-"
-            if (maxWidth < 72.dp) {
-                // 좁은 세로에서 칸이 넷이면 "작업 중"은 빼고 위아래로 쌓는다.
-                Column(Modifier.align(Alignment.Center).alpha(if (state.dimmed) DIM else 1f), horizontalAlignment = Alignment.CenterHorizontally) {
-                    Text("AI", color = Palette.ink, fontSize = fit(12.dp), fontWeight = FontWeight.Bold, maxLines = 1)
-                    Text(count, color = Palette.ink, fontSize = fit(22.dp), fontWeight = FontWeight.Medium, maxLines = 1)
-                }
-            } else {
-                Row(Modifier.align(Alignment.Center).alpha(if (state.dimmed) DIM else 1f), verticalAlignment = Alignment.CenterVertically) {
-                    Text("AI", color = Palette.ink, fontSize = fit(20.dp), fontWeight = FontWeight.Bold, maxLines = 1)
-                    Spacer(Modifier.weight(1f))
-                    Text(count, color = Palette.ink, fontSize = fit(26.dp), fontWeight = FontWeight.Medium, maxLines = 1)
-                    Text(" 작업 중", color = Palette.muted, fontSize = fit(10.dp), maxLines = 1)
-                }
-            }
+            MiniTile(
+                Modifier.fillMaxSize().alpha(if (state.dimmed) DIM else 1f),
+                background = Color.Transparent,
+                first = {
+                    Text("AI", color = Palette.ink, fontSize = fit(MiniSize.MARK.dp), fontWeight = FontWeight.Medium, letterSpacing = (-0.02).em, maxLines = 1)
+                },
+                second = { size ->
+                    Row(verticalAlignment = Alignment.Bottom) {
+                        MiniNum(count, null, size)
+                        Spacer(Modifier.width(6.dp))
+                        MiniLabel("작업 중")
+                    }
+                },
+            )
             if (state.waiting) {
-                Box(Modifier.align(Alignment.TopEnd).padding(top = 10.dp).size(7.dp).clip(CircleShape).background(Palette.waiting))
+                Box(Modifier.align(Alignment.TopEnd).padding(top = 12.dp, end = 14.dp).size(7.dp).clip(CircleShape).background(Palette.waiting))
             }
         }
     }

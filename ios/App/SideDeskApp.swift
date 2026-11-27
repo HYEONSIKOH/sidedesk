@@ -186,7 +186,7 @@ struct RootView: View {
         let blocking = world.home.pairingCode != nil || world.home.problem != nil
         ZStack {
             if blocking {
-                HomeView(model: world.home)
+                Zoomed { HomeView(model: world.home) }
             } else if world.showsDesk {
                 DeskView(
                     desk: world.desk,
@@ -205,6 +205,8 @@ struct RootView: View {
                 RestScreen(rest: world.rest, clock: world.clock)
             }
         }
+        // 배율을 키운 화면 밖(안전 영역)도 바탕색으로 채운다.
+        .background(Colors.of(theme).ground.ignoresSafeArea())
         .environment(\.palette, Colors.of(theme))
         // 상태 표시줄을 시스템 설정이 아니라 앱 테마에 맞춘다.
         .preferredColorScheme(theme == .light ? .light : .dark)

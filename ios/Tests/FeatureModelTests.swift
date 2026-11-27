@@ -70,7 +70,7 @@ struct AiModelTests {
     }
 
     @Test func sessionCardsShrinkToFiftySixThenScroll() {
-        #expect(sessionUnit(height: 1000, active: 1, rest: 2) == 100)
+        #expect(sessionUnit(height: 1000, active: 1, rest: 2) == 76)
         #expect(sessionUnit(height: 100, active: 5, rest: 9) == 56)
     }
 }

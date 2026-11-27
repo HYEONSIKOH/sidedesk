@@ -1,5 +1,7 @@
 package io.github.hyeonsikoh.sidedesk.shots
 
+import androidx.compose.ui.test.assertCountEquals
+import androidx.compose.ui.test.onAllNodesWithText
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.platform.UriHandler
@@ -181,8 +183,9 @@ class DeskGestureTest {
     @Test
     fun anAlertShowsOnTheTileWithoutChangingTheScreen() {
         show(ClockState(), ai = AiScreenState(busy = 1, alert = DeskShots.ALERT))
-        compose.onNodeWithText("문서 정리").assertExists()
-        compose.onNodeWithText("작업 끝남").assertExists()
+        // 칸 위 카드와 화면 위 알림 띠, 두 곳에 나온다.
+        compose.onAllNodesWithText("문서 정리").assertCountEquals(2)
+        compose.onAllNodesWithText("작업 끝남").assertCountEquals(2)
         compose.onNodeWithText("11월 25일 수요일").assertExists()
         assertEquals(emptyList<String>(), calls)
     }
@@ -196,7 +199,7 @@ class DeskGestureTest {
             desk = DeskState(big = Screen.Processes, rows = DeskShots.ROWS, asking = process),
         )
         compose.onNodeWithText("빌드를 끝낼까요?").assertExists()
-        compose.onNodeWithText("작업 끝남").assertExists()
+        compose.onAllNodesWithText("작업 끝남").assertCountEquals(2)
     }
 
     @Test

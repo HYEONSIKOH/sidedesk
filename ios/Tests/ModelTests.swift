@@ -90,8 +90,8 @@ struct ClockModelTests {
     @Test func creditsWhereTheWeatherCameFrom() {
         let clock = clock()
         link.feed.weather = weather(source: .kma)
-        #expect(clock.credit == "날씨 자료 기상청")
-        #expect(clock.shortCredit == "기상청")
+        #expect(clock.credit == nil, "기상청은 표시 안 함")
+        #expect(clock.shortCredit == nil)
         link.feed.weather = weather(source: .openMeteo)
         #expect(clock.credit == "날씨 자료 Open-Meteo.com")
         #expect(clock.shortCredit == "Open-Meteo")
@@ -391,6 +391,48 @@ struct SmallRulesTests {
         #expect(swipeStep(CGSize(width: 61, height: -10)) == -1)
         #expect(swipeStep(CGSize(width: -59, height: 0)) == 0)
         #expect(swipeStep(CGSize(width: -80, height: 120)) == 0, "세로가 더 크면 스크롤")
+    }
+
+    @Test func sideColumnFollowsScreenRatio() {
+        let pad = sideLayout(width: 838, height: 625)
+        #expect(pad.columns == 1)
+        #expect(abs(pad.width - 838 * 0.2) < 0.01, "4:3 은 한 줄 20%")
+        #expect(sideLayout(width: 1200, height: 900).width == 196, "한 줄은 196 까지")
+        #expect(sideLayout(width: 600, height: 500).width == 140, "한 줄은 140 부터")
+        let bar = sideLayout(width: 890, height: 387)
+        #expect(bar.columns == 2)
+        #expect(abs(bar.width - (890 * 0.15 * 2 + 10)) < 0.01, "긴 화면은 두 줄")
+        #expect(sideLayout(width: 1600, height: 900).columns == 2, "16:9 는 두 줄")
+        #expect(sideLayout(width: 1500, height: 900).columns == 1)
+    }
+
+    @Test func deviceModelNames() {
+        #expect(DeviceModel.named("iPad13,1") == "iPad Air (4세대)")
+        #expect(DeviceModel.named("iPhone16,2") == "iPhone 15 Pro Max")
+        #expect(DeviceModel.named("iPad99,1") == "iPad (iPad99,1)", "모르는 번호는 종류와 번호")
+        #expect(DeviceModel.named("") == "iPhone")
+    }
+
+    @Test func musicStacksOnNearSquareBigPanels() {
+        #expect(musicLayout(width: 600, height: 560).stacked, "아이패드 큰 판")
+        #expect(!musicLayout(width: 560, height: 360).stacked, "바형 가로")
+        #expect(musicLayout(width: 400, height: 600).stacked, "세로")
+        #expect(musicLayout(width: 500, height: 300).art == 500 * 0.34, "낮으면 그림 34%")
+    }
+
+    @Test func bigScreensZoomUp() {
+        #expect(zoomFor(width: 914, height: 411) == 1, "바형 가로가 기준")
+        #expect(zoomFor(width: 852, height: 393) == 1, "작은 폰은 줄이지 않음")
+        #expect(zoomFor(width: 1366, height: 1024) == 1.6, "아이패드는 1.6배까지")
+        #expect(zoomFor(width: 841, height: 673) > 1.2)
+    }
+
+    @Test func twoColumnsPutTheOddTileAloneOnTop() {
+        let five: [Screen] = [.home, .ai, .perf, .shortcuts, .music]
+        #expect(sideRows(five, columns: 2) == [[.home], [.ai, .perf], [.shortcuts, .music]])
+        #expect(sideRows(Array(five.prefix(4)), columns: 2) == [[.home, .ai], [.perf, .shortcuts]])
+        #expect(sideRows(five, columns: 1).count == 5)
+        #expect(sideRows([], columns: 2).isEmpty)
     }
 
     @Test func strangeTemperaturesDoNotCrash() {

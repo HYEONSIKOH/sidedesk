@@ -27,6 +27,7 @@ struct DeskView: View {
             // 시각은 쓰는 칸(홈 큰 화면, 홈 작은 칸, AI 지난 시간)이 각자 분 단위로 읽는다(SD-14).
             content
                 .behindModal(shown != nil)
+            AlertBanner(ai: ai)
             ConfirmModal(
                 confirm: shown,
                 onConfirm: { desk.asking != nil ? desk.confirmKill() : onModal(true) },
@@ -47,18 +48,26 @@ struct DeskView: View {
     }
 
     private var content: some View {
+        Zoomed { board }
+    }
+
+    private var board: some View {
         GeometryReader { proxy in
             let wide = proxy.size.width >= proxy.size.height
             Group {
                 if wide {
-                    HStack(spacing: 12) {
+                    // 화면 비율로 옆 줄을 정한다. 4:3 근처는 한 줄, 16:9 처럼 긴 화면은 두 줄.
+                    let side = sideLayout(width: proxy.size.width - 24, height: proxy.size.height - 24)
+                    HStack(spacing: 10) {
                         big
                         VStack(spacing: 10) {
-                            // 다섯 칸이 다 들어가지 않으면 칸을 낮춘다.
-                            tiles(desk.small).frame(maxHeight: 72)
+                            ForEach(sideRows(desk.small, columns: side.columns), id: \.self) { row in
+                                HStack(spacing: 10) {
+                                    tiles(row).frame(maxWidth: .infinity, maxHeight: .infinity)
+                                }
+                            }
                         }
-                        .frame(width: 132)
-                        .frame(maxHeight: .infinity, alignment: .top)
+                        .frame(width: side.width)
                     }
                 } else {
                     VStack(spacing: 12) {
@@ -85,7 +94,7 @@ struct DeskView: View {
                 case .home:
                     TimelineView(MinuteSchedule()) { context in HomeTile(clock: clock, now: context.date) }
                 case .ai: AiTile(ai: ai)
-                case .perf: CpuTile(cpu: desk.perf?.cpu).dim(desk.dimmed)
+                case .perf: PerfTile(cpu: desk.perf?.cpu, memory: desk.perf?.memory).dim(desk.dimmed)
                 case .processes: TopProcessTile(top: desk.rows.first).dim(desk.dimmed)
                 case .shortcuts: ShortcutTile(shortcuts: shortcuts)
                 case .music: MusicTile(music: music)
@@ -302,8 +311,9 @@ private struct ProcessScreen: View {
         }()
         VStack(spacing: 0) {
             HStack(spacing: 0) {
-                Percent(value: desk.perf?.cpu, size: 34)
-                Text("CPU 사용률").font(.system(size: 12)).foregroundStyle(palette.ink).padding(.leading, 10)
+                // 고른 기준(CPU, 메모리)의 컴퓨터 전체 사용률
+                Percent(value: desk.sort == .cpu ? desk.perf?.cpu : desk.perf?.memory, size: 34)
+                Text(desk.sort == .cpu ? "CPU 사용률" : "메모리 사용률").font(.system(size: 12)).foregroundStyle(palette.ink).padding(.leading, 10)
                 Spacer()
                 sortButtons
             }
@@ -319,7 +329,7 @@ private struct ProcessScreen: View {
                             case .cpu: Double(process.cpu) / top
                             case .memory: Double(process.memoryBytes) / top
                             }
-                            ProcessRow(process: process, share: min(max(share, 0), 1))
+                            ProcessRow(process: process, share: min(max(share, 0), 1), memoryFirst: desk.sort == .memory)
                                 .id(index)
                                 .onTapGesture { desk.ask(process) }
                         }
@@ -352,6 +362,7 @@ private struct ProcessScreen: View {
 private struct ProcessRow: View {
     let process: ComputerProcess
     let share: Double
+    var memoryFirst = false
     @Environment(\.palette) private var palette
 
     var body: some View {
@@ -369,14 +380,17 @@ private struct ProcessRow: View {
                 .padding(.leading, 12)
                 .padding(.trailing, 8)
                 .frame(maxWidth: .infinity, alignment: .leading)
-            Text(String(format: "%.1f%%", process.cpu))
+            // 고른 기준을 굵게 앞에, 다른 값은 작게 뒤에
+            let cpu = String(format: "%.1f%%", process.cpu)
+            let memory = memoryText(process.memoryBytes)
+            Text(memoryFirst ? memory : cpu)
                 .font(.system(size: 15, weight: .medium))
                 .foregroundStyle(palette.ink)
-                .frame(width: 60, alignment: .trailing)
-            Text(memoryText(process.memoryBytes))
-                .font(.system(size: 12))
-                .foregroundStyle(palette.ink)
                 .frame(width: 76, alignment: .trailing)
+            Text(memoryFirst ? cpu : memory)
+                .font(.system(size: 12))
+                .foregroundStyle(palette.muted)
+                .frame(width: 68, alignment: .trailing)
         }
         .padding(.horizontal, 12)
         .frame(height: 44)
@@ -396,51 +410,40 @@ private struct ProcessRow: View {
 /// 이보다 좁은 작은 칸은 글자를 위아래로 쌓는다.
 let narrowTile = 96.0
 
-private struct CpuTile: View {
+/// 성능 작은 칸. CPU 와 메모리를 반씩, 각각 물결 위에 라벨(위)과 숫자(아래).
+private struct PerfTile: View {
     let cpu: Float?
-    @Environment(\.palette) private var palette
+    let memory: Float?
 
     var body: some View {
-        GeometryReader { proxy in
-            ZStack {
-                Liquid(value: cpu)
-                if proxy.size.width < narrowTile {
-                    // 좁은 세로에서 작은 칸이 넷 이상이면 칸이 72pt 남짓이라 글자를 위아래로 쌓는다.
-                    VStack(spacing: 0) {
-                        Text("CPU").font(.system(size: 11)).foregroundStyle(palette.ink).lineLimit(1)
-                        Percent(value: cpu, size: 20)
-                    }
-                } else {
-                    HStack {
-                        Text("CPU").font(.system(size: 12)).foregroundStyle(palette.ink).lineLimit(1)
-                        Spacer()
-                        Percent(value: cpu, size: 26)
-                    }
-                    .padding(.horizontal, 14)
-                }
-            }
+        HStack(spacing: 2) {
+            half("CPU", cpu)
+            half("메모리", memory)
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .background(RoundedRectangle(cornerRadius: 20).fill(palette.side))
         .clipShape(RoundedRectangle(cornerRadius: 20))
+    }
+
+    private func half(_ label: String, _ value: Float?) -> some View {
+        MiniTile(background: nil) {
+            Liquid(value: value)
+        } first: { _ in
+            MiniLabel(text: label)
+        } second: { size in
+            MiniNum(text: value.map { "\(Int($0))" } ?? "-", unit: "%", size: size)
+        }
     }
 }
 
+/// 프로세스 작은 칸. CPU 가 가장 큰 프로그램 이름(위)과 CPU(아래)
 private struct TopProcessTile: View {
     let top: ComputerProcess?
-    @Environment(\.palette) private var palette
 
     var body: some View {
-        GeometryReader { proxy in
-            let narrow = proxy.size.width < narrowTile
-            VStack(alignment: narrow ? .center : .leading, spacing: 0) {
-                Text(top?.name ?? "프로세스").font(.system(size: narrow ? 12 : 14, weight: .medium)).foregroundStyle(palette.ink).lineLimit(1)
-                Text(top.map { String(format: "%.1f%%", $0.cpu) } ?? "-").font(.system(size: narrow ? 11 : 12)).foregroundStyle(palette.muted).lineLimit(1)
-            }
-            .padding(.horizontal, narrow ? 8 : 14)
-            .frame(width: proxy.size.width, height: proxy.size.height, alignment: narrow ? .center : .leading)
+        MiniTile { size in
+            MiniName(text: top?.name ?? "프로세스", size: size)
+        } second: { _ in
+            MiniLabel(text: top.map { String(format: "%.1f%%", $0.cpu) } ?? "-")
         }
-        .background(RoundedRectangle(cornerRadius: 20).fill(palette.side))
     }
 }
 
@@ -468,4 +471,41 @@ func swipeStep(_ translation: CGSize) -> Int {
 func tileRows(_ small: [Screen]) -> [[Screen]] {
     guard small.count > 4 else { return [small] }
     return stride(from: 0, to: small.count, by: 3).map { Array(small[$0 ..< min($0 + 3, small.count)]) }
+}
+
+/// 가로 화면의 옆 줄. 폭이 높이의 1.75배를 넘으면 두 줄(한 줄 폭 15%, 최소 106), 아니면 한 줄(폭 20%, 140~196).
+func sideLayout(width: CGFloat, height: CGFloat) -> (columns: Int, width: CGFloat) {
+    if width > height * 1.75 { return (2, max(106, width * 0.15) * 2 + 10) }
+    return (1, min(196, max(140, width * 0.2)))
+}
+
+/// 옆 줄을 줄 단위로 나눈다. 두 줄이고 칸 수가 홀수면 첫 칸은 혼자 한 줄.
+func sideRows(_ small: [Screen], columns: Int) -> [[Screen]] {
+    guard columns > 1 else { return small.map { [$0] } }
+    var rows: [[Screen]] = []
+    var rest = small[...]
+    if small.count % 2 == 1, let first = rest.popFirst() { rows.append([first]) }
+    while !rest.isEmpty { rows.append(Array(rest.prefix(2))); rest = rest.dropFirst(2) }
+    return rows
+}
+
+/// 화면 배율. 바형 폰 가로(914x411)를 1로 두고 넓이에 비례해 1~1.6배.
+func zoomFor(width: CGFloat, height: CGFloat) -> CGFloat {
+    let base: CGFloat = (914 * 411).squareRoot()
+    return min(1.6, max(1, (max(width, 0) * max(height, 0)).squareRoot() / base))
+}
+
+/// 큰 화면일수록 안의 화면 전체(글자, 칸)를 같은 배율로 키운다.
+struct Zoomed<Content: View>: View {
+    var scale: (CGFloat, CGFloat) -> CGFloat = zoomFor
+    @ViewBuilder var content: Content
+
+    var body: some View {
+        GeometryReader { outer in
+            let zoom = scale(outer.size.width, outer.size.height)
+            content
+                .frame(width: outer.size.width / zoom, height: outer.size.height / zoom)
+                .scaleEffect(zoom, anchor: .topLeading)
+        }
+    }
 }

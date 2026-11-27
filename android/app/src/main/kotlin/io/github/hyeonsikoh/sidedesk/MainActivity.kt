@@ -19,6 +19,7 @@ import androidx.lifecycle.lifecycleScope
 import androidx.lifecycle.viewmodel.initializer
 import androidx.lifecycle.viewmodel.viewModelFactory
 import io.github.hyeonsikoh.sidedesk.ai.AiViewModel
+import io.github.hyeonsikoh.sidedesk.ui.Zoomed
 import io.github.hyeonsikoh.sidedesk.clock.ClockViewModel
 import io.github.hyeonsikoh.sidedesk.desk.AiPart
 import io.github.hyeonsikoh.sidedesk.desk.ShortcutPart
@@ -138,7 +139,7 @@ class MainActivity : ComponentActivity() {
                 fitWindow(force = true)
             }
             LaunchedEffect(askLocation.value) { rest.hold(Hold.Confirm, askLocation.value || desk.state.value.asking != null) }
-            SideDeskScreen(models)
+            Zoomed { SideDeskScreen(models) }
         }
     }
 
@@ -163,6 +164,11 @@ class MainActivity : ComponentActivity() {
     /** 위치 권한이 없고 아직 묻지 않았으면 안내부터 띄운다. */
     private fun offerLocation() {
         if (!granted(PermissionResults.LOCATION) && !settings.askedLocation) askLocation.value = true
+        // 대략 위치만 허용한 채면 와이파이, 기지국이 없을 때(비행기 모드) 위치가 없다. GPS 를 한 번 물어 본다.
+        if (granted(PermissionResults.LOCATION) && !granted(PermissionResults.PRECISE) && !settings.askedPrecise) {
+            settings.askedPrecise = true
+            requestPermissions(arrayOf(PermissionResults.PRECISE, PermissionResults.LOCATION), ASK_LOCATION)
+        }
     }
 
     /** 바깥 누르기나 뒤로 가기(null)는 이번만 닫고, 다음에 켤 때 다시 묻는다. */
@@ -171,7 +177,8 @@ class MainActivity : ComponentActivity() {
         if (next == null) return
         settings.askedLocation = true
         if (next) {
-            requestPermissions(arrayOf(PermissionResults.LOCATION), ASK_LOCATION)
+            settings.askedPrecise = true
+            requestPermissions(arrayOf(PermissionResults.PRECISE, PermissionResults.LOCATION), ASK_LOCATION)
         } else {
             app.link.setLocation(LocationState.Off)
         }

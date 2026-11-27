@@ -1,5 +1,11 @@
 package io.github.hyeonsikoh.sidedesk.desk
 
+import io.github.hyeonsikoh.sidedesk.ui.MiniName
+import io.github.hyeonsikoh.sidedesk.ui.MiniNum
+import io.github.hyeonsikoh.sidedesk.ui.MiniLabel
+import io.github.hyeonsikoh.sidedesk.ui.MiniTile
+import androidx.compose.ui.unit.Density
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.LinearEasing
 import io.github.hyeonsikoh.sidedesk.ui.Track
@@ -54,6 +60,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import io.github.hyeonsikoh.sidedesk.link.ProcessInfo
 import io.github.hyeonsikoh.sidedesk.ai.AiBig
+import io.github.hyeonsikoh.sidedesk.ai.AlertBanner
 import io.github.hyeonsikoh.sidedesk.ai.AiScreenState
 import io.github.hyeonsikoh.sidedesk.ai.AiTile
 import io.github.hyeonsikoh.sidedesk.ai.ForgeTab
@@ -153,6 +160,7 @@ fun DeskScreen(
     val shown = state.asking?.let(::killConfirm) ?: modal
     Box(Modifier.fillMaxSize().background(Palette.ground)) {
         Content(state, clock, ai, shortcuts, music, actions, Modifier.behindModal(shown != null))
+        AlertBanner(ai.state, Modifier.align(Alignment.TopCenter).safeDrawingPadding())
         ConfirmModal(
             shown,
             onConfirm = { if (state.asking != null) actions.confirmKill() else onModal(true) },
@@ -178,10 +186,16 @@ private fun Content(state: DeskState, clock: ClockPart, ai: AiPart, shortcuts: S
     BoxWithConstraints(modifier.fillMaxSize().safeDrawingPadding().padding(12.dp)) {
         val wide = maxWidth >= maxHeight
         if (wide) {
-            Row(Modifier.fillMaxSize(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+            // 화면 비율로 옆 줄을 정한다. 4:3 근처는 한 줄, 16:9 처럼 긴 화면은 두 줄.
+            val side = sideLayout(maxWidth.value, maxHeight.value)
+            Row(Modifier.fillMaxSize(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                 Big(state, parts, actions, Modifier.weight(1f).fillMaxHeight())
-                Column(Modifier.width(132.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                    SmallTiles(state, state.small, parts, actions, Modifier.fillMaxWidth().weight(1f, fill = false).height(72.dp))
+                Column(Modifier.width(side.width.dp).fillMaxHeight(), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    sideRows(state.small, side.columns).forEach { row ->
+                        Row(Modifier.fillMaxWidth().weight(1f), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                            SmallTiles(state, row, parts, actions, Modifier.weight(1f).fillMaxHeight())
+                        }
+                    }
                 }
             }
         } else {
@@ -197,6 +211,20 @@ private fun Content(state: DeskState, clock: ClockPart, ai: AiPart, shortcuts: S
             }
         }
     }
+}
+
+/** 가로 화면의 옆 줄. columns 줄 수, width 폭(dp). */
+internal data class Side(val columns: Int, val width: Float)
+
+/** 폭이 높이의 1.75배를 넘으면 두 줄(한 줄 폭 15%, 최소 106), 아니면 한 줄(폭 20%, 140~196). */
+internal fun sideLayout(width: Float, height: Float): Side =
+    if (width > height * 1.75f) Side(2, maxOf(106f, width * 0.15f) * 2 + 10f) else Side(1, (width * 0.2f).coerceIn(140f, 196f))
+
+/** 옆 줄을 줄 단위로 나눈다. 두 줄이고 칸 수가 홀수면 첫 칸은 혼자 한 줄. */
+internal fun <T> sideRows(small: List<T>, columns: Int): List<List<T>> {
+    if (columns <= 1) return small.map { listOf(it) }
+    val head = if (small.size % 2 == 1) listOf(small.take(1)) else emptyList()
+    return head + small.drop(small.size % 2).chunked(2)
 }
 
 /** 이보다 좁은 작은 칸은 글자를 위아래로 쌓는다. */
@@ -247,7 +275,7 @@ private fun SmallTiles(state: DeskState, screens: List<Screen>, parts: Parts, ac
         when (screen) {
             Screen.Home -> HomeTileNow(clock, pressed)
             Screen.Ai -> AiTile(ai.state, pressed)
-            Screen.Perf -> CpuTile(state.perf?.cpu, pressed.dim(state.dimmed))
+            Screen.Perf -> PerfTile(state.perf?.cpu, state.perf?.memory, pressed.dim(state.dimmed))
             Screen.Processes -> TopProcessTile(state.rows.firstOrNull(), pressed.dim(state.dimmed))
             Screen.Shortcuts -> ShortcutTile(shortcuts.state, pressed)
             Screen.Music -> MusicTileNow(parts.music, pressed)
@@ -455,8 +483,9 @@ private fun ProcessScreen(state: DeskState, actions: DeskActions, modifier: Modi
     Track("processes-big")
     Column(modifier.fillMaxSize()) {
         Row(Modifier.fillMaxWidth().padding(start = 4.dp, bottom = 10.dp), verticalAlignment = Alignment.CenterVertically) {
-            Percent(state.perf?.cpu, 34.sp)
-            Text("CPU 사용률", color = Palette.ink, fontSize = 12.sp, modifier = Modifier.padding(start = 10.dp).weight(1f))
+            // 고른 기준(CPU, 메모리)의 컴퓨터 전체 사용률
+            Percent(if (state.sort == Sort.Cpu) state.perf?.cpu else state.perf?.memory, 34.sp)
+            Text(if (state.sort == Sort.Cpu) "CPU 사용률" else "메모리 사용률", color = Palette.ink, fontSize = 12.sp, modifier = Modifier.padding(start = 10.dp).weight(1f))
             SortButtons(state.sort, actions.sortBy)
         }
         val top = when (state.sort) {
@@ -472,7 +501,7 @@ private fun ProcessScreen(state: DeskState, actions: DeskActions, modifier: Modi
                     Sort.Cpu -> process.cpu / top
                     Sort.Memory -> process.memoryBytes / top
                 }.toFloat().coerceIn(0f, 1f)
-                ProcessRow(process, share) { actions.ask(process) }
+                ProcessRow(process, share, state.sort == Sort.Memory) { actions.ask(process) }
             }
         }
     }
@@ -499,7 +528,7 @@ private fun SortButtons(sort: Sort, onSort: (Sort) -> Unit) {
 }
 
 @Composable
-private fun ProcessRow(process: ProcessInfo, share: Float, onClick: () -> Unit) {
+private fun ProcessRow(process: ProcessInfo, share: Float, memoryFirst: Boolean, onClick: () -> Unit) {
     Box(Modifier.fillMaxWidth().height(44.dp).clip(RoundedCornerShape(14.dp)).background(Palette.card).clickable(onClick = onClick)) {
         Box(Modifier.fillMaxHeight().fillMaxWidth(share).background(Palette.liquid))
         Row(Modifier.fillMaxSize().padding(horizontal = 12.dp), verticalAlignment = Alignment.CenterVertically) {
@@ -517,67 +546,57 @@ private fun ProcessRow(process: ProcessInfo, share: Float, onClick: () -> Unit) 
                 overflow = TextOverflow.Ellipsis,
                 modifier = Modifier.padding(start = 12.dp, end = 8.dp).weight(1f),
             )
+            // 고른 기준을 굵게 앞에, 다른 값은 작게 뒤에
+            val cpu = "%.1f%%".format(process.cpu)
+            val mem = memory(process.memoryBytes)
             Text(
-                "%.1f%%".format(process.cpu),
+                if (memoryFirst) mem else cpu,
                 color = Palette.ink,
                 fontSize = 15.sp,
                 fontWeight = FontWeight.Medium,
                 textAlign = TextAlign.End,
-                modifier = Modifier.width(60.dp),
-            )
-            Text(
-                memory(process.memoryBytes),
-                color = Palette.ink,
-                fontSize = 12.sp,
-                textAlign = TextAlign.End,
                 modifier = Modifier.width(76.dp),
             )
+            Text(
+                if (memoryFirst) cpu else mem,
+                color = Palette.muted,
+                fontSize = 12.sp,
+                textAlign = TextAlign.End,
+                modifier = Modifier.width(68.dp),
+            )
         }
+    }
+}
+
+/** 성능 작은 칸. CPU 와 메모리를 반씩, 각각 물결 위에 라벨(위)과 숫자(아래). */
+@Composable
+private fun PerfTile(cpu: Float?, memory: Float?, modifier: Modifier) {
+    Track("cpu-tile")
+    Row(modifier.clip(RoundedCornerShape(20.dp)), horizontalArrangement = Arrangement.spacedBy(2.dp)) {
+        PerfHalf("CPU", cpu, Modifier.weight(1f).fillMaxHeight())
+        PerfHalf("메모리", memory, Modifier.weight(1f).fillMaxHeight())
     }
 }
 
 @Composable
-private fun CpuTile(cpu: Float?, modifier: Modifier) {
-    Track("cpu-tile")
-    BoxWithConstraints(modifier.clip(RoundedCornerShape(20.dp)).background(Palette.side)) {
-        Liquid(cpu, Modifier.fillMaxSize())
-        if (maxWidth < NARROW) {
-            // 좁은 세로에서 작은 칸이 넷이면 칸이 72dp 남짓이라 글자를 위아래로 쌓는다.
-            Column(Modifier.fillMaxSize(), verticalArrangement = Arrangement.Center, horizontalAlignment = Alignment.CenterHorizontally) {
-                Text("CPU", color = Palette.ink, fontSize = fit(11.dp), maxLines = 1)
-                Percent(cpu, fit(20.dp))
-            }
-        } else {
-            Row(Modifier.fillMaxSize().padding(horizontal = 14.dp), verticalAlignment = Alignment.CenterVertically) {
-                Text("CPU", color = Palette.ink, fontSize = fit(12.dp), maxLines = 1)
-                Spacer(Modifier.weight(1f))
-                Percent(cpu, fit(26.dp))
-            }
-        }
-    }
+private fun PerfHalf(label: String, value: Float?, modifier: Modifier) {
+    MiniTile(
+        modifier,
+        behind = { Liquid(value, Modifier.fillMaxSize()) },
+        first = { MiniLabel(label) },
+        second = { size -> MiniNum(value?.toInt()?.toString() ?: "-", "%", size) },
+    )
 }
 
+/** 프로세스 작은 칸. CPU 가 가장 큰 프로그램 이름(위)과 CPU(아래) */
 @Composable
 private fun TopProcessTile(top: ProcessInfo?, modifier: Modifier) {
     Track("process-tile")
-    BoxWithConstraints(modifier.clip(RoundedCornerShape(20.dp)).background(Palette.side)) {
-        val narrow = maxWidth < NARROW
-        Column(
-            Modifier.fillMaxSize().padding(horizontal = if (narrow) 8.dp else 14.dp),
-            verticalArrangement = Arrangement.Center,
-            horizontalAlignment = if (narrow) Alignment.CenterHorizontally else Alignment.Start,
-        ) {
-            Text(
-                top?.name ?: "프로세스",
-                color = Palette.ink,
-                fontSize = fit(if (narrow) 12.dp else 14.dp),
-                fontWeight = FontWeight.Medium,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-            )
-            Text(top?.let { "%.1f%%".format(it.cpu) } ?: "-", color = Palette.muted, fontSize = fit(if (narrow) 11.dp else 12.dp), maxLines = 1)
-        }
-    }
+    MiniTile(
+        modifier,
+        first = { size -> MiniName(top?.name ?: "프로세스", size) },
+        second = { MiniLabel(top?.let { "%.1f%%".format(it.cpu) } ?: "-") },
+    )
 }
 
 private fun rate(bytes: Long?): Pair<String, String> = when {

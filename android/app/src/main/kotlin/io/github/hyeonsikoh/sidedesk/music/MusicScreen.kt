@@ -1,5 +1,8 @@
 package io.github.hyeonsikoh.sidedesk.music
 
+import io.github.hyeonsikoh.sidedesk.ui.MiniLabel
+import io.github.hyeonsikoh.sidedesk.ui.MiniName
+import io.github.hyeonsikoh.sidedesk.ui.MiniTile
 import android.graphics.BitmapFactory
 import io.github.hyeonsikoh.sidedesk.ui.Track
 import androidx.compose.animation.core.animateFloatAsState
@@ -59,7 +62,6 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
 import io.github.hyeonsikoh.sidedesk.clock.rememberStarted
-import kotlin.math.min
 
 private const val DIM = 0.4f
 
@@ -104,8 +106,9 @@ private fun rememberArt(jpeg: ByteArray?): ImageBitmap? = produceState<ImageBitm
 fun MusicBig(state: MusicState, nowMs: Long, actions: MusicActions, modifier: Modifier = Modifier) {
     Track("music-big")
     BoxWithConstraints(modifier.fillMaxSize()) {
-        val wide = maxWidth > maxHeight
-        val art = if (wide) min(maxHeight.value - 16f, maxWidth.value * 0.42f) else min(maxWidth.value * 0.72f, maxHeight.value * 0.42f)
+        val layout = musicLayout(maxWidth.value, maxHeight.value)
+        val wide = !layout.stacked
+        val art = layout.art
         val body = Modifier.alpha(if (state.dimmed) DIM else 1f)
         if (wide) {
             Row(body.fillMaxSize().padding(8.dp), verticalAlignment = Alignment.CenterVertically) {
@@ -360,35 +363,39 @@ private fun VolumeBar(state: MusicState, actions: MusicActions) {
 fun MusicTile(state: MusicState, nowMs: Long, actions: MusicActions, modifier: Modifier) {
     Track("music-tile")
     val now = state.now
-    BoxWithConstraints(modifier.clip(RoundedCornerShape(20.dp)).background(Palette.side)) {
-        val narrow = maxWidth < 96.dp
-        if (!state.hasTrack || now == null) {
-            Text("음악", color = Palette.ink, fontSize = fit(14.dp), maxLines = 1, modifier = Modifier.align(Alignment.Center))
-            return@BoxWithConstraints
-        }
-        Row(
-            Modifier.fillMaxSize().padding(horizontal = 4.dp).alpha(if (state.dimmed) DIM else 1f),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = if (narrow) Arrangement.Center else Arrangement.Start,
-        ) {
-            PlayButton(state.playing, enabled = !state.dimmed && now.canPlay, diameter = 30.dp, onClick = actions.playPause, filled = false)
-            if (!narrow) {
-                Text(
-                    now.title,
-                    color = Palette.ink,
-                    fontSize = fit(13.dp),
-                    fontWeight = FontWeight.Medium,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                    modifier = Modifier.weight(1f).padding(end = 8.dp),
-                )
-            }
-        }
+    if (!state.hasTrack || now == null) {
+        MiniTile(modifier, first = { size -> MiniName("음악", size) }, second = { MiniLabel("재생 중인 곡 없음") })
+        return
+    }
+    Box(modifier.clip(RoundedCornerShape(20.dp)).background(Palette.side)) {
+        MiniTile(
+            Modifier.fillMaxSize().alpha(if (state.dimmed) DIM else 1f),
+            background = Palette.side,
+            first = { size ->
+                PlayButton(state.playing, enabled = !state.dimmed && now.canPlay, diameter = if (size.low) 30.dp else 36.dp, onClick = actions.playPause, filled = false)
+            },
+            second = { size -> MiniName(now.title, size, Modifier.padding(bottom = if (size.wide) 0.dp else 6.dp)) },
+        )
         if (now.durationMs > 0) {
+            // 칸 아래 끝 얇은 진행 줄(왼쪽, 오른쪽 14, 아래 7, 굵기 4)
             Bar(
                 positionAt(now, nowMs, state.lostAt).toFloat() / now.durationMs,
-                Modifier.align(Alignment.BottomCenter).fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp).height(3.dp),
+                Modifier.align(Alignment.BottomCenter).fillMaxWidth().padding(start = 14.dp, end = 14.dp, bottom = 7.dp).height(4.dp),
             )
         }
     }
+}
+
+/** 음악 큰 화면 배치. stacked 면 그림 위, 글 아래. art 는 그림 한 변. */
+internal data class MusicLayout(val stacked: Boolean, val art: Float)
+
+/**
+ * 세로이거나, 높이 480 이상에 폭이 높이의 1.25배 이하(정사각에 가까운 큰 판)면 그림을 위에 쌓는다.
+ * 쌓으면 그림은 높이 52%, 폭 78% 중 작은 쪽. 옆으로 놓으면 폭 42%(높이 340 이하로 낮으면 34%), 높이를 넘지 않게.
+ */
+internal fun musicLayout(width: Float, height: Float): MusicLayout {
+    val stacked = width <= height || (height >= 480f && width <= height * 1.25f)
+    if (stacked) return MusicLayout(true, minOf(height * 0.52f, width * 0.78f))
+    val share = if (height <= 340f) 0.34f else 0.42f
+    return MusicLayout(false, minOf(height - 16f, width * share))
 }
