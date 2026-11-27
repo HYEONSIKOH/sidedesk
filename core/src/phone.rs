@@ -562,6 +562,11 @@ impl PhoneSession {
         }))
     }
 
+    /// 연결 전에 기종 이름을 정한다. 컴퓨터 목록에 이 이름이 나온다.
+    pub fn set_name(&self, name: String) {
+        self.lock().set_name(&name);
+    }
+
     pub fn feed(&self, bytes: Vec<u8>) -> Result<(), LinkError> {
         Ok(self.lock().feed(&bytes)?)
     }
@@ -602,10 +607,8 @@ impl PhoneSession {
                     ok,
                     reason,
                 }),
-                // 지금 보낸 위치의 값만 올린다.
-                Event::Message(Body::Weather(weather))
-                    if sent == Sent::At(weather.latitude_tenths, weather.longitude_tenths) =>
-                {
+                // 날씨는 컴퓨터가 고른 위치(컴퓨터 위치, 모르면 폰이 보낸 위치)의 값이라 그대로 올린다.
+                Event::Message(Body::Weather(weather)) => {
                     Some(PhoneEvent::Weather {
                         value: weather.into(),
                     })
@@ -900,39 +903,21 @@ mod tests {
     }
 
     #[test]
-    fn only_weather_for_the_sent_place_comes_up() {
+    fn weather_comes_up_wherever_the_computer_chose() {
         let (session, mut c) = ready();
-        // 위치를 보내기 전 값은 버린다.
+        // 폰이 위치를 보내지 않았어도(실내, 비행기 모드) 컴퓨터 위치의 날씨를 올린다.
         c.send(weather(376, 1270)).unwrap();
         session.feed(c.take_output()).unwrap();
-        assert_eq!(session.next_event(), None);
+        assert!(matches!(session.next_event(), Some(PhoneEvent::Weather { .. })));
         session
             .send_location(Some(Place {
-                latitude: 37.6,
-                longitude: 127.0,
+                latitude: 35.1,
+                longitude: 129.0,
             }))
             .unwrap();
-        c.send(weather(375, 1270)).unwrap();
         c.send(weather(376, 1270)).unwrap();
         session.feed(c.take_output()).unwrap();
-        assert_eq!(
-            session.next_event(),
-            Some(PhoneEvent::Weather {
-                value: WeatherInfo {
-                    temperature: 3.5,
-                    sky: Sky::Unknown,
-                    high: 0.0,
-                    low: 0.0,
-                    is_day: false,
-                    fetched_at: 0,
-                    source: WeatherSource::Kma,
-                }
-            })
-        );
-        assert_eq!(session.next_event(), None);
-        session.send_location(None).unwrap();
-        c.send(weather(376, 1270)).unwrap();
-        session.feed(c.take_output()).unwrap();
+        assert!(matches!(session.next_event(), Some(PhoneEvent::Weather { .. })), "보낸 위치와 달라도");
         assert_eq!(session.next_event(), None);
     }
 

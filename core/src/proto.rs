@@ -85,6 +85,9 @@ pub struct Intro {
     pub knows_you: bool,
     #[prost(bool, tag = "2")]
     pub wants_pairing: bool,
+    /// 폰 기종 이름(예: iPad Air 4). 컴퓨터는 빈 문자열을 보낸다.
+    #[prost(string, tag = "3")]
+    pub name: String,
 }
 
 #[derive(Clone, PartialEq, prost::Message)]

@@ -298,6 +298,11 @@ pub enum KeyCheck {
 }
 
 /// 설정 창이 쓰는 날씨 설정
+/// 이 컴퓨터의 위치. 날씨는 폰이 아니라 이 위치로 받는다. 모르면 없음. 자주 불려도 가볍게.
+pub trait HerePlace: Send + Sync {
+    fn read(&self) -> Option<Place>;
+}
+
 pub trait WeatherSetup: Send + Sync {
     /// 이 운영체제에서 날씨를 받는지
     fn supported(&self) -> bool;

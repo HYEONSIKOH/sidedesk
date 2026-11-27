@@ -267,13 +267,12 @@ class LinkOwner(
     }
 
     fun receivedWeather(mine: Int, value: Weather) = synchronized(this) {
-        if (generation == mine && location.get() != LocationState.Off) weather.value = value
+        // 날씨는 컴퓨터 위치로 받으므로 폰 위치 권한과 상관없이 보인다.
+        if (generation == mine) weather.value = value
     }
 
-    /** 권한을 거두면 다른 곳의 날씨를 흐리게 남기지 않도록 지운다. */
     fun setLocation(value: LocationState) = synchronized(this) {
         location.set(value)
-        if (value == LocationState.Off) weather.value = null
     }
 
     /** 명령 결과는 어느 연결로 왔든 버리지 않는다. */

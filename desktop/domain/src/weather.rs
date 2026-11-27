@@ -54,8 +54,9 @@ struct Want {
 }
 
 impl Want {
-    fn place(&self) -> Option<Place> {
-        self.place.filter(|_| self.wants)
+    /// 컴퓨터 좌표(`here`)가 있으면 그것, 없으면 폰이 준 좌표
+    fn place(&self, here: Option<Place>) -> Option<Place> {
+        here.or(self.place).filter(|_| self.wants)
     }
 }
 
@@ -71,6 +72,8 @@ pub(crate) struct Book {
     wants: HashMap<u64, Want>,
     outbox: HashMap<u64, Weather>,
     spots: HashMap<Place, Spot>,
+    /// 이 컴퓨터의 좌표. 있으면 모든 폰이 이 좌표로 받는다.
+    here: Option<Place>,
 }
 
 impl Book {
@@ -85,6 +88,18 @@ impl Book {
         self.offer(id);
     }
 
+    /// 컴퓨터 좌표가 바뀜. 폰들에 다시 맞춘다.
+    pub fn set_here(&mut self, here: Option<Place>) {
+        if self.here == here {
+            return;
+        }
+        self.here = here;
+        let ids: Vec<u64> = self.wants.keys().copied().collect();
+        for id in ids {
+            self.offer(id);
+        }
+    }
+
     pub fn remove(&mut self, id: u64) {
         self.wants.remove(&id);
         self.outbox.remove(&id);
@@ -96,7 +111,7 @@ impl Book {
 
     fn offer(&mut self, id: u64) {
         let latest = self.wants[&id]
-            .place()
+            .place(self.here)
             .and_then(|place| self.spots.get(&place))
             .and_then(|spot| spot.latest.clone());
         match latest {
@@ -106,7 +121,7 @@ impl Book {
     }
 
     fn wanted(&self) -> HashSet<Place> {
-        self.wants.values().filter_map(Want::place).collect()
+        self.wants.values().filter_map(|want| want.place(self.here)).collect()
     }
 
     /// 새 좌표는 바로 받게 하고, 안 쓰는 좌표는 시간이 지나면 지운다.
@@ -176,7 +191,7 @@ impl Book {
                 spot.failures = 0;
                 spot.next = now + cadence.every;
                 for (id, want) in &self.wants {
-                    if want.place() == Some(place) {
+                    if want.place(self.here) == Some(place) {
                         self.outbox.insert(*id, weather.clone());
                     }
                 }
@@ -243,6 +258,21 @@ mod tests {
         book.set_wants(1, true);
         book.tidy(at(0), &c);
         assert_eq!(book.due(at(0)), Some(SEOUL));
+    }
+
+    #[test]
+    fn the_computer_place_wins_over_the_phones() {
+        let c = WeatherCadence::default();
+        let mut book = Book::default();
+        book.set_wants(1, true);
+        book.set_wants(2, true);
+        book.set_place(2, Some(BUSAN));
+        book.set_here(Some(SEOUL));
+        book.tidy(at(0), &c);
+        assert_eq!(book.wanted(), [SEOUL].into_iter().collect(), "폰 위치와 상관없이 컴퓨터 위치");
+        book.set_here(None);
+        book.tidy(at(0), &c);
+        assert_eq!(book.wanted(), [BUSAN].into_iter().collect(), "컴퓨터 위치를 모르면 폰 위치");
     }
 
     #[test]

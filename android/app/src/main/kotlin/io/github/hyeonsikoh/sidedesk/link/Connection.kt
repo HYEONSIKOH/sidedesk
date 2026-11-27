@@ -67,6 +67,7 @@ class Connection(
         val identity = keys.identity()
         val started = System.nanoTime()
         PhoneSession(identity.privateKey, identity.publicKey, keys.computers(), via == Via.Usb).use { session ->
+            session.setName(android.os.Build.MODEL.orEmpty())
             var heard = System.nanoTime()
             var ready = false
             var computer = ByteArray(0)

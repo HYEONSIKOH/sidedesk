@@ -86,6 +86,9 @@ fn params() -> snow::params::NoiseParams {
     PATTERN.parse().expect("Noise 이름")
 }
 
+/// 기종 이름 글자 수 상한
+const MAX_NAME: usize = 64;
+
 enum Stage {
     Handshake,
     Intro,
@@ -122,9 +125,23 @@ pub struct Session {
     out: Vec<u8>,
     events: VecDeque<Event>,
     failed: Option<SessionError>,
+    /// 내가 알릴 기종 이름(폰만)
+    name: String,
+    /// 상대가 알린 기종 이름
+    peer_name: Option<String>,
 }
 
 impl Session {
+    /// 연결할 때 상대에게 알릴 기종 이름. 폰만 쓴다.
+    pub fn set_name(&mut self, name: &str) {
+        self.name = name.trim().chars().take(MAX_NAME).collect();
+    }
+
+    /// 상대 폰이 알린 기종 이름. 옛 앱이면 없음.
+    pub fn peer_name(&self) -> Option<&str> {
+        self.peer_name.as_deref()
+    }
+
     /// 폰 쪽에서 상대가 등록을 원해도 받지 않는다(블루투스 연결). 등록 요청은 `NotPaired` 로 끊는다.
     pub fn refusing_pairing(mut self) -> Self {
         self.allow_pairing = false;
@@ -156,6 +173,8 @@ impl Session {
             out: preface().to_vec(),
             events: VecDeque::new(),
             failed: None,
+            name: String::new(),
+            peer_name: None,
         }
     }
 
@@ -325,6 +344,7 @@ impl Session {
         self.write(Body::Intro(Intro {
             knows_you,
             wants_pairing: self.wants_pairing,
+            name: self.name.clone(),
         }))
     }
 
@@ -353,6 +373,8 @@ impl Session {
         let stage = std::mem::replace(&mut self.stage, Stage::Ready);
         match (stage, body) {
             (Stage::Intro, Body::Intro(intro)) => {
+                let name: String = intro.name.trim().chars().take(MAX_NAME).collect();
+                self.peer_name = (!name.is_empty()).then_some(name);
                 let pairing = match self.role {
                     Role::Computer => self.wants_pairing,
                     Role::Phone => intro.wants_pairing,
@@ -576,6 +598,33 @@ mod tests {
             Session::new(Role::Computer, computer, vec![phone.public], false),
             Session::new(Role::Phone, phone, vec![computer.public], false),
         )
+    }
+
+    #[test]
+    fn computer_learns_the_phone_model() {
+        let (computer, phone) = keys();
+        let mut named = Session::new(Role::Phone, &phone, vec![computer.public], false);
+        named.set_name("  iPad Air 4  ");
+        let pair = Pair::new(
+            Session::new(Role::Computer, &computer, vec![phone.public], false),
+            named,
+        );
+        assert!(pair.computer.is_ready());
+        assert_eq!(pair.computer.peer_name(), Some("iPad Air 4"));
+        assert_eq!(pair.phone.peer_name(), None, "컴퓨터는 이름을 보내지 않음");
+    }
+
+    #[test]
+    fn missing_or_long_names_are_handled() {
+        let (computer, phone) = keys();
+        assert_eq!(known(&computer, &phone).computer.peer_name(), None, "옛 앱");
+        let mut named = Session::new(Role::Phone, &phone, vec![computer.public], false);
+        named.set_name(&"가".repeat(200));
+        let pair = Pair::new(
+            Session::new(Role::Computer, &computer, vec![phone.public], false),
+            named,
+        );
+        assert_eq!(pair.computer.peer_name().map(|n| n.chars().count()), Some(64));
     }
 
     #[test]

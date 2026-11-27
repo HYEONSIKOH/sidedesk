@@ -13,13 +13,15 @@ data class PermissionResults(
     companion object {
         val BLUETOOTH = listOf(Manifest.permission.BLUETOOTH_ADVERTISE, Manifest.permission.BLUETOOTH_CONNECT)
         const val LOCATION = Manifest.permission.ACCESS_COARSE_LOCATION
+        /** GPS 를 쓰려면 필요하다. 같이 물으면 사람이 대략/정확을 고른다. */
+        const val PRECISE = Manifest.permission.ACCESS_FINE_LOCATION
 
         fun of(permissions: Array<String>, grants: IntArray): PermissionResults {
             val granted = permissions.indices.associate { permissions[it] to (grants.getOrNull(it) == PackageManager.PERMISSION_GRANTED) }
             val askedBluetooth = BLUETOOTH.any { it in granted }
             return PermissionResults(
                 restartBluetooth = askedBluetooth && BLUETOOTH.filter { it in granted }.all { granted[it] == true },
-                location = granted[LOCATION],
+                location = granted[LOCATION] ?: granted[PRECISE],
             )
         }
     }

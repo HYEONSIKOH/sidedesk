@@ -445,19 +445,17 @@ final class LinkOwner: @unchecked Sendable {
 
     func receivedWeather(_ mine: Int, _ value: Weather) {
         changing {
-            guard generation == mine, location != .off else { return false }
+            // 날씨는 컴퓨터 위치로 받으므로 폰 위치 권한과 상관없이 보인다.
+            guard generation == mine else { return false }
             snapshot.weather = value
             return true
         }
     }
 
-    /// 권한을 거두면 다른 곳의 날씨를 흐리게 남기지 않도록 지운다.
     func setLocation(_ value: LocationState) {
         changing {
             location = value
-            guard value == .off, snapshot.weather != nil else { return false }
-            snapshot.weather = nil
-            return true
+            return false
         }
     }
 }

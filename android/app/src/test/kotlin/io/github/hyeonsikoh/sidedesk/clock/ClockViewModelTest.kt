@@ -134,8 +134,8 @@ class ClockViewModelTest {
     fun creditsWhereTheWeatherCameFrom() {
         val clock = clock()
         link.weather.value = weather(source = WeatherSource.Kma)
-        assertEquals("날씨 자료 기상청", clock.state.value.credit)
-        assertEquals("기상청", clock.state.value.shortCredit)
+        assertNull(clock.state.value.credit)
+        assertNull(clock.state.value.shortCredit)
         link.weather.value = weather(source = WeatherSource.OpenMeteo)
         assertEquals("날씨 자료 Open-Meteo.com", clock.state.value.credit)
         assertEquals("Open-Meteo", clock.state.value.shortCredit)

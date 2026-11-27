@@ -108,14 +108,12 @@ class LinkOwnerTest {
     }
 
     @Test
-    fun forgetsTheWeatherWhenLocationIsTurnedOff() {
+    fun keepsTheComputerWeatherWhenPhoneLocationIsOff() {
+        // 날씨는 컴퓨터 위치로 받으므로 폰 위치 권한과 상관없다.
         val mine = connect(mac)
         owner.receivedWeather(mine, sunny)
         owner.setLocation(LocationState.Off)
-        assertEquals(null, owner.weather.value)
-        owner.receivedWeather(mine, sunny)
-        assertEquals(null, owner.weather.value)
-        owner.setLocation(LocationState.At(37.5, 127.0))
+        assertEquals(sunny, owner.weather.value)
         owner.receivedWeather(mine, sunny)
         assertEquals(sunny, owner.weather.value)
     }

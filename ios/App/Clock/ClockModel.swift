@@ -128,19 +128,17 @@ final class ClockModel {
         weather.map { degrees($0.temperature) } ?? "--°"
     }
 
-    /// 날씨 옆 출처. 날씨가 없거나 받은 곳을 모르면 nil
+    /// 날씨 옆 출처. 날씨가 없거나 받은 곳을 모르면 nil. 기상청은 표시하지 않는다.
     var credit: String? {
         switch weather?.source {
-        case .kma: "날씨 자료 기상청"
         case .openMeteo: "날씨 자료 Open-Meteo.com"
         default: nil
         }
     }
 
-    /// 작은 칸에 쓰는 짧은 출처
+    /// 작은 칸에 쓰는 짧은 출처. 기상청은 표시하지 않는다.
     var shortCredit: String? {
         switch weather?.source {
-        case .kma: "기상청"
         case .openMeteo: "Open-Meteo"
         default: nil
         }

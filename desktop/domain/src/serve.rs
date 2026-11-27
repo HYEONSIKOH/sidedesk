@@ -161,9 +161,9 @@ fn run(
                     deadline = Some(Instant::now() + context.timing.answer);
                 }
                 Event::Paired { peer } => {
-                    context
-                        .keys
-                        .trust(peer, phone.model.as_deref().unwrap_or(id), id)?;
+                    let told = session.peer_name().map(str::to_owned);
+                    let name = told.as_deref().or(phone.model.as_deref()).unwrap_or(id);
+                    context.keys.trust(peer, name, id)?;
                     context.report.note(id, Note::Paired { key: peer });
                 }
                 Event::Ready { peer: key } => {
@@ -178,7 +178,8 @@ fn run(
                     });
                     peer = Some(key);
                     subscriber = Some(context.hub.join_over(phone.link));
-                    fill_record(context, phone, key);
+                    let told = session.peer_name().map(str::to_owned);
+                    fill_record(context, phone, key, told.as_deref());
                     let computer_name = context.name.read()?;
                     session.send(Body::Hello(Hello { computer_name }))?;
                     match phone.link {
@@ -299,7 +300,8 @@ fn is_trusted(context: &Context, peer: Option<[u8; KEY_LEN]>) -> Result<bool, Se
 
 /// 이름이나 일련번호 없이 저장된 옛 기록을 채운다. 실패해도 연결은 잇는다.
 /// 일련번호는 USB 로 붙었을 때만 채운다(블루투스 식별자는 일련번호가 아니다).
-fn fill_record(context: &Context, phone: &Phone, key: [u8; KEY_LEN]) {
+/// 폰이 기종 이름을 알려 주면, 저장된 이름이 비었거나 자동으로 붙인 이름(USB 목록의 이름, 일련번호)일 때만 바꾼다.
+fn fill_record(context: &Context, phone: &Phone, key: [u8; KEY_LEN], told: Option<&str>) {
     let Ok(trusted) = context.keys.trusted() else {
         return;
     };
@@ -308,12 +310,14 @@ fn fill_record(context: &Context, phone: &Phone, key: [u8; KEY_LEN]) {
     };
     let id = phone.id.as_str();
     let usb = phone.link == Link::Usb;
-    if !saved.name.is_empty() && (!saved.serial.is_empty() || !usb) {
-        return;
-    }
-    let name = match saved.name.as_str() {
-        "" => phone.model.as_deref().unwrap_or(if usb { id } else { "" }),
-        name => name,
+    let automatic = saved.name.is_empty()
+        || phone.model.as_deref() == Some(saved.name.as_str())
+        || saved.name == id
+        || saved.name == saved.serial;
+    let name = match (told, automatic) {
+        (Some(told), true) => told,
+        _ if saved.name.is_empty() => phone.model.as_deref().unwrap_or(if usb { id } else { "" }),
+        _ => saved.name.as_str(),
     };
     let serial = match (saved.serial.as_str(), usb) {
         ("", true) => id,

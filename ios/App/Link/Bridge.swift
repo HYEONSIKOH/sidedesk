@@ -28,6 +28,7 @@ enum Core {
                 computers: computers,
                 allowPairing: allowPairing
             )
+            session.setName(name: DeviceModel.name)
             return BridgeSession(session)
         } catch {
             throw CoreErrors.map(error)

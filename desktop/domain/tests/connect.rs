@@ -77,10 +77,22 @@ fn phone(
     identity: Identity,
     trusted: Vec<[u8; KEY_LEN]>,
     says: PhoneSays,
+    pipe: Pipe,
+) -> JoinHandle<Vec<Event>> {
+    named_phone(identity, trusted, says, pipe, "")
+}
+
+/// 기종 이름을 알리는 폰
+fn named_phone(
+    identity: Identity,
+    trusted: Vec<[u8; KEY_LEN]>,
+    says: PhoneSays,
     mut pipe: Pipe,
+    name: &'static str,
 ) -> JoinHandle<Vec<Event>> {
     thread::spawn(move || {
         let mut session = Session::new(Role::Phone, &identity, trusted, false);
+        session.set_name(name);
         let mut events = Vec::new();
         let mut buffer = vec![0; 16 * 1024];
         loop {
@@ -355,6 +367,51 @@ fn pairing_saves_the_key_and_model_when_both_agree() {
             serial: "p".into()
         }]
     );
+}
+
+fn iphone() -> Phone {
+    Phone::usb("ios:1", Some("iPhone".into()), None)
+}
+
+#[test]
+fn pairing_saves_the_model_the_phone_tells() {
+    let phone_key = Identity::generate();
+    let world = World::new(Vec::new(), Some(true));
+    let (mut mine, theirs) = pipes();
+    let handle = named_phone(phone_key, Vec::new(), PhoneSays::Yes, theirs, "iPad Air 4");
+    let ended = within(|stop| serve(&iphone(), &mut mine, &world.context(), true, stop));
+    assert_eq!(ended, Ok(Ended::Paired));
+    drop(mine);
+    handle.join().unwrap();
+    assert_eq!(world.computer.trusted.lock().unwrap()[0].name, "iPad Air 4");
+}
+
+/// 저장된 이름(saved)으로 이미 아는 폰이 "iPad Air 4" 라고 알리며 붙은 뒤의 이름
+fn renamed(saved: &str) -> String {
+    let phone_key = Identity::generate();
+    let world = World::new(Vec::new(), None);
+    world.computer.trust(phone_key.public, saved, "ios:1").unwrap();
+    let (mut mine, theirs) = pipes();
+    let handle = named_phone(
+        phone_key,
+        vec![world.computer.identity.public],
+        PhoneSays::Yes,
+        theirs,
+        "iPad Air 4",
+    );
+    let ended = within(|stop| serve(&iphone(), &mut mine, &world.context(), false, stop));
+    assert_eq!(ended, Ok(Ended::Closed));
+    handle.join().unwrap();
+    let name = world.computer.trusted.lock().unwrap()[0].name.clone();
+    name
+}
+
+#[test]
+fn a_known_phone_replaces_only_an_automatic_name() {
+    assert_eq!(renamed("iPhone"), "iPad Air 4", "USB 목록이 붙인 이름");
+    assert_eq!(renamed(""), "iPad Air 4");
+    assert_eq!(renamed("ios:1"), "iPad Air 4", "일련번호");
+    assert_eq!(renamed("내 패드"), "내 패드", "사람이 붙인 이름은 그대로");
 }
 
 #[test]

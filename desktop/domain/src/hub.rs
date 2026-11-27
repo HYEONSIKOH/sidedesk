@@ -13,7 +13,7 @@ use sidedesk_core::{
 use crate::ai::{AiBook, AiCadence};
 use crate::deck::{Deck, TOGGLE_EVERY};
 use crate::music::Jukebox;
-use crate::port::{Forges, Meter, Place, PortError, ProcessTable, SessionLog, WeatherSource};
+use crate::port::{Forges, HerePlace, Meter, Place, PortError, ProcessTable, SessionLog, WeatherSource};
 use crate::weather::{Book, WeatherCadence};
 
 /// CPU 상위와 메모리 상위를 이만큼씩 골라 합친다.
@@ -189,6 +189,7 @@ pub struct Hub {
     table: Box<dyn ProcessTable>,
     cadence: Cadence,
     weather: Option<Box<dyn WeatherSource>>,
+    here: Option<Box<dyn HerePlace>>,
     weather_cadence: WeatherCadence,
     wall: Wall,
     sessions: Option<Box<dyn SessionLog>>,
@@ -212,6 +213,7 @@ impl Hub {
             table,
             cadence,
             weather: None,
+            here: None,
             weather_cadence: WeatherCadence::default(),
             wall: Box::new(SystemTime::now),
             sessions: None,
@@ -231,6 +233,12 @@ impl Hub {
     pub fn with_weather(mut self, source: Box<dyn WeatherSource>, cadence: WeatherCadence) -> Self {
         self.weather = Some(source);
         self.weather_cadence = cadence;
+        self
+    }
+
+    /// 날씨를 받을 이 컴퓨터의 좌표
+    pub fn with_here(mut self, here: Box<dyn HerePlace>) -> Self {
+        self.here = Some(here);
         self
     }
 
@@ -372,6 +380,12 @@ impl Hub {
             if state.stopped {
                 return;
             }
+            if let Some(here) = &self.here {
+                drop(state);
+                let place = guarded(|| Ok(here.read())).ok().flatten();
+                state = self.lock();
+                state.weather.set_here(place);
+            }
             let now = (self.wall)();
             state.weather.tidy(now, cadence);
             if let Some(place) = state.weather.due(now) {
@@ -381,7 +395,13 @@ impl Hub {
                 state.weather.finish(place, result, (self.wall)(), cadence);
                 continue;
             }
-            state = match state.weather.wait(now, cadence) {
+            // 컴퓨터 좌표를 보는 동안에는 1분마다 깨어 다시 읽는다.
+            let wait = match (state.weather.wait(now, cadence), self.here.is_some()) {
+                (None, true) => Some(cadence.nap),
+                (wait, true) => wait.map(|wait| wait.min(cadence.nap)),
+                (wait, false) => wait,
+            };
+            state = match wait {
                 None => self
                     .weather_changed
                     .wait(state)

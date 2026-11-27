@@ -36,16 +36,14 @@ data class ClockState(
     /** 끊겼거나 받은 지 오래된 날씨 */
     val weatherDimmed: Boolean = false,
 ) {
-    /** 날씨 옆 출처. 날씨가 없거나 받은 곳을 모르면 null */
+    /** 날씨 옆 출처. 날씨가 없거나 받은 곳을 모르면 null. 기상청은 표시하지 않는다. */
     val credit: String? get() = when (weather?.source) {
-        WeatherSource.Kma -> "날씨 자료 기상청"
         WeatherSource.OpenMeteo -> "날씨 자료 Open-Meteo.com"
         else -> null
     }
 
-    /** 작은 칸에 쓰는 짧은 출처 */
+    /** 작은 칸에 쓰는 짧은 출처. 기상청은 표시하지 않는다. */
     val shortCredit: String? get() = when (weather?.source) {
-        WeatherSource.Kma -> "기상청"
         WeatherSource.OpenMeteo -> "Open-Meteo"
         else -> null
     }

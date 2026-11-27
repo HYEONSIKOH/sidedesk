@@ -8,6 +8,8 @@ interface Settings {
     var theme: String?
     /** 위치 안내를 한 번 보였는지 */
     var askedLocation: Boolean
+    /** GPS(정확한 위치) 권한을 한 번 물었는지 */
+    var askedPrecise: Boolean
 
     /** 쉴 때 화면 설정(SD-11). 모르는 값이면 기본값으로 읽는다. */
     var keepOn: String?
@@ -30,6 +32,10 @@ class PrefsSettings(context: Context) : Settings {
     override var askedLocation: Boolean
         get() = prefs.getBoolean("askedLocation", false)
         set(value) = prefs.edit().putBoolean("askedLocation", value).apply()
+
+    override var askedPrecise: Boolean
+        get() = prefs.getBoolean("askedPrecise", false)
+        set(value) = prefs.edit().putBoolean("askedPrecise", value).apply()
 
     override var keepOn: String?
         get() = prefs.getString("keepOn", null)

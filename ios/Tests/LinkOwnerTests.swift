@@ -169,15 +169,14 @@ struct LinkOwnerTests {
         #expect(owner.processes?.count == 1)
     }
 
-    @Test func forgetsTheWeatherWhenLocationIsTurnedOff() {
+    @Test func keepsTheComputerWeatherWhenPhoneLocationIsOff() {
+        // 날씨는 컴퓨터 위치로 받으므로 폰 위치 권한과 상관없다.
         let owner = owner()
         #expect(owner.currentLocation == .unknown)
         let mine = owner.takeUsb(close: {})!
         owner.receivedWeather(mine, weather())
         owner.setLocation(.off)
-        #expect(owner.weather == nil)
-        owner.receivedWeather(mine, weather())
-        #expect(owner.weather == nil)
+        #expect(owner.weather != nil)
     }
 
     @Test func answerIsTakenOnceAndClearedByANewConnection() {
