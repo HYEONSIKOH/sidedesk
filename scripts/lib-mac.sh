@@ -18,6 +18,7 @@ write_plist() {
     <key>CFBundleDisplayName</key><string>SideDesk</string>
     <key>CFBundleExecutable</key><string>SideDesk</string>
     <key>CFBundlePackageType</key><string>APPL</string>
+    <key>CFBundleIconFile</key><string>SideDesk</string>
     <key>CFBundleShortVersionString</key><string>$2</string>
     <key>CFBundleVersion</key><string>$2</string>
     <key>LSMinimumSystemVersion</key><string>11.0</string>
@@ -27,4 +28,10 @@ write_plist() {
 </dict>
 </plist>
 PLIST
+}
+
+# copy_icon <앱 폴더> <저장소 루트>
+copy_icon() {
+    mkdir -p "$1/Contents/Resources"
+    cp "$2/assets/icon/SideDesk.icns" "$1/Contents/Resources/SideDesk.icns"
 }

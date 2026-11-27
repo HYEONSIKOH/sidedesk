@@ -16,5 +16,6 @@ cp "target/$profile/sidedesk" "$app/Contents/MacOS/SideDesk"
 [ "$profile" = release ] && strip -x "$app/Contents/MacOS/SideDesk"
 . scripts/lib-mac.sh
 write_plist "$app" "$(sidedesk_version "$root")"
+copy_icon "$app" "$root"
 codesign --force --sign - "$app" >/dev/null 2>&1
 echo "$app"

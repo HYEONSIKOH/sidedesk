@@ -1,15 +1,14 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- 런처 아이콘 앞 층: 세로로 세운 둥근 네모(폰) 테두리와 아래 점. 맥 메뉴 막대 아이콘과 같은 모양 -->
+<!-- 런처 아이콘 앞 층: 큰 판 곁에 짧은 판 하나(SideDesk 심볼). 원본은 assets/icon/sidedesk.svg -->
 <vector xmlns:android="http://schemas.android.com/apk/res/android"
     android:width="108dp"
     android:height="108dp"
     android:viewportWidth="108"
     android:viewportHeight="108">
     <path
-        android:strokeColor="#DCE1E7"
-        android:strokeWidth="4"
-        android:pathData="M45,33 L63,33 A5,5 0 0 1 68,38 L68,70 A5,5 0 0 1 63,75 L45,75 A5,5 0 0 1 40,70 L40,38 A5,5 0 0 1 45,33 Z" />
+        android:fillColor="#FFFFFFFF"
+        android:pathData="M40.48,35.28 L54.00,35.28 A8.32,8.32 0 0 1 62.32,43.60 L62.32,64.40 A8.32,8.32 0 0 1 54.00,72.72 L40.48,72.72 A8.32,8.32 0 0 1 32.16,64.40 L32.16,43.60 A8.32,8.32 0 0 1 40.48,35.28 Z" />
     <path
-        android:fillColor="#8FAECB"
-        android:pathData="M54,64.5 m-3,0 a3,3 0 1 0 6,0 a3,3 0 1 0 -6,0" />
+        android:fillColor="#FFFFFFFF"
+        android:pathData="M70.64,35.28 L70.64,35.28 A5.20,5.20 0 0 1 75.84,40.48 L75.84,51.92 A5.20,5.20 0 0 1 70.64,57.12 L70.64,57.12 A5.20,5.20 0 0 1 65.44,51.92 L65.44,40.48 A5.20,5.20 0 0 1 70.64,35.28 Z" />
 </vector>

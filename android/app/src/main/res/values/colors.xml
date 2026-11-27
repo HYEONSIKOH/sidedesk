@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <!-- 아이콘 바탕(어두운 판 색 Palette.panel) -->
-    <color name="launcher_background">#22272E</color>
+    <color name="launcher_background">#2F6BFF</color>
     <!-- 앱이 뜨기 전 창 바탕(어두운 바탕 Palette.ground). 흰 번쩍임을 없앤다 -->
     <color name="window_background">#15181C</color>
 </resources>
